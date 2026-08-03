@@ -141,7 +141,7 @@ function render() {
   switch (currentTab) {
     case 'subjects': view.innerHTML = viewSubjects(); break;
     case 'grades': view.innerHTML = viewGrades(); break;
-    case 'classes': view.innerHTML = stubView('③ 班級', 'Batch 2'); break;
+    case 'classes': view.innerHTML = viewClasses(); break;
     case 'teachers': view.innerHTML = stubView('④ 教師 / 教師配課', 'Batch 3'); break;
     case 'schedule': view.innerHTML = stubView('⑤ 排課', 'Batch 4'); break;
     case 'output': view.innerHTML = stubView('課表輸出', 'Batch 4'); break;
@@ -256,6 +256,130 @@ function viewGrades() {
 }
 
 /* ==========================================================================
+   ③ 班級（選年級 → 課程強制沿用年級；協同教學）
+   ========================================================================== */
+const classGrade = c => gradeById(c.gradeId);
+const classSubjectHours = c => { const g = classGrade(c); return g ? g.subjectHours : []; };
+const classWeeklyHours = c => classSubjectHours(c).reduce((s, x) => s + (x.hours || 0), 0);
+const sameGradeOtherClasses = c => state.classes.filter(x => x.id !== c.id && x.gradeId === c.gradeId);
+function classCoteachPartners(c, sid) {
+  const g = c.coteach && c.coteach[sid]; if (!g) return [];
+  return state.classes.filter(x => x.id !== c.id && x.coteach && x.coteach[sid] === g).map(x => x.id);
+}
+function cleanupCoteachSingletons(sid) {
+  const count = {};
+  state.classes.forEach(c => { const g = c.coteach && c.coteach[sid]; if (g) count[g] = (count[g] || 0) + 1; });
+  state.classes.forEach(c => { const g = c.coteach && c.coteach[sid]; if (g && count[g] < 2) delete c.coteach[sid]; });
+}
+function setClassCoteach(sid, classId, partnerIds) {
+  const me = classById(classId); if (!me) return;
+  const full = [classId, ...partnerIds.filter(id => id !== classId && classById(id))];
+  const oldGid = me.coteach && me.coteach[sid];
+  if (full.length <= 1) { if (me.coteach) delete me.coteach[sid]; }
+  else {
+    const gid = oldGid || uid();
+    full.forEach(id => { const c = classById(id); c.coteach = c.coteach || {}; c.coteach[sid] = gid; });
+    if (oldGid) state.classes.forEach(c => { if (c.coteach && c.coteach[sid] === oldGid && !full.includes(c.id)) delete c.coteach[sid]; });
+  }
+  cleanupCoteachSingletons(sid);
+}
+function removeClassFromAllCoteach(classId) {
+  const c = classById(classId); if (!c || !c.coteach) return;
+  const subs = Object.keys(c.coteach);
+  delete c.coteach;
+  subs.forEach(sid => cleanupCoteachSingletons(sid));
+}
+
+function viewClasses() {
+  const head = `<div class="page-head"><h2>③ 班級</h2><button class="btn" data-action="add-class">＋ 新增班級</button></div>
+    <div class="hint" style="margin-bottom:12px;color:var(--muted)">班級選定年級後，課程（科目與一周節數）自動沿用該年級設定。點「科目 / 協同」可設定各科的協同教學班級（預設同年級同科目）。</div>`;
+  if (state.classes.length === 0) return head + emptyCard('尚無班級', '例如：一年忠班、一年孝班。新增後課程沿用其年級。');
+  const rows = state.classes.slice().sort((a, b) => (a.gradeId + a.name).localeCompare(b.gradeId + b.name, 'zh-Hant')).map(c => {
+    const g = classGrade(c);
+    const incomplete = g && !gradeComplete(g);
+    const coCount = Object.keys(c.coteach || {}).length;
+    return `<tr>
+      <td><b>${esc(c.name)}</b></td>
+      <td>${esc(gradeName(c.gradeId))}${incomplete ? ' <span class="pill red" title="該年級科目節數尚未相符">年級未完成</span>' : ''}</td>
+      <td>${classSubjectHours(c).length} 科 / ${classWeeklyHours(c)} 節</td>
+      <td>${coCount ? `<span class="pill blue">🔗 ${coCount} 科協同</span>` : '<span style="color:var(--muted)">—</span>'}</td>
+      <td class="row-actions">
+        <button class="ghost" data-action="class-detail" data-id="${c.id}" style="padding:5px 10px;font-size:13px">科目 / 協同</button>
+        <button class="icon-btn" data-action="edit-class" data-id="${c.id}">✏️</button>
+        <button class="icon-btn" data-action="del-class" data-id="${c.id}">🗑️</button>
+      </td></tr>`;
+  }).join('');
+  return head + `<div class="card"><table class="data">
+    <thead><tr><th>班級</th><th>年級</th><th>課程</th><th>協同</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+function classModal(existing) {
+  if (state.grades.length === 0) { openModal({ title: '無法新增', body: '<p>系統應有六個年級，請重整。</p>' }); return; }
+  const c = existing || { name: '', gradeId: state.grades[0].id };
+  const gradeOpts = state.grades.map(g => `<option value="${g.id}" ${g.id === c.gradeId ? 'selected' : ''}>${esc(g.name)}${gradeComplete(g) ? '' : '（節數未完成）'}</option>`).join('');
+  openModal({
+    title: existing ? '編輯班級' : '新增班級',
+    body: `<label class="field"><span>班級名稱</span><input type="text" id="cName" value="${esc(c.name)}" placeholder="例：一年忠班"></label>
+      <label class="field"><span>年級</span><select id="cGrade">${gradeOpts}</select></label>
+      <p class="hint" style="color:var(--muted)">課程（科目＋節數）將沿用所選年級於「② 年級」的設定。</p>`,
+    onSave: () => {
+      const name = $('#cName').value.trim();
+      if (!name) { toast('請輸入班級名稱'); return false; }
+      const gradeId = $('#cGrade').value;
+      if (existing) {
+        if (existing.gradeId !== gradeId) removeClassFromAllCoteach(existing.id); // 換年級 → 協同失效
+        existing.name = name; existing.gradeId = gradeId;
+      } else state.classes.push({ id: uid(), name, gradeId, coteach: {} });
+      save(); render(); toast('已儲存班級');
+      return true;
+    },
+  });
+}
+function classDetailModal(c) {
+  const subs = classSubjectHours(c);
+  if (subs.length === 0) {
+    openModal({ title: `${c.name}`, body: `<p>此班年級（${esc(gradeName(c.gradeId))}）尚未於「② 年級」設定任何科目節數。請先完成年級設定。</p>` });
+    return;
+  }
+  const others = sameGradeOtherClasses(c);
+  const rows = subs.map(sh => {
+    const s = subjectById(sh.subjectId); if (!s) return '';
+    const partners = classCoteachPartners(c, sh.subjectId);
+    const picker = others.length === 0
+      ? `<span class="hint" style="color:var(--muted)">（同年級無其他班）</span>`
+      : others.map(o => `<label class="checkbox" style="font-weight:400;display:inline-flex;margin-right:12px">
+          <input type="checkbox" data-coteach-subj data-sid="${sh.subjectId}" data-cid="${o.id}" ${partners.includes(o.id) ? 'checked' : ''}> ${esc(o.name)}</label>`).join('');
+    return `<tr>
+      <td style="white-space:nowrap"><span class="pill" style="background:${s.color};color:${textOn(s.color)}">${esc(s.name)}</span>${s.allowGrouping ? ' 👥' : ''}</td>
+      <td style="white-space:nowrap">${sh.hours} 節</td>
+      <td>🔗 ${picker}</td>
+    </tr>`;
+  }).join('');
+  openModal({
+    title: `${c.name}　課程與協同（${gradeName(c.gradeId)}）`,
+    wide: true,
+    saveLabel: '儲存協同',
+    body: `<p class="hint" style="color:var(--muted);margin-top:0">節數沿用年級、不可改。勾選要「同時段一起上」的其他班（同年級同科目）；協同班級彼此不計教室衝堂。</p>
+      <table class="data"><thead><tr><th>科目</th><th>節數</th><th>協同教學班級</th></tr></thead><tbody>${rows}</tbody></table>`,
+    onSave: () => {
+      subs.forEach(sh => {
+        const checked = Array.from(document.querySelectorAll(`#modalRoot input[data-coteach-subj][data-sid="${sh.subjectId}"]:checked`)).map(el => el.dataset.cid);
+        setClassCoteach(sh.subjectId, c.id, checked);
+      });
+      save(); render(); toast('已儲存協同設定');
+      return true;
+    },
+  });
+}
+function delClass(id) {
+  const c = classById(id); if (!c) return;
+  confirmDelete(`刪除班級「${c.name}」？`, () => {
+    removeClassFromAllCoteach(id);
+    for (const k in state.slots) if (k.startsWith(id + '|')) delete state.slots[k];
+    state.classes = state.classes.filter(x => x.id !== id);
+  });
+}
+
+/* ==========================================================================
    設定（上課日 / 節次定義 / 排課選項）
    ========================================================================== */
 function viewSettings() {
@@ -357,6 +481,11 @@ const clickHandlers = {
   'add-subject': () => subjectModal(null),
   'edit-subject': el => subjectModal(subjectById(el.dataset.id)),
   'del-subject': el => delSubject(el.dataset.id),
+
+  'add-class': () => classModal(null),
+  'edit-class': el => classModal(classById(el.dataset.id)),
+  'del-class': el => delClass(el.dataset.id),
+  'class-detail': el => classDetailModal(classById(el.dataset.id)),
 
   'sel-grade': el => { selectedGradeId = el.dataset.id; render(); },
   'toggle-gradeday': el => {
