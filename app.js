@@ -5,7 +5,7 @@
    資料層：IndexedDB 單一 state 文件（in-memory + 整包持久化）
    ========================================================================== */
 
-const APP_VERSION = 'v01.01';
+const APP_VERSION = 'v01.02';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 
@@ -53,14 +53,14 @@ function defaultState() {
     settings: {
       days: [1, 2, 3, 4, 5],
       periods: [
-        { id: 'p1', label: '第1節', start: '08:40', end: '09:20', lesson: true },
-        { id: 'p2', label: '第2節', start: '09:30', end: '10:10', lesson: true },
-        { id: 'p3', label: '第3節', start: '10:30', end: '11:10', lesson: true },
-        { id: 'p4', label: '第4節', start: '11:20', end: '12:00', lesson: true },
-        { id: 'lunch', label: '午休', start: '12:00', end: '13:20', lesson: false },
-        { id: 'p5', label: '第5節', start: '13:30', end: '14:10', lesson: true },
-        { id: 'p6', label: '第6節', start: '14:20', end: '15:00', lesson: true },
-        { id: 'p7', label: '第7節', start: '15:20', end: '16:00', lesson: true },
+        { id: 'p1', label: '第1節', start: '08:40', end: '09:20', days: [1, 2, 3, 4, 5] },
+        { id: 'p2', label: '第2節', start: '09:30', end: '10:10', days: [1, 2, 3, 4, 5] },
+        { id: 'p3', label: '第3節', start: '10:30', end: '11:10', days: [1, 2, 3, 4, 5] },
+        { id: 'p4', label: '第4節', start: '11:20', end: '12:00', days: [1, 2, 3, 4, 5] },
+        { id: 'lunch', label: '午休', start: '12:00', end: '13:20', days: [] },
+        { id: 'p5', label: '第5節', start: '13:30', end: '14:10', days: [1, 2, 3, 4, 5] },
+        { id: 'p6', label: '第6節', start: '14:20', end: '15:00', days: [1, 2, 3, 4, 5] },
+        { id: 'p7', label: '第7節', start: '15:20', end: '16:00', days: [1, 2, 3, 4, 5] },
       ],
     },
     classes: [],
@@ -77,6 +77,13 @@ function migrate(s) {
   s.settings = s.settings || {};
   s.settings.days = s.settings.days || [1, 2, 3, 4, 5];
   s.settings.periods = s.settings.periods || defaultState().settings.periods;
+  // v01.02: 節次由整週 lesson 布林 → 每日 days 陣列
+  for (const p of s.settings.periods) {
+    if (!Array.isArray(p.days)) {
+      p.days = p.lesson === false ? [] : (s.settings.days || [1, 2, 3, 4, 5]).slice();
+    }
+    delete p.lesson;
+  }
   for (const k of ['classes', 'teachers', 'subjects', 'rooms', 'assignments']) s[k] = s[k] || [];
   s.slots = s.slots || {};
   if (typeof s.helpSeen !== 'boolean') s.helpSeen = false;
@@ -103,7 +110,9 @@ const teacherName = id => (teacherById(id) || {}).name || '?';
 const subjectName = id => (subjectById(id) || {}).name || '?';
 const roomName = id => (roomById(id) || {}).name || '';
 const slotKey = (c, d, p) => `${c}|${d}|${p}`;
-const lessonPeriods = () => state.settings.periods.filter(p => p.lesson);
+const periodHasDay = (p, d) => (p.days || []).includes(d);
+const isLessonPeriod = (p) => (p.days || []).some(d => state.settings.days.includes(d));
+const lessonPeriods = () => state.settings.periods.filter(isLessonPeriod);
 const activeDays = () => state.settings.days.slice().sort((a, b) => a - b);
 
 function textOn(hex) {
@@ -291,7 +300,7 @@ function timetableHTML(classId, conflicts, editable) {
     <thead><tr><th class="period-th">節次</th>${days.map(d => `<th>${DAY_LABELS[d]}</th>`).join('')}</tr></thead>
     <tbody>`;
   for (const p of state.settings.periods) {
-    if (!p.lesson) {
+    if (!isLessonPeriod(p)) {
       html += `<tr class="break-row"><td colspan="${days.length + 1}">${esc(p.label)}　${esc(p.start)}–${esc(p.end)}</td></tr>`;
       continue;
     }
@@ -301,6 +310,7 @@ function timetableHTML(classId, conflicts, editable) {
       const aId = state.slots[key];
       const a = aId ? assignmentById(aId) : null;
       const conf = conflicts[key];
+      const open = periodHasDay(p, d); // 該節該日是否上課
       if (a) {
         const color = subjectColor(a.subjectId);
         html += `<td class="cell ${editable ? 'placeable' : ''}" ${editable ? `data-action="cell-click" data-key="${key}"` : ''}
@@ -310,8 +320,10 @@ function timetableHTML(classId, conflicts, editable) {
             <small>${esc(teacherName(a.teacherId))}${a.roomId ? '·' + esc(roomName(a.roomId)) : ''}</small>
             ${conf ? `<span class="conf-mark">⚠ 衝堂</span>` : ''}
           </div></td>`;
-      } else {
+      } else if (open) {
         html += `<td class="cell ${editable ? 'placeable' : ''}" ${editable ? `data-action="cell-click" data-key="${key}"` : ''}></td>`;
+      } else {
+        html += `<td class="cell blocked" title="此節本日不上課"></td>`;
       }
     }
     html += `</tr>`;
@@ -473,6 +485,7 @@ function teacherModal(existing) {
   for (const p of lessonPeriods()) {
     grid += `<tr><th>${esc(p.label)}</th>`;
     for (const d of days) {
+      if (!periodHasDay(p, d)) { grid += `<td class="slot na" title="此節本日不上課">·</td>`; continue; }
       const s = d + '|' + p.id;
       grid += `<td class="slot ${un.has(s) ? 'off' : ''}" data-action="toggle-avail" data-slot="${s}">${un.has(s) ? '✕' : ''}</td>`;
     }
@@ -612,7 +625,7 @@ function teacherTimetableHTML(teacherId, conflicts) {
   let html = `<div class="print-only" style="text-align:center;font-weight:700;font-size:16px;margin-bottom:8px">${esc((t || {}).name || '')} 教師課表</div>`;
   html += `<table class="timetable"><thead><tr><th class="period-th">節次</th>${days.map(d => `<th>${DAY_LABELS[d]}</th>`).join('')}</tr></thead><tbody>`;
   for (const p of state.settings.periods) {
-    if (!p.lesson) { html += `<tr class="break-row"><td colspan="${days.length + 1}">${esc(p.label)}</td></tr>`; continue; }
+    if (!isLessonPeriod(p)) { html += `<tr class="break-row"><td colspan="${days.length + 1}">${esc(p.label)}</td></tr>`; continue; }
     html += `<tr><td class="period-th">${esc(p.label)}<small>${esc(p.start)}–${esc(p.end)}</small></td>`;
     for (const d of days) {
       const hit = map[d + '|' + p.id];
@@ -621,7 +634,7 @@ function teacherTimetableHTML(teacherId, conflicts) {
         const conf = conflicts[hit.key];
         html += `<td class="cell"><div class="cell-lesson ${conf ? 'conflict' : ''}" style="background:${color};color:${textOn(color)}">
           ${esc((classById(hit.classId) || {}).name || '')}<small>${esc(subjectName(hit.a.subjectId))}${hit.a.roomId ? '·' + esc(roomName(hit.a.roomId)) : ''}</small></div></td>`;
-      } else html += `<td class="cell"></td>`;
+      } else html += `<td class="cell ${periodHasDay(p, d) ? '' : 'blocked'}"></td>`;
     }
     html += `</tr>`;
   }
@@ -641,7 +654,7 @@ function exportCSV() {
   if (outputMode === 'class') {
     title = (classById(outputClassId) || {}).name || '班級';
     for (const p of state.settings.periods) {
-      if (!p.lesson) continue;
+      if (!isLessonPeriod(p)) continue;
       rows.push([p.label, ...days.map(d => {
         const a = assignmentById(state.slots[slotKey(outputClassId, d, p.id)]);
         return a ? `${subjectName(a.subjectId)}/${teacherName(a.teacherId)}` : '';
@@ -657,7 +670,7 @@ function exportCSV() {
       map[day + '|' + period] = `${(classById(classId) || {}).name || ''}/${subjectName(a.subjectId)}`;
     }
     for (const p of state.settings.periods) {
-      if (!p.lesson) continue;
+      if (!isLessonPeriod(p)) continue;
       rows.push([p.label, ...days.map(d => map[d + '|' + p.id] || '')]);
     }
   }
@@ -674,11 +687,12 @@ function viewSettings() {
     `<label class="checkbox" style="display:inline-flex;margin-right:14px">
       <input type="checkbox" data-change="day-toggle" data-day="${d}" ${state.settings.days.includes(d) ? 'checked' : ''}> ${DAY_LABELS[d]}
     </label>`).join('');
+  const dayCols = activeDays();
   const periodRows = state.settings.periods.map((p, i) => `<tr>
     <td><input type="text" data-change="period-field" data-pid="${p.id}" data-field="label" value="${esc(p.label)}"></td>
     <td><input type="time" data-change="period-field" data-pid="${p.id}" data-field="start" value="${esc(p.start)}"></td>
     <td><input type="time" data-change="period-field" data-pid="${p.id}" data-field="end" value="${esc(p.end)}"></td>
-    <td style="text-align:center"><input type="checkbox" data-change="period-lesson" data-pid="${p.id}" ${p.lesson ? 'checked' : ''}></td>
+    ${dayCols.map(d => `<td style="text-align:center"><input type="checkbox" data-change="period-day" data-pid="${p.id}" data-day="${d}" ${periodHasDay(p, d) ? 'checked' : ''}></td>`).join('')}
     <td class="row-actions">
       <button class="icon-btn" data-action="move-period-up" data-pid="${p.id}" ${i === 0 ? 'disabled' : ''}>↑</button>
       <button class="icon-btn" data-action="move-period-down" data-pid="${p.id}" ${i === state.settings.periods.length - 1 ? 'disabled' : ''}>↓</button>
@@ -695,11 +709,11 @@ function viewSettings() {
         <h4 style="margin:0">節次表</h4>
         <button class="ghost" data-action="add-period">＋ 新增節次</button>
       </div>
-      <table class="data">
-        <thead><tr><th>名稱</th><th>開始</th><th>結束</th><th style="text-align:center">上課節</th><th></th></tr></thead>
+      <div class="grid-wrap"><table class="data">
+        <thead><tr><th>名稱</th><th>開始</th><th>結束</th>${dayCols.map(d => `<th style="text-align:center">${DAY_LABELS[d]}</th>`).join('')}<th></th></tr></thead>
         <tbody>${periodRows}</tbody>
-      </table>
-      <p class="hint" style="color:var(--muted);margin-top:8px">未勾「上課節」的列（如午休）在排課盤面顯示為分隔列、不能放課。</p>
+      </table></div>
+      <p class="hint" style="color:var(--muted);margin-top:8px">勾選＝該節在該日<b>有上課</b>（可排課）；未勾的格子在排課盤面顯示為灰色、不能放課。<b>整列都不勾</b>（如午休）則顯示為分隔列。上課日的欄位由上方「上課日」決定。</p>
     </div></div>
     <div class="card"><div class="card-body">
       <h4 style="margin-top:0">關於</h4>
@@ -769,7 +783,7 @@ function helpContent() {
 
     <h4>二、各分頁</h4>
     <ul>
-      <li><b>設定</b>：勾選上課日；編輯節次表。節次「上課節」打勾＝可排課；不打勾（午休等）在排課盤面顯示為灰色分隔線、不能放課。</li>
+      <li><b>設定</b>：勾選上課日；節次表可為<b>每一節 × 每個上課日</b>各自勾選是否上課（例：週三下午不排課，就把那幾節的「週三」取消）。未勾的格子在排課盤面顯示為灰色、不能放課；整列都不勾（午休）則顯示為分隔列。</li>
       <li><b>科目</b>：新增名稱＋選顏色（課表上該科的顏色）。「需專科教室／預設連堂」為<b>註記用途</b>，實際設定在「配課」。</li>
       <li><b>教室</b>：建立會搶用的場地（電腦教室、自然教室、體育館…），排課時會檢查同時段是否被兩班同用。</li>
       <li><b>教師</b>：姓名、類別、<b>每週節數上限</b>；下方格子點一下出現 <b>✕</b> ＝該時段不排課（再點取消）。</li>
@@ -914,7 +928,7 @@ const clickHandlers = {
   },
 
   'add-period': () => {
-    state.settings.periods.push({ id: uid(), label: '新節次', start: '00:00', end: '00:00', lesson: true });
+    state.settings.periods.push({ id: uid(), label: '新節次', start: '00:00', end: '00:00', days: state.settings.days.slice() });
     save(); render();
   },
   'del-period': el => {
@@ -958,9 +972,14 @@ const changeHandlers = {
     const p = byId(state.settings.periods, el.dataset.pid);
     if (p) { p[el.dataset.field] = el.value; save(); }
   },
-  'period-lesson': el => {
+  'period-day': el => {
     const p = byId(state.settings.periods, el.dataset.pid);
-    if (p) { p.lesson = el.checked; save(); render(); }
+    if (!p) return;
+    const d = parseInt(el.dataset.day, 10);
+    p.days = p.days || [];
+    if (el.checked) { if (!p.days.includes(d)) p.days.push(d); }
+    else p.days = p.days.filter(x => x !== d);
+    save(); render();
   },
 };
 

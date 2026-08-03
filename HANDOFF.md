@@ -5,7 +5,13 @@
 ## 最後更新
 - 時間：2026-08-03
 - 機器：桌機
-- 版本：v01.01（MVP 骨架 + 已上線 + 使用說明）
+- 版本：v01.02（節次表改每節×每日勾選）
+
+## v01.02 變更
+- **節次表由整週 `lesson` 布林 → 每節每日 `days:[dayNums]` 陣列**。設定頁每節顯示「週一～週五」勾選格（欄位依上課日）；未勾的格子在排課盤面/教師課表顯示灰色斜紋 `.cell.blocked` 不可放；整節無任何上課日＝分隔列（isLessonPeriod 判定）。
+- helpers：`periodHasDay(p,d)`、`isLessonPeriod(p)`；`lessonPeriods()` 改用 isLessonPeriod。
+- migrate 自動轉換舊資料（`lesson:false→days:[]`、其餘→當時 settings.days）。教師不排課格只在該節該日有課時可點（否則 `.slot.na`）。
+- 版本三處同步：APP_VERSION、sw CACHE_NAME、index versionTag(JS 覆寫)。
 
 ## v01.01 變更
 - 新增 App 內「❓ 使用說明」按鈕（頂列，openModal wide 可捲動）＋首次開啟自動彈出一次（`state.helpSeen` 旗標，migrate 補預設）。內容＝repo 內「使用說明.md」的精簡版（helpContent()）。
