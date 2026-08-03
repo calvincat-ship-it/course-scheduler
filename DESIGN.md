@@ -36,7 +36,8 @@ helpSeen, schema:2
 - [x] Batch 2：班級（選年級→強制課程；協同設定，per-subject group id 對稱）。
 - [x] Batch 3：教師 + 教師配課(4.2 個別 Σ==每周授課才可存) + 全校交叉檢核(4.3, 分組不重複計)。
 - [x] Batch 4：排課改版（slot=科目、老師由 load 推得、分組同格、協同同步+豁免、連堂成對）＋課表輸出（班級/教師/CSV/列印）。教室概念已移除。連堂改 subject.consecutive。
-- [ ] Batch 5：流程串接/進度指示 + 使用說明 + 最終本機測試 → 經確認後合併 main 上線。
+- [x] Batch 5：排課硬性閘門(配課未齊擋下)、使用說明(App 內+使用說明.md 改寫新流程)、首次自動彈說明、移除 stub、全流程本機測試通過。
+  → **等使用者本機驗收，OK 後才 merge main 上線**（改 sw 已是 v02.00；合併 redesign→main、push、Pages 生效）。
 
 ## 注意
 - 版本 v02.xx 與 sw CACHE_NAME 同步；但 **redesign 期間不 push、不部署**。

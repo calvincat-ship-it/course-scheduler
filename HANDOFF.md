@@ -26,7 +26,13 @@
   - placeSubject：放科目＋協同同群組同步放（**day 需 parseInt 才能比對 periodDays**—此坑已修）；連堂 subject.consecutive 自動成對(沿用 autoPairConsecutive)。
   - 科目加 consecutive 旗標(步驟5「依現在的介面」保留連堂)；分組多師同格自動不衝突。
   - 輸出：班級表/教師表(協同合併顯示)/CSV/列印；調色盤 placed/required；教師已排/應排面板。
-- **下一步：Batch 5（收尾）** — 流程進度串接/導引、使用說明(App 內+使用說明.md 全面改寫新流程)、清乾淨 stub、最終本機全流程測試。**經使用者確認後才 merge main 上線**（改 sw/version、合併、push、Pages）。
+- **Batch 5 已完成（本機驗證通過、無 console error）**：⑤排課硬性閘門(checkStaffing 有問題→擋下並導向④)、使用說明(App內 helpModal + 使用說明.md 改寫新流程)、首次自動彈說明(helpSeen)、移除 stubView。
+  - 全流程端到端測試通過：科目→年級(節數相符✓)→班級(沿用)→教師(配課合計閘門+全校交叉檢核)→排課(閘門開放→排滿10格0衝突、教師負荷相符)→輸出。
+- **🎉 五批全部完成，等使用者本機驗收。** 驗收 OK 後才上線：
+  1. `git checkout main && git merge redesign`（或 PR）。
+  2. sw CACHE_NAME 已是 v02.00；push main → GH Pages 生效。
+  3. ⚠ 上線後同仁舊資料(v01 schema)會被自動重置(schema 檢查)—需先告知同仁或提供轉換。目前同仁仍在用 main v01.05。
+- 尚未決：是否需要「專科教室衝堂」(新流程移除了教室)—待使用者確認。
 - 續跑提醒：在 redesign 分支；`git checkout redesign`；勿 push main/部署。
 
 ## （封存）main v01.05 之前的變更紀錄

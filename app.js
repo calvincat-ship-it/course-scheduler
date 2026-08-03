@@ -67,7 +67,7 @@ function defaultState() {
     classes: [],
     teachers: [],
     slots: {},
-    helpSeen: true,
+    helpSeen: false,
   };
 }
 
@@ -148,11 +148,6 @@ function render() {
     case 'output': view.innerHTML = viewOutput(); break;
     case 'settings': view.innerHTML = viewSettings(); break;
   }
-}
-function stubView(title, batch) {
-  return `<div class="page-head"><h2>${esc(title)}</h2></div>
-    <div class="card"><div class="empty"><b>此步驟開發中（${esc(batch)}）</b>
-    <div style="margin-top:6px">重構分批進行中，這一頁會在後續批次完成。</div></div></div>`;
 }
 
 /* ==========================================================================
@@ -615,6 +610,12 @@ function placeSubject(classId, day, period, sid) {
 
 function viewSchedule() {
   if (state.classes.length === 0) return emptyState('尚未建立班級', '請先完成 ①科目 ②年級 ③班級 ④教師，再來排課。');
+  const problems = checkStaffing();
+  if (problems.length) return `<div class="page-head"><h2>⑤ 排課</h2></div>
+    <div class="card"><div class="card-body">
+      <div class="conflict-banner">⚠ 尚有 ${problems.length} 項配課問題，需先在「④ 教師」把各班每科節數配齊，才能開始排課。</div>
+      <button class="btn" data-action="goto-teachers">前往 ④ 教師 檢查配課</button>
+    </div></div>`;
   if (!selectedClassId || !classById(selectedClassId)) selectedClassId = state.classes[0].id;
   const conflicts = computeConflicts();
   const totalConf = Object.keys(conflicts).length;
@@ -841,6 +842,39 @@ function movePeriod(pid, dir) {
 }
 
 /* ==========================================================================
+   使用說明
+   ========================================================================== */
+function helpModal() {
+  openModal({
+    title: '使用說明　·　' + APP_VERSION, wide: true, body: `<div class="help">
+    <div class="help-note">📌 <b>三個重點：</b>①免安裝免登入，用瀏覽器開網址就能用。②資料只存<b>你這台裝置</b>，各自獨立。③換裝置或清瀏覽器前，先用右上「備份」匯出。</div>
+    <h4>操作順序（有前後關係，請照號碼走）</h4>
+    <p class="help-flow">①科目 ▸ ②年級 ▸ ③班級 ▸ ④教師 ▸ ⑤排課 ▸ 課表輸出</p>
+    <h4>① 科目</h4>
+    <ul><li>建立全校科目、選顏色。</li>
+      <li>👥 <b>可分組教學</b>：勾了的科目（如英語）可由多位老師同時分組上，排課時同一格多師、不算衝堂。</li>
+      <li>⏱ <b>需連堂</b>：勾了的科目排課時自動把兩節排在相鄰位置。</li></ul>
+    <h4>② 年級（一~六年級各一張）</h4>
+    <ul><li><b>2.1 節次表</b>：每個年級逐格勾「哪節×哪個上課日有課」（例：週三下午不上課就取消那幾格）。</li>
+      <li><b>2.2 科目節數</b>：勾該年級開的科目、填一周節數。<b>科目節數總和＝節次表可用節數</b>時，年級才算完成（分頁顯示 ✓）。</li></ul>
+    <h4>③ 班級</h4>
+    <ul><li>新增班級並選年級；課程（科目＋節數）<b>自動沿用該年級</b>設定、不需重填。</li>
+      <li>點「科目 / 協同」可為每一科勾選<b>協同教學</b>的同年級其他班（同時段一起上）。</li></ul>
+    <h4>④ 教師</h4>
+    <ul><li>填姓名、身分、<b>每周授課時數</b>、不排課時段。</li>
+      <li><b>教師配課</b>：逐筆「班級 → 科目 → 節數」。該師配課合計<b>必須等於每周授課時數</b>才能儲存。</li>
+      <li>上方狀態卡＋「檢查全校配課」：確認<b>每班每科節數都被配齊</b>（分組視為同一節）。全部相符才可進入排課。</li></ul>
+    <h4>⑤ 排課</h4>
+    <ul><li>選班級 → 左側點科目 → 點課表空格放課；點已排格移除。灰色格＝該班該節不上課。</li>
+      <li>分組科目自動多師同格；協同科目放一班自動同步其他班；連堂自動成對。</li>
+      <li>🔴 紅框代表需注意：教師衝堂／不排課時段／協同未同步／連堂未相鄰（移到格上看原因）。</li></ul>
+    <h4>課表輸出 / 備份</h4>
+    <p>可輸出班級表、教師表，列印或存 PDF、匯出 CSV。右上「備份」可匯出/匯入 JSON（換裝置用）。</p>
+    </div>`,
+  });
+}
+
+/* ==========================================================================
    Events
    ========================================================================== */
 const clickHandlers = {
@@ -856,6 +890,7 @@ const clickHandlers = {
   'edit-teacher': el => teacherModal(teacherById(el.dataset.id)),
   'del-teacher': el => delTeacher(el.dataset.id),
   'check-staffing': () => staffingReportModal(),
+  'goto-teachers': () => { currentTab = 'teachers'; render(); },
   'toggle-avail': el => { el.classList.toggle('off'); el.textContent = el.classList.contains('off') ? '✕' : ''; },
   'add-load-row': () => { syncLoadFromDOM(); modalLoad.push({ classId: state.classes[0] ? state.classes[0].id : '', subjectId: '', hours: 0 }); const c = state.classes[0]; if (c) { const subs = classSubjectHours(c); modalLoad[modalLoad.length - 1].subjectId = subs[0] ? subs[0].subjectId : ''; } refreshLoadEditor(); updateLoadSum(); },
   'del-load-row': el => { syncLoadFromDOM(); modalLoad.splice(parseInt(el.dataset.idx, 10), 1); refreshLoadEditor(); updateLoadSum(); },
@@ -971,7 +1006,7 @@ const changeHandlers = {
 function bindGlobal() {
   $('#tabs').addEventListener('click', e => { const b = e.target.closest('button[data-tab]'); if (!b) return; currentTab = b.dataset.tab; render(); });
   $('#backupBtn').addEventListener('click', backupMenu);
-  const help = $('#helpBtn'); if (help) help.addEventListener('click', () => toast('使用說明將於重構完成後更新'));
+  const help = $('#helpBtn'); if (help) help.addEventListener('click', helpModal);
   document.addEventListener('click', e => { const el = e.target.closest('[data-action]'); if (!el) return; const fn = clickHandlers[el.dataset.action]; if (fn) fn(el, e); });
   document.addEventListener('change', e => { const el = e.target.closest('[data-change]'); if (!el) return; const fn = changeHandlers[el.dataset.change]; if (fn) fn(el, e); });
   $('#versionTag').textContent = APP_VERSION;
@@ -983,6 +1018,7 @@ async function init() {
   if (!state || state.schema !== SCHEMA) { state = defaultState(); await save(); }
   bindGlobal();
   render();
+  if (!state.helpSeen) { helpModal(); state.helpSeen = true; save(); }
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => { });
 }
 init();
