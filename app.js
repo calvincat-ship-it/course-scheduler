@@ -5,7 +5,7 @@
    資料層：IndexedDB 單一 state 文件（in-memory + 整包持久化）
    ========================================================================== */
 
-const APP_VERSION = 'v01.02';
+const APP_VERSION = 'v01.03';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 
@@ -85,6 +85,7 @@ function migrate(s) {
     delete p.lesson;
   }
   for (const k of ['classes', 'teachers', 'subjects', 'rooms', 'assignments']) s[k] = s[k] || [];
+  s.assignments.forEach(a => { if (typeof a.coteach !== 'string') a.coteach = ''; }); // v01.03 協同教學
   s.slots = s.slots || {};
   if (typeof s.helpSeen !== 'boolean') s.helpSeen = false;
   s.version = APP_VERSION;
@@ -140,6 +141,28 @@ function assignmentsForClass(classId) {
 }
 function refCount(pred) { return state.assignments.filter(pred).length; }
 
+/* 協同教學：同一 coteach 群組的配課須排在同一時段 */
+const coteachMembers = gid => (gid ? state.assignments.filter(a => a.coteach === gid) : []);
+function cleanupCoteachSingletons() {
+  const count = {};
+  state.assignments.forEach(a => { if (a.coteach) count[a.coteach] = (count[a.coteach] || 0) + 1; });
+  state.assignments.forEach(a => { if (a.coteach && count[a.coteach] < 2) a.coteach = ''; });
+}
+function applyCoteach(meId, memberIds) {
+  const me = assignmentById(meId);
+  if (!me) return;
+  const oldGroup = me.coteach || '';
+  const full = [meId, ...memberIds.filter(id => id !== meId)];
+  if (full.length <= 1) {
+    me.coteach = '';
+  } else {
+    const groupId = oldGroup || uid();
+    full.forEach(id => { const a = assignmentById(id); if (a) a.coteach = groupId; });
+    if (oldGroup) state.assignments.forEach(a => { if (a.coteach === oldGroup && !full.includes(a.id)) a.coteach = ''; });
+  }
+  cleanupCoteachSingletons();
+}
+
 /* ---------- Conflict engine ---------- */
 function computeConflicts() {
   const conflicts = {}; // slotKey -> [reason]
@@ -157,6 +180,9 @@ function computeConflicts() {
     for (let i = 0; i < list.length; i++) {
       for (let j = i + 1; j < list.length; j++) {
         const A = list[i], B = list[j];
+        // 同一協同群組彼此共用教師/教室是刻意的，不算衝堂
+        const sameGroup = A.a.coteach && A.a.coteach === B.a.coteach;
+        if (sameGroup) continue;
         if (A.a.teacherId && A.a.teacherId === B.a.teacherId) {
           const msg = '教師衝堂：' + teacherName(A.a.teacherId);
           add(A.key, msg); add(B.key, msg);
@@ -165,6 +191,19 @@ function computeConflicts() {
           const msg = '教室衝堂：' + roomName(A.a.roomId);
           add(A.key, msg); add(B.key, msg);
         }
+      }
+    }
+  }
+  // 協同未同步：同群組其他班沒排在同一格
+  for (const key in state.slots) {
+    const a = assignmentById(state.slots[key]);
+    if (!a || !a.coteach) continue;
+    const [, day, period] = key.split('|');
+    for (const m of coteachMembers(a.coteach)) {
+      if (m.id === a.id) continue;
+      if (state.slots[slotKey(m.classId, day, period)] !== m.id) {
+        add(key, '協同未同步：' + ((classById(m.classId) || {}).name || '') + ' 同節未排');
+        break;
       }
     }
   }
@@ -286,7 +325,7 @@ function paletteHTML(classId) {
         style="border-left-color:${color}" data-action="select-assignment" data-id="${a.id}">
         <div>
           <div class="chip-name">${esc(subjectName(a.subjectId))}</div>
-          <div class="chip-sub">${esc(teacherName(a.teacherId))}${a.roomId ? ' · ' + esc(roomName(a.roomId)) : ''}${a.consecutive ? ' · 連堂' : ''}</div>
+          <div class="chip-sub">${esc(teacherName(a.teacherId))}${a.roomId ? ' · ' + esc(roomName(a.roomId)) : ''}${a.consecutive ? ' · 連堂' : ''}${a.coteach ? ' · 🔗協同' : ''}</div>
         </div>
         ${cnt}
       </div>`;
@@ -316,9 +355,9 @@ function timetableHTML(classId, conflicts, editable) {
         html += `<td class="cell ${editable ? 'placeable' : ''}" ${editable ? `data-action="cell-click" data-key="${key}"` : ''}
           title="${conf ? esc(conf.join('；')) : ''}">
           <div class="cell-lesson ${conf ? 'conflict' : ''}" style="background:${color};color:${textOn(color)}">
-            ${esc(subjectName(a.subjectId))}
+            ${a.coteach ? '🔗' : ''}${esc(subjectName(a.subjectId))}
             <small>${esc(teacherName(a.teacherId))}${a.roomId ? '·' + esc(roomName(a.roomId)) : ''}</small>
-            ${conf ? `<span class="conf-mark">⚠ 衝堂</span>` : ''}
+            ${conf ? `<span class="conf-mark">⚠ ${conf.some(c => c.startsWith('協同')) ? '協同未同步' : '衝堂'}</span>` : ''}
           </div></td>`;
       } else if (open) {
         html += `<td class="cell ${editable ? 'placeable' : ''}" ${editable ? `data-action="cell-click" data-key="${key}"` : ''}></td>`;
@@ -371,7 +410,7 @@ function viewAssignments() {
       : `<span class="pill amber">${placed}/${a.periods}</span>`;
     return `<tr>
       <td>${esc((classById(a.classId) || {}).name || '?')}</td>
-      <td><span class="pill" style="background:${subjectColor(a.subjectId)};color:${textOn(subjectColor(a.subjectId))}">${esc(subjectName(a.subjectId))}</span></td>
+      <td><span class="pill" style="background:${subjectColor(a.subjectId)};color:${textOn(subjectColor(a.subjectId))}">${esc(subjectName(a.subjectId))}</span>${a.coteach ? ` <span class="pill blue" title="協同教學：${esc(coteachMembers(a.coteach).filter(m => m.id !== a.id).map(m => (classById(m.classId) || {}).name).join('、'))}">🔗協同</span>` : ''}</td>
       <td>${esc(teacherName(a.teacherId))}</td>
       <td>${a.periods}</td>
       <td>${a.roomId ? esc(roomName(a.roomId)) : '<span style="color:var(--muted)">—</span>'}</td>
@@ -387,12 +426,28 @@ function viewAssignments() {
     <tbody>${rows}</tbody></table></div>`;
 }
 
+function coteachPickerHTML(subjectId, meId, groupId) {
+  const cands = state.assignments.filter(a => a.id !== meId && a.subjectId === subjectId);
+  if (cands.length === 0)
+    return `<div class="hint" style="color:var(--muted)">目前沒有其他班的同科目配課可協同。先建立另一班的同科目配課，再回來勾選即可。</div>`;
+  return cands.map(a => {
+    const checked = groupId && a.coteach === groupId;
+    const otherGroup = a.coteach && a.coteach !== groupId;
+    return `<label class="checkbox" style="margin-bottom:6px;font-weight:400">
+      <input type="checkbox" data-coteach data-id="${a.id}" ${checked ? 'checked' : ''}>
+      ${esc((classById(a.classId) || {}).name || '')} · ${esc(teacherName(a.teacherId))}（${a.periods}節）${otherGroup ? ' <span class="pill amber">已在其他協同組</span>' : ''}
+    </label>`;
+  }).join('');
+}
+
 function assignmentModal(existing) {
   if (state.classes.length === 0 || state.subjects.length === 0 || state.teachers.length === 0) {
     openModal({ title: '無法新增配課', body: `<p>請先建立至少一個<b>班級</b>、<b>科目</b>與<b>教師</b>。</p>` });
     return;
   }
   const a = existing || { classId: state.classes[0].id, subjectId: state.subjects[0].id, teacherId: state.teachers[0].id, periods: 1, roomId: '', consecutive: false };
+  const meId = existing ? existing.id : '';
+  const groupId = existing ? (existing.coteach || '') : '';
   const opt = (arr, sel, label) => arr.map(x => `<option value="${x.id}" ${x.id === sel ? 'selected' : ''}>${esc(label(x))}</option>`).join('');
   openModal({
     title: existing ? '編輯配課' : '新增配課',
@@ -405,7 +460,9 @@ function assignmentModal(existing) {
         <label class="field"><span>專科教室（可留空）</span>
           <select id="aRoom"><option value="">— 不需要 —</option>${opt(state.rooms, a.roomId, x => x.name)}</select></label>
       </div>
-      <label class="checkbox"><input type="checkbox" id="aConsec" ${a.consecutive ? 'checked' : ''}> 需連堂</label>`,
+      <label class="checkbox" style="margin-bottom:12px"><input type="checkbox" id="aConsec" ${a.consecutive ? 'checked' : ''}> 需連堂</label>
+      <label class="field" style="margin-bottom:4px"><span>🔗 協同教學（勾選要與此課「同時段一起上」的其他班同科目配課）</span></label>
+      <div id="coteachPicker">${coteachPickerHTML(a.subjectId, meId, groupId)}</div>`,
     onSave: () => {
       const periods = parseInt($('#aPeriods').value, 10);
       if (!periods || periods < 1) { toast('請輸入每週節數'); return false; }
@@ -413,11 +470,19 @@ function assignmentModal(existing) {
         classId: $('#aClass').value, subjectId: $('#aSubject').value, teacherId: $('#aTeacher').value,
         periods, roomId: $('#aRoom').value, consecutive: $('#aConsec').checked,
       };
-      if (existing) Object.assign(existing, data);
-      else state.assignments.push({ id: uid(), ...data });
+      let id;
+      if (existing) { Object.assign(existing, data); id = existing.id; }
+      else { id = uid(); state.assignments.push({ id, ...data, coteach: '' }); }
+      const members = Array.from(document.querySelectorAll('#coteachPicker input[data-coteach]:checked')).map(el => el.dataset.id);
+      applyCoteach(id, members);
       save(); render(); toast('已儲存配課');
       return true;
     },
+  });
+  const subSel = $('#aSubject');
+  if (subSel) subSel.addEventListener('change', () => {
+    const picker = $('#coteachPicker');
+    if (picker) picker.innerHTML = coteachPickerHTML(subSel.value, meId, groupId);
   });
 }
 
@@ -788,7 +853,8 @@ function helpContent() {
       <li><b>教室</b>：建立會搶用的場地（電腦教室、自然教室、體育館…），排課時會檢查同時段是否被兩班同用。</li>
       <li><b>教師</b>：姓名、類別、<b>每週節數上限</b>；下方格子點一下出現 <b>✕</b> ＝該時段不排課（再點取消）。</li>
       <li><b>班級</b>：新增班名並選年級。</li>
-      <li><b>配課</b>：一筆＝一門課＝<b>班級 × 科目 × 教師 × 每週節數</b>（可指定教室／連堂）。這是排課的清單。</li>
+      <li><b>配課</b>：一筆＝一門課＝<b>班級 × 科目 × 教師 × 每週節數</b>（可指定教室／連堂）。這是排課的清單。
+        <br>🔗 <b>協同教學</b>：若某課要幾個班<b>同時段一起上</b>（如一忠、一孝的生活課），在配課裡勾選要協同的其他班（同科目）。排課時只要排其中一班，其他班會<b>自動排到同一格</b>；同群組彼此不算衝堂，若沒對齊會顯示「協同未同步」。</li>
     </ul>
 
     <h4>三、排課（核心）</h4>
@@ -882,6 +948,7 @@ function delAssignment(id) {
   confirmDelete(`刪除此配課（${subjectName(a.subjectId)}）？${placed ? '已排的 ' + placed + ' 節將一併移除。' : ''}`, () => {
     for (const k in state.slots) if (state.slots[k] === id) delete state.slots[k];
     state.assignments = state.assignments.filter(x => x.id !== id);
+    cleanupCoteachSingletons();
     if (selectedAssignmentId === id) selectedAssignmentId = null;
   });
 }
@@ -921,10 +988,30 @@ const clickHandlers = {
   },
   'cell-click': el => {
     const key = el.dataset.key;
-    if (state.slots[key]) { delete state.slots[key]; save(); render(); return; }
+    const [, day, period] = key.split('|');
+    if (state.slots[key]) {
+      const a = assignmentById(state.slots[key]);
+      delete state.slots[key];
+      // 協同：一併移除同群組其他班同一格
+      if (a && a.coteach) coteachMembers(a.coteach).forEach(m => {
+        if (m.id === a.id) return;
+        const mk = slotKey(m.classId, day, period);
+        if (state.slots[mk] === m.id) delete state.slots[mk];
+      });
+      save(); render(); return;
+    }
     if (!selectedAssignmentId) { toast('先在左側點選一個配課'); return; }
+    const sel = assignmentById(selectedAssignmentId);
     state.slots[key] = selectedAssignmentId;
+    // 協同：同時把同群組其他班排入同一格（僅填入該班的空格）
+    let linked = 0;
+    if (sel && sel.coteach) coteachMembers(sel.coteach).forEach(m => {
+      if (m.id === sel.id) return;
+      const mk = slotKey(m.classId, day, period);
+      if (!state.slots[mk]) { state.slots[mk] = m.id; linked++; }
+    });
     save(); render();
+    if (linked) toast(`協同教學：同時排入其他 ${linked} 班`);
   },
 
   'add-period': () => {

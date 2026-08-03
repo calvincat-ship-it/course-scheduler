@@ -5,7 +5,15 @@
 ## 最後更新
 - 時間：2026-08-03
 - 機器：桌機
-- 版本：v01.02（節次表改每節×每日勾選）
+- 版本：v01.03（協同教學）
+
+## v01.03 變更
+- **協同教學**：`assignment.coteach`（群組 id）；同組配課須排同一時段。
+  - 配課 modal 加「🔗 協同教學」勾選區（列同科目其他班；隨科目下拉刷新 `coteachPickerHTML`）；`applyCoteach(meId, memberIds)` 統一群組、`cleanupCoteachSingletons()` 清落單；刪配課後也清。migrate 補 `coteach:''`。
+  - 排課：放課時同組其他班自動排入同一格（僅填空格）、移除時一併移除（cell-click handler）。
+  - 衝堂引擎：同組彼此**跳過**教師/教室衝堂；新增「**協同未同步**」檢查（同組沒排同格）。群組外仍正常判衝堂。
+  - 視覺：協同格顯示 🔗、調色盤/配課清單標「🔗協同」、conf-mark 依原因顯示「協同未同步」或「衝堂」。
+- 版本三處同步 v01.03（APP_VERSION、sw、index versionTag 由 JS 覆寫）。
 
 ## v01.02 變更
 - **節次表由整週 `lesson` 布林 → 每節每日 `days:[dayNums]` 陣列**。設定頁每節顯示「週一～週五」勾選格（欄位依上課日）；未勾的格子在排課盤面/教師課表顯示灰色斜紋 `.cell.blocked` 不可放；整節無任何上課日＝分隔列（isLessonPeriod 判定）。
