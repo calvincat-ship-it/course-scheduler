@@ -5,7 +5,21 @@
 ## 最後更新
 - 時間：2026-08-03
 - 機器：桌機
-- 版本：v01.05（分組教學：一筆配課可含多組不同老師）
+- 版本：**redesign 分支 v02.00（重構進行中）**；main 仍為 v01.05（同仁使用中，未動）
+
+## 🚧 進行中：v02 大改版（redesign 分支）
+> 詳見 `DESIGN.md`。**期間不 push main、不部署**（只本機 preview 測試）。全部完成經使用者確認後才合併 main。
+- 年段＝六個年級；舊資料清空（schema 2，載入舊資料即重置）。
+- **Batch 1 已完成（本機驗證通過、無 console error）**：
+  - 新模型 defaultState（schema:2、6 年級、全域節次定義 isBreak、grade.periodDays、grade.subjectHours）。
+  - ① 科目：name/color/**allowGrouping**（可分組教學）CRUD。
+  - ② 年級：6 年級分頁；2.1 節次表 grid（每節×上課日勾選、即時可用節數）；2.2 科目節數卡（勾科目+填節數，Σ節數 vs 可用節數即時相符檢核＋年級 ✓）。
+  - 設定：上課日、節次定義（isBreak）、排課選項、備份(schema 檢查)。
+  - ③班級/④教師/⑤排課/輸出＝stub「開發中」。
+- **下一步：Batch 2（班級）** — 選年級→課程(科目+節數)強制沿用年級 2.2；協同教學設定（預設同年級+同科目）。
+- 續跑提醒：在 redesign 分支；`git checkout redesign`；勿 push main/部署。
+
+## （封存）main v01.05 之前的變更紀錄
 
 ## v01.05 變更
 - **分組教學**：配課模型 `teacherId/roomId` → **`groups:[{teacherId,roomId,label}]`**（1 組＝一般課；2 組以上＝分組，同時段拆組不同老師）。migrate 自動轉舊資料並刪除舊欄位。
