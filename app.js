@@ -86,6 +86,7 @@ const subjectName = id => (subjectById(id) || {}).name || '?';
 const gradeName = id => (gradeById(id) || {}).name || '?';
 const activeDays = () => state.settings.days.slice().sort((a, b) => a - b);
 const lessonPeriods = () => state.settings.periods.filter(p => !p.isBreak);
+const slotKey = (c, d, p) => `${c}|${d}|${p}`;
 
 function textOn(hex) {
   const h = hex.replace('#', '');
@@ -143,8 +144,8 @@ function render() {
     case 'grades': view.innerHTML = viewGrades(); break;
     case 'classes': view.innerHTML = viewClasses(); break;
     case 'teachers': view.innerHTML = viewTeachers(); break;
-    case 'schedule': view.innerHTML = stubView('⑤ 排課', 'Batch 4'); break;
-    case 'output': view.innerHTML = stubView('課表輸出', 'Batch 4'); break;
+    case 'schedule': view.innerHTML = viewSchedule(); break;
+    case 'output': view.innerHTML = viewOutput(); break;
     case 'settings': view.innerHTML = viewSettings(); break;
   }
 }
@@ -164,15 +165,16 @@ function viewSubjects() {
   const rows = state.subjects.map(s => `<tr>
     <td><span class="pill" style="background:${s.color};color:${textOn(s.color)}">${esc(s.name)}</span></td>
     <td>${s.allowGrouping ? '<span class="pill amber">👥 可分組</span>' : '<span style="color:var(--muted)">—</span>'}</td>
+    <td>${s.consecutive ? '<span class="pill blue">⏱ 需連堂</span>' : '<span style="color:var(--muted)">—</span>'}</td>
     <td class="row-actions">
       <button class="icon-btn" data-action="edit-subject" data-id="${s.id}">✏️</button>
       <button class="icon-btn" data-action="del-subject" data-id="${s.id}">🗑️</button>
     </td></tr>`).join('');
   return head + `<div class="card"><table class="data">
-    <thead><tr><th>科目</th><th>分組教學</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
+    <thead><tr><th>科目</th><th>分組教學</th><th>連堂</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 function subjectModal(existing) {
-  const s = existing || { name: '', color: COLORS[state.subjects.length % COLORS.length], allowGrouping: false };
+  const s = existing || { name: '', color: COLORS[state.subjects.length % COLORS.length], allowGrouping: false, consecutive: false };
   openModal({
     title: existing ? '編輯科目' : '新增科目',
     body: `
@@ -180,11 +182,12 @@ function subjectModal(existing) {
         <label class="field" style="flex:2"><span>科目名稱</span><input type="text" id="sName" value="${esc(s.name)}"></label>
         <label class="field" style="flex:1"><span>顏色</span><input type="color" id="sColor" value="${s.color}" style="height:40px;padding:2px"></label>
       </div>
-      <label class="checkbox"><input type="checkbox" id="sGroup" ${s.allowGrouping ? 'checked' : ''}> 👥 可分組教學（同班多師同時上，配課不計教師衝堂、排課可同節）</label>`,
+      <label class="checkbox" style="margin-bottom:10px"><input type="checkbox" id="sGroup" ${s.allowGrouping ? 'checked' : ''}> 👥 可分組教學（同班多師同時上，配課不計教師衝堂、排課可同節）</label>
+      <label class="checkbox"><input type="checkbox" id="sConsec" ${s.consecutive ? 'checked' : ''}> ⏱ 需連堂（排課時兩節相鄰接續上）</label>`,
     onSave: () => {
       const name = $('#sName').value.trim();
       if (!name) { toast('請輸入科目名稱'); return false; }
-      const data = { name, color: $('#sColor').value, allowGrouping: $('#sGroup').checked };
+      const data = { name, color: $('#sColor').value, allowGrouping: $('#sGroup').checked, consecutive: $('#sConsec').checked };
       if (existing) Object.assign(existing, data); else state.subjects.push({ id: uid(), ...data });
       save(); render(); toast('已儲存科目');
       return true;
@@ -538,6 +541,215 @@ function staffingReportModal() {
 }
 
 /* ==========================================================================
+   ⑤ 排課 + 課表輸出（新模型：格子放科目、老師由 teacher.load 推得）
+   ========================================================================== */
+let selectedClassId = null;
+let selectedSubjectId = null;
+let outputMode = 'class';
+let outputClassId = null;
+let outputTeacherId = null;
+
+const subjectPlaced = (classId, sid) => { let n = 0; for (const k in state.slots) if (k.startsWith(classId + '|') && state.slots[k] === sid) n++; return n; };
+const classesCoteachTogether = (a, b, sid) => { const ca = classById(a), cb = classById(b); return ca && cb && ca.coteach && cb.coteach && ca.coteach[sid] && ca.coteach[sid] === cb.coteach[sid]; };
+function adjacentOpenPeriod(grade, periodId, day, dir) {
+  const arr = state.settings.periods; const i = arr.findIndex(p => p.id === periodId);
+  if (i < 0) return null; const nb = arr[i + dir];
+  if (!nb || nb.isBreak || !gradePeriodHasDay(grade, nb.id, day)) return null;
+  return nb.id;
+}
+function teacherScheduled(t) { return (t.load || []).reduce((s, L) => s + subjectPlaced(L.classId, L.subjectId), 0); }
+
+function computeConflicts() {
+  const conflicts = {};
+  const add = (k, r) => { (conflicts[k] = conflicts[k] || []); if (!conflicts[k].includes(r)) conflicts[k].push(r); };
+  const byDP = {};
+  for (const key in state.slots) {
+    const sid = state.slots[key]; const [classId, day, period] = key.split('|'); const dp = day + '|' + period;
+    loadsForClassSubject(classId, sid).forEach(x => (byDP[dp] = byDP[dp] || []).push({ key, classId, subjectId: sid, teacherId: x.teacher.id }));
+  }
+  for (const dp in byDP) {
+    const list = byDP[dp];
+    for (let i = 0; i < list.length; i++) for (let j = i + 1; j < list.length; j++) {
+      const A = list[i], B = list[j];
+      if (A.teacherId && A.teacherId === B.teacherId) {
+        const coTogether = A.subjectId === B.subjectId && A.classId !== B.classId && classesCoteachTogether(A.classId, B.classId, A.subjectId);
+        if (!coTogether) { const msg = '教師衝堂：' + teacherName(A.teacherId); add(A.key, msg); add(B.key, msg); }
+      }
+    }
+  }
+  for (const key in state.slots) {
+    const sid = state.slots[key]; const [classId, day, period] = key.split('|');
+    loadsForClassSubject(classId, sid).forEach(x => { if ((x.teacher.unavailable || []).includes(day + '|' + period)) add(key, '教師不排課時段：' + x.teacher.name); });
+  }
+  for (const key in state.slots) {
+    const sid = state.slots[key]; const [classId, day, period] = key.split('|');
+    const c = classById(classId); const gid = c && c.coteach && c.coteach[sid]; if (!gid) continue;
+    const partners = state.classes.filter(x => x.id !== classId && x.coteach && x.coteach[sid] === gid);
+    for (const p of partners) { if (state.slots[slotKey(p.id, day, period)] !== sid) { add(key, '協同未同步：' + p.name + ' 同節未排'); break; } }
+  }
+  for (const key in state.slots) {
+    const sid = state.slots[key]; const s = subjectById(sid); if (!s || !s.consecutive) continue;
+    const [classId, dayStr, period] = key.split('|'); const day = parseInt(dayStr, 10);
+    const g = classGrade(classById(classId)); if (!g) continue;
+    const prev = adjacentOpenPeriod(g, period, day, -1), next = adjacentOpenPeriod(g, period, day, +1);
+    const paired = (prev && state.slots[slotKey(classId, day, prev)] === sid) || (next && state.slots[slotKey(classId, day, next)] === sid);
+    if (!paired) add(key, '連堂未相鄰');
+  }
+  return conflicts;
+}
+const teacherName = id => (teacherById(id) || {}).name || '?';
+function subjectTeachersLabel(classId, sid) { return loadsForClassSubject(classId, sid).map(x => x.teacher.name).join('｜') || '（未指派）'; }
+
+function placeSubject(classId, day, period, sid) {
+  const dNum = parseInt(day, 10);
+  const key = slotKey(classId, day, period);
+  if (!state.slots[key]) state.slots[key] = sid;
+  let linked = 0;
+  const c = classById(classId); const gid = c && c.coteach && c.coteach[sid];
+  if (gid) state.classes.filter(x => x.id !== classId && x.coteach && x.coteach[sid] === gid).forEach(p => {
+    const g = classGrade(p); const mk = slotKey(p.id, day, period);
+    if (g && gradePeriodHasDay(g, period, dNum) && !state.slots[mk]) { state.slots[mk] = sid; linked++; }
+  });
+  return linked;
+}
+
+function viewSchedule() {
+  if (state.classes.length === 0) return emptyState('尚未建立班級', '請先完成 ①科目 ②年級 ③班級 ④教師，再來排課。');
+  if (!selectedClassId || !classById(selectedClassId)) selectedClassId = state.classes[0].id;
+  const conflicts = computeConflicts();
+  const totalConf = Object.keys(conflicts).length;
+  const classOpts = state.classes.map(c => `<option value="${c.id}" ${c.id === selectedClassId ? 'selected' : ''}>${esc(c.name)}（${esc(gradeName(c.gradeId))}）</option>`).join('');
+  return `
+    <div class="page-head no-print"><h2>⑤ 排課</h2><div class="hint">左側點科目，再點課表空格放課；點已排的格子可移除。</div></div>
+    ${totalConf ? `<div class="conflict-banner no-print">⚠ 全校目前有 ${totalConf} 個需注意的格子（教師衝堂／不排課／協同未同步／連堂未相鄰）。</div>` : ''}
+    <div class="board-toolbar no-print"><label>班級：</label><select id="scheduleClass" data-change="schedule-class">${classOpts}</select></div>
+    <div class="schedule-layout">
+      <div class="palette card no-print"><div class="card-body"><h4>科目調色盤</h4>${paletteHTML(selectedClassId)}</div></div>
+      <div class="card"><div class="card-body">
+        <div class="grid-wrap">${classTimetableHTML(selectedClassId, conflicts, true)}</div>
+        <div class="teacher-load no-print">${teacherLoadHTML()}</div>
+      </div></div>
+    </div>`;
+}
+function paletteHTML(classId) {
+  const c = classById(classId); const subs = classSubjectHours(c);
+  if (subs.length === 0) return `<div class="empty">此班年級尚未設定科目節數</div>`;
+  return subs.map(sh => {
+    const s = subjectById(sh.subjectId); if (!s) return '';
+    const placed = subjectPlaced(classId, sh.subjectId); const done = placed >= sh.hours, over = placed > sh.hours;
+    const partners = classCoteachPartners(c, sh.subjectId);
+    return `<div class="chip ${sh.subjectId === selectedSubjectId ? 'selected' : ''} ${done && !over ? 'done' : ''}" style="border-left-color:${s.color}" data-action="select-subject" data-id="${sh.subjectId}">
+      <div><div class="chip-name">${s.allowGrouping ? '👥' : ''}${s.consecutive ? '⏱' : ''}${esc(s.name)}</div>
+        <div class="chip-sub">${esc(subjectTeachersLabel(classId, sh.subjectId))}${partners.length ? ' · 🔗協同' : ''}</div></div>
+      <span class="chip-count" style="color:${over ? 'var(--danger)' : done ? 'var(--ok)' : 'var(--muted)'}">${placed}/${sh.hours}</span>
+    </div>`;
+  }).join('');
+}
+function classTimetableHTML(classId, conflicts, editable) {
+  const days = activeDays(); const c = classById(classId); const g = classGrade(c);
+  let html = `<div class="print-only" style="text-align:center;font-weight:700;font-size:16px;margin-bottom:8px">${esc((c || {}).name || '')} 課表</div>`;
+  html += `<table class="timetable"><thead><tr><th class="period-th">節次</th>${days.map(d => `<th>${DAY_LABELS[d]}</th>`).join('')}</tr></thead><tbody>`;
+  for (const p of state.settings.periods) {
+    if (p.isBreak) { html += `<tr class="break-row"><td colspan="${days.length + 1}">${esc(p.label)}　${esc(p.start)}–${esc(p.end)}</td></tr>`; continue; }
+    html += `<tr><td class="period-th">${esc(p.label)}<small>${esc(p.start)}–${esc(p.end)}</small></td>`;
+    for (const d of days) {
+      const open = g && gradePeriodHasDay(g, p.id, d);
+      const key = slotKey(classId, d, p.id); const sid = state.slots[key]; const conf = conflicts[key];
+      if (sid) {
+        const s = subjectById(sid); const color = s ? s.color : '#94a3b8';
+        const co = classCoteachPartners(c, sid).length;
+        html += `<td class="cell ${editable ? 'placeable' : ''}" ${editable ? `data-action="cell-click" data-key="${key}"` : ''} title="${conf ? esc(conf.join('；')) : ''}">
+          <div class="cell-lesson ${conf ? 'conflict' : ''}" style="background:${color};color:${textOn(color)}">
+            ${co ? '🔗' : ''}${s && s.allowGrouping ? '👥' : ''}${esc(subjectName(sid))}
+            <small>${esc(subjectTeachersLabel(classId, sid))}</small>
+            ${conf ? `<span class="conf-mark">⚠ ${conf.some(x => x.includes('衝堂') || x.includes('不排課')) ? '衝堂' : conf.some(x => x.startsWith('協同')) ? '協同未同步' : '連堂未相鄰'}</span>` : ''}
+          </div></td>`;
+      } else if (open) {
+        html += `<td class="cell ${editable ? 'placeable' : ''}" ${editable ? `data-action="cell-click" data-key="${key}"` : ''}></td>`;
+      } else {
+        html += `<td class="cell blocked" title="此節本日不上課"></td>`;
+      }
+    }
+    html += `</tr>`;
+  }
+  html += `</tbody></table>`;
+  return html;
+}
+function teacherLoadHTML() {
+  if (state.teachers.length === 0) return '';
+  const rows = state.teachers.map(t => {
+    const sched = teacherScheduled(t); const total = teacherLoadSum(t); const over = sched > total; const pct = total ? Math.min(100, sched / total * 100) : 0;
+    return `<tr><td>${esc(t.name)} <span class="pill gray">${esc(t.type || '')}</span></td>
+      <td style="width:200px"><div class="load-bar ${over ? 'over' : ''}"><span style="width:${pct}%"></span></div></td>
+      <td style="white-space:nowrap;color:${sched === total ? 'var(--ok)' : 'var(--muted)'};font-weight:700">${sched} / ${total} 節</td></tr>`;
+  }).join('');
+  return `<h4 style="margin:14px 0 8px">教師已排 / 應排</h4><table class="data"><tbody>${rows}</tbody></table>`;
+}
+
+function viewOutput() {
+  if (state.classes.length === 0) return emptyState('尚無資料', '請先完成前面步驟並排課。');
+  const conflicts = computeConflicts();
+  if (outputMode === 'class') { if (!outputClassId || !classById(outputClassId)) outputClassId = state.classes[0].id; }
+  else { if (state.teachers.length === 0) { outputMode = 'class'; outputClassId = state.classes[0].id; } else if (!outputTeacherId || !teacherById(outputTeacherId)) outputTeacherId = state.teachers[0].id; }
+  const modeSel = `<div class="board-toolbar no-print">
+      <label>類型：</label>
+      <select id="outMode" data-change="out-mode"><option value="class" ${outputMode === 'class' ? 'selected' : ''}>班級課表</option><option value="teacher" ${outputMode === 'teacher' ? 'selected' : ''}>教師課表</option></select>
+      ${outputMode === 'class'
+      ? `<select id="outClass" data-change="out-class">${state.classes.map(c => `<option value="${c.id}" ${c.id === outputClassId ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>`
+      : `<select id="outTeacher" data-change="out-teacher">${state.teachers.map(t => `<option value="${t.id}" ${t.id === outputTeacherId ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select>`}
+      <button class="ghost" data-action="print-out">🖨️ 列印 / 存 PDF</button>
+      <button class="ghost" data-action="csv-out">⬇️ 匯出 CSV</button></div>`;
+  const grid = outputMode === 'class' ? classTimetableHTML(outputClassId, conflicts, false) : teacherTimetableHTML(outputTeacherId, conflicts);
+  return `<div class="page-head no-print"><h2>課表輸出</h2></div>${modeSel}<div class="card"><div class="card-body"><div class="grid-wrap">${grid}</div></div></div>`;
+}
+function teacherTimetableHTML(teacherId, conflicts) {
+  const days = activeDays(); const t = teacherById(teacherId);
+  const teaches = new Set((t.load || []).map(L => L.classId + '|' + L.subjectId));
+  const map = {};
+  for (const key in state.slots) {
+    const sid = state.slots[key]; const [classId, day, period] = key.split('|');
+    if (!teaches.has(classId + '|' + sid)) continue;
+    (map[day + '|' + period] = map[day + '|' + period] || []).push({ classId, sid, key });
+  }
+  let html = `<div class="print-only" style="text-align:center;font-weight:700;font-size:16px;margin-bottom:8px">${esc((t || {}).name || '')} 教師課表</div>`;
+  html += `<table class="timetable"><thead><tr><th class="period-th">節次</th>${days.map(d => `<th>${DAY_LABELS[d]}</th>`).join('')}</tr></thead><tbody>`;
+  for (const p of state.settings.periods) {
+    if (p.isBreak) { html += `<tr class="break-row"><td colspan="${days.length + 1}">${esc(p.label)}</td></tr>`; continue; }
+    html += `<tr><td class="period-th">${esc(p.label)}<small>${esc(p.start)}–${esc(p.end)}</small></td>`;
+    for (const d of days) {
+      const hits = map[d + '|' + p.id];
+      if (hits && hits.length) {
+        const s = subjectById(hits[0].sid); const color = s ? s.color : '#94a3b8';
+        const conf = hits.some(h => conflicts[h.key]);
+        const label = hits.map(h => (classById(h.classId) || {}).name || '').join('、');
+        html += `<td class="cell"><div class="cell-lesson ${conf ? 'conflict' : ''}" style="background:${color};color:${textOn(color)}">${esc(label)}<small>${esc(subjectName(hits[0].sid))}</small></div></td>`;
+      } else html += `<td class="cell"></td>`;
+    }
+    html += `</tr>`;
+  }
+  html += `</tbody></table>`;
+  return html;
+}
+function exportCSV() {
+  const days = activeDays(); const rows = [['節次', ...days.map(d => DAY_LABELS[d])]]; let title = '';
+  if (outputMode === 'class') {
+    title = (classById(outputClassId) || {}).name || '班級';
+    for (const p of state.settings.periods) {
+      if (p.isBreak) continue;
+      rows.push([p.label, ...days.map(d => { const sid = state.slots[slotKey(outputClassId, d, p.id)]; return sid ? `${subjectName(sid)}/${subjectTeachersLabel(outputClassId, sid)}` : ''; })]);
+    }
+  } else {
+    title = (teacherById(outputTeacherId) || {}).name || '教師'; const t = teacherById(outputTeacherId);
+    const teaches = new Set((t.load || []).map(L => L.classId + '|' + L.subjectId)); const map = {};
+    for (const key in state.slots) { const sid = state.slots[key]; const [classId, day, period] = key.split('|'); if (!teaches.has(classId + '|' + sid)) continue; const dp = day + '|' + period; map[dp] = (map[dp] ? map[dp] + '、' : '') + `${(classById(classId) || {}).name || ''}/${subjectName(sid)}`; }
+    for (const p of state.settings.periods) { if (p.isBreak) continue; rows.push([p.label, ...days.map(d => map[d + '|' + p.id] || '')]); }
+  }
+  const csv = '﻿' + rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\r\n');
+  downloadBlob(csv, `課表_${title}.csv`, 'text/csv;charset=utf-8'); toast('已匯出 CSV');
+}
+function emptyState(title, sub) { return `<div class="card"><div class="empty"><div style="font-size:18px;font-weight:700;margin-bottom:6px">${esc(title)}</div><div>${esc(sub)}</div></div></div>`; }
+
+/* ==========================================================================
    設定（上課日 / 節次定義 / 排課選項）
    ========================================================================== */
 function viewSettings() {
@@ -674,6 +886,32 @@ const clickHandlers = {
   'move-period-up': el => movePeriod(el.dataset.pid, -1),
   'move-period-down': el => movePeriod(el.dataset.pid, 1),
 
+  'select-subject': el => { selectedSubjectId = (selectedSubjectId === el.dataset.id) ? null : el.dataset.id; render(); },
+  'cell-click': el => {
+    const key = el.dataset.key; const [classId, day, period] = key.split('|'); const dNum = parseInt(day, 10);
+    if (state.slots[key]) {
+      const sid = state.slots[key]; delete state.slots[key];
+      const c = classById(classId); const gid = c && c.coteach && c.coteach[sid];
+      if (gid) state.classes.filter(x => x.id !== classId && x.coteach && x.coteach[sid] === gid).forEach(p => { const mk = slotKey(p.id, day, period); if (state.slots[mk] === sid) delete state.slots[mk]; });
+      save(); render(); return;
+    }
+    if (!selectedSubjectId) { toast('先在左側點選一個科目'); return; }
+    const sid = selectedSubjectId; const s = subjectById(sid);
+    const notes = []; const linked = placeSubject(classId, day, period, sid);
+    if (linked) notes.push(`協同同步 ${linked} 班`);
+    if (s && s.consecutive && state.settings.autoPairConsecutive !== false && subjectPlaced(classId, sid) < classSubjectRequired(classId, sid)) {
+      const g = classGrade(classById(classId));
+      const next = adjacentOpenPeriod(g, period, dNum, +1), prev = adjacentOpenPeriod(g, period, dNum, -1);
+      const partner = (next && !state.slots[slotKey(classId, day, next)]) ? next : (prev && !state.slots[slotKey(classId, day, prev)]) ? prev : null;
+      if (partner) { const l2 = placeSubject(classId, day, partner, sid); notes.push('連堂成對排入相鄰節' + (l2 ? `（協同 ${l2} 班）` : '')); }
+      else notes.push('連堂：找不到相鄰空格');
+    }
+    save(); render(); if (notes.length) toast(notes.join('；'));
+  },
+
+  'print-out': () => window.print(),
+  'csv-out': exportCSV,
+
   'export-json': exportJSON,
   'import-json': importJSON,
 };
@@ -698,6 +936,10 @@ const changeHandlers = {
   },
   'load-hours': () => updateLoadSum(),
   'weekly-hours': () => updateLoadSum(),
+  'schedule-class': el => { selectedClassId = el.value; selectedSubjectId = null; render(); },
+  'out-mode': el => { outputMode = el.value; render(); },
+  'out-class': el => { outputClassId = el.value; render(); },
+  'out-teacher': el => { outputTeacherId = el.value; render(); },
 
   'grade-subj-on': el => {
     const g = gradeById(el.dataset.gid); if (!g) return;

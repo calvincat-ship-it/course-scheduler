@@ -20,7 +20,13 @@
 - **Batch 3 已完成（本機驗證通過、無 console error）**：④ 教師。teacher={name,type,weeklyHours,unavailable,load:[{classId,subjectId,hours}]}。
   - teacher modal：基本欄位＋配課編輯器(班級下拉→該班科目下拉→節數，modalLoad/loadEditorHTML/syncLoadFromDOM/updateLoadSum)＋不排課 grid。存檔閘門：Σload==weeklyHours 才收(4.2)。
   - 全校交叉檢核 `checkStaffing()`(4.3)：逐(班,科)比對 required vs 教師配課；**分組科目每組各需==required、不加總**；非分組 Σ==required；未指派/缺漏/超過/非分組多師 都列出(班+科+應配+狀況+老師)。教師頁狀態卡＋「檢查全校配課」報表 modal。
-- **下一步：Batch 4（排課改版 + 課表輸出）** — slot 放 subjectId；老師由 teacher.load 推得；分組科目多師同格不算衝堂；協同(class.coteach 同群組)同步放課且不計教室衝堂；連堂自動成對(沿用設定開關)；教師/班級課表輸出、列印、CSV。班級格開放與否＝該班年級 periodDays。
+- **Batch 4 已完成（本機驗證通過、無 console error）**：⑤ 排課 + 輸出。
+  - slot=`classId|day|period`→subjectId；老師由 loadsForClassSubject 推得。班級格開放＝該班年級 periodDays。
+  - computeConflicts（教師中心）：教師衝堂（同師不同班同節，**協同同群組共教則豁免**）、教師不排課、協同未同步、連堂未相鄰(subject.consecutive)。**教室概念已移除**（新流程無教室）。
+  - placeSubject：放科目＋協同同群組同步放（**day 需 parseInt 才能比對 periodDays**—此坑已修）；連堂 subject.consecutive 自動成對(沿用 autoPairConsecutive)。
+  - 科目加 consecutive 旗標(步驟5「依現在的介面」保留連堂)；分組多師同格自動不衝突。
+  - 輸出：班級表/教師表(協同合併顯示)/CSV/列印；調色盤 placed/required；教師已排/應排面板。
+- **下一步：Batch 5（收尾）** — 流程進度串接/導引、使用說明(App 內+使用說明.md 全面改寫新流程)、清乾淨 stub、最終本機全流程測試。**經使用者確認後才 merge main 上線**（改 sw/version、合併、push、Pages）。
 - 續跑提醒：在 redesign 分支；`git checkout redesign`；勿 push main/部署。
 
 ## （封存）main v01.05 之前的變更紀錄
