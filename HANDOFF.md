@@ -5,7 +5,11 @@
 ## 最後更新
 - 時間：2026-08-03
 - 機器：桌機
-- 版本：v01.00（MVP 骨架）
+- 版本：v01.01（MVP 骨架 + 已上線 + 使用說明）
+
+## v01.01 變更
+- 新增 App 內「❓ 使用說明」按鈕（頂列，openModal wide 可捲動）＋首次開啟自動彈出一次（`state.helpSeen` 旗標，migrate 補預設）。內容＝repo 內「使用說明.md」的精簡版（helpContent()）。
+- 另有完整 `使用說明.md`（GitHub 可讀）。
 
 ## 線上位置
 - Repo：https://github.com/calvincat-ship-it/course-scheduler

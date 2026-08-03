@@ -5,7 +5,7 @@
    資料層：IndexedDB 單一 state 文件（in-memory + 整包持久化）
    ========================================================================== */
 
-const APP_VERSION = 'v01.00';
+const APP_VERSION = 'v01.01';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 
@@ -69,6 +69,7 @@ function defaultState() {
     rooms: [],
     assignments: [],
     slots: {}, // `${classId}|${day}|${period}` -> assignmentId
+    helpSeen: false,
   };
 }
 
@@ -78,6 +79,7 @@ function migrate(s) {
   s.settings.periods = s.settings.periods || defaultState().settings.periods;
   for (const k of ['classes', 'teachers', 'subjects', 'rooms', 'assignments']) s[k] = s[k] || [];
   s.slots = s.slots || {};
+  if (typeof s.helpSeen !== 'boolean') s.helpSeen = false;
   s.version = APP_VERSION;
   return s;
 }
@@ -752,6 +754,62 @@ function importJSON() {
 }
 
 /* ==========================================================================
+   使用說明
+   ========================================================================== */
+function helpModal() {
+  openModal({ title: '使用說明　·　' + APP_VERSION, wide: true, body: helpContent() });
+}
+function helpContent() {
+  return `<div class="help">
+    <div class="help-note">📌 <b>三個重點：</b>①免安裝免登入，用瀏覽器開網址就能用。②資料只存在<b>你這台裝置</b>，不同人／不同裝置各自獨立、看不到彼此。③換裝置或清瀏覽器前，先用右上「備份」匯出。</div>
+
+    <h4>一、建立順序（照這個走最順）</h4>
+    <p class="help-flow">設定 ▸ 科目 ▸ 教室 ▸ 教師 ▸ 班級 ▸ <b>配課</b> ▸ <b>排課</b> ▸ 課表輸出</p>
+    <p>最少要有 <b>1 個班級、1 個科目、1 位教師</b>，才能建立配課並開始排課。</p>
+
+    <h4>二、各分頁</h4>
+    <ul>
+      <li><b>設定</b>：勾選上課日；編輯節次表。節次「上課節」打勾＝可排課；不打勾（午休等）在排課盤面顯示為灰色分隔線、不能放課。</li>
+      <li><b>科目</b>：新增名稱＋選顏色（課表上該科的顏色）。「需專科教室／預設連堂」為<b>註記用途</b>，實際設定在「配課」。</li>
+      <li><b>教室</b>：建立會搶用的場地（電腦教室、自然教室、體育館…），排課時會檢查同時段是否被兩班同用。</li>
+      <li><b>教師</b>：姓名、類別、<b>每週節數上限</b>；下方格子點一下出現 <b>✕</b> ＝該時段不排課（再點取消）。</li>
+      <li><b>班級</b>：新增班名並選年級。</li>
+      <li><b>配課</b>：一筆＝一門課＝<b>班級 × 科目 × 教師 × 每週節數</b>（可指定教室／連堂）。這是排課的清單。</li>
+    </ul>
+
+    <h4>三、排課（核心）</h4>
+    <ol>
+      <li>上方選<b>班級</b>。</li>
+      <li>左側「配課調色盤」<b>點一筆配課</b>（亮藍框），右邊數字 <code>已排/應排</code>。</li>
+      <li><b>點課表空格</b> → 放入該節；<b>點已排的格子</b> → 移除。</li>
+    </ol>
+    <p>系統即時檢查並以 🔴 <b>紅框＋「⚠ 衝堂」</b>標示（游標移上去看原因）：</p>
+    <ul>
+      <li><b>教師衝堂</b>：同一老師同一時段被排到兩班。</li>
+      <li><b>教室衝堂</b>：同一間專科教室同時段被兩班搶用。</li>
+      <li><b>教師不排課時段</b>：排到該老師設定的不排課格。</li>
+    </ul>
+    <p>上方紅色橫幅顯示全校衝堂數；下方「<b>教師節數負荷</b>」顯示各老師已排／上限，超過變紅。<b>系統只提醒、不阻止</b>，是否調整由你決定。</p>
+
+    <h4>四、課表輸出</h4>
+    <p>選「班級課表／教師課表」與對象 → <b>🖨️ 列印/存 PDF</b>（列印時選「另存為 PDF」）或 <b>⬇️ 匯出 CSV</b>（Excel 可開，中文正常）。</p>
+
+    <h4>五、備份與換裝置（重要）</h4>
+    <p>右上「<b>備份</b>」→ <b>匯出 JSON</b>（定期存一份）／<b>匯入 JSON</b>（<span style="color:var(--danger)">會覆蓋現有資料</span>）。換電腦：舊機匯出、新機匯入。</p>
+
+    <h4>六、常見問題</h4>
+    <ul>
+      <li><b>同事看得到我的課表／能共編嗎？</b>目前不行，各自獨立。要共編需之後升級雲端協作版。</li>
+      <li><b>重整會不會不見？</b>不會，自動存瀏覽器；但清除瀏覽器資料／無痕視窗會清掉，靠備份。</li>
+      <li><b>老師刪不掉？</b>該老師還被配課使用中會被擋，請先改／刪相關配課。</li>
+      <li><b>手機平板？</b>可以，瀏覽器選單「加入主畫面」即可像 App 使用、離線可用。</li>
+    </ul>
+
+    <div class="help-note">回報問題請描述：<b>在哪一頁、做了什麼、預期看到什麼、實際看到什麼</b>。Issues：github.com/calvincat-ship-it/course-scheduler/issues</div>
+  </div>`;
+}
+
+/* ==========================================================================
    Shared UI bits
    ========================================================================== */
 function emptyState(title, sub) {
@@ -914,6 +972,7 @@ function bindGlobal() {
     render();
   });
   $('#backupBtn').addEventListener('click', backupMenu);
+  $('#helpBtn').addEventListener('click', helpModal);
   document.addEventListener('click', e => {
     const el = e.target.closest('[data-action]');
     if (!el) return;
@@ -940,6 +999,7 @@ async function init() {
   else migrate(state);
   bindGlobal();
   render();
+  if (!state.helpSeen) { helpModal(); state.helpSeen = true; save(); }
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => { });
 }
 init();
