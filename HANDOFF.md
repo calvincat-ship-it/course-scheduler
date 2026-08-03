@@ -5,7 +5,15 @@
 ## 最後更新
 - 時間：2026-08-03
 - 機器：桌機
-- 版本：v01.04（連堂實作：自動成對＋未相鄰警示）
+- 版本：v01.05（分組教學：一筆配課可含多組不同老師）
+
+## v01.05 變更
+- **分組教學**：配課模型 `teacherId/roomId` → **`groups:[{teacherId,roomId,label}]`**（1 組＝一般課；2 組以上＝分組，同時段拆組不同老師）。migrate 自動轉舊資料並刪除舊欄位。
+  - 存取 helper：`assignmentGroups/isGrouped/teachersLabel/roomsLabel/assignmentUsesTeacher/assignmentUsesRoom`。
+  - **衝堂引擎逐組**：byDP 依每組展開授課實例比對教師/教室；教師不排課、teacherLoad、教師課表、CSV、刪教師/教室檢查全部改逐組。
+  - **配課 modal 分組編輯器**：`modalGroups` + `groupsEditorHTML/syncGroupsFromDOM/refreshGroupsEditor`；「＋新增分組」`add-group-row`、`del-group-row`；每列老師＋教室(＋2組以上顯示組名)。存檔 filter 有 teacherId 的組。
+  - 視覺：分組格/調色盤/配課清單標 👥；教師課表顯示 (組名)。
+- 目前限**班內分組**（同一班拆組）；跨班重組分組未支援。版本 v01.05（APP_VERSION、sw 同步）。
 
 ## v01.04 變更
 - **連堂功能化**（原本只是標籤）。`assignment.consecutive` 現在真的生效：

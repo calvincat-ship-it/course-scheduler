@@ -5,7 +5,7 @@
    資料層：IndexedDB 單一 state 文件（in-memory + 整包持久化）
    ========================================================================== */
 
-const APP_VERSION = 'v01.04';
+const APP_VERSION = 'v01.05';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 
@@ -88,6 +88,10 @@ function migrate(s) {
   }
   for (const k of ['classes', 'teachers', 'subjects', 'rooms', 'assignments']) s[k] = s[k] || [];
   s.assignments.forEach(a => { if (typeof a.coteach !== 'string') a.coteach = ''; }); // v01.03 協同教學
+  s.assignments.forEach(a => { // v01.05 分組教學：teacherId/roomId → groups[]
+    if (!Array.isArray(a.groups)) a.groups = [{ teacherId: a.teacherId || '', roomId: a.roomId || '', label: '' }];
+    delete a.teacherId; delete a.roomId;
+  });
   s.slots = s.slots || {};
   if (typeof s.helpSeen !== 'boolean') s.helpSeen = false;
   s.version = APP_VERSION;
@@ -134,7 +138,7 @@ function teacherLoad(teacherId) {
   let n = 0;
   for (const k in state.slots) {
     const a = assignmentById(state.slots[k]);
-    if (a && a.teacherId === teacherId) n++;
+    if (a && assignmentUsesTeacher(a, teacherId)) n++;
   }
   return n;
 }
@@ -142,6 +146,18 @@ function assignmentsForClass(classId) {
   return state.assignments.filter(a => a.classId === classId);
 }
 function refCount(pred) { return state.assignments.filter(pred).length; }
+
+/* 分組教學：一筆配課可含多組，各組自己的老師/教室。groups: [{teacherId, roomId, label}]
+   一般課＝1 組；分組教學＝2 組以上（同一時段拆組、不同老師）。 */
+const assignmentGroups = a => (Array.isArray(a.groups) && a.groups.length ? a.groups : [{ teacherId: a.teacherId || '', roomId: a.roomId || '', label: '' }]);
+const isGrouped = a => assignmentGroups(a).length > 1;
+const teachersLabel = a => assignmentGroups(a).map(g => teacherName(g.teacherId) + (g.label ? `(${g.label})` : '')).join('｜');
+function roomsLabel(a) {
+  const rs = assignmentGroups(a).map(g => (g.roomId ? roomName(g.roomId) : '')).filter(Boolean);
+  return rs.length ? [...new Set(rs)].join('｜') : '';
+}
+const assignmentUsesTeacher = (a, tid) => assignmentGroups(a).some(g => g.teacherId === tid);
+const assignmentUsesRoom = (a, rid) => assignmentGroups(a).some(g => g.roomId === rid);
 
 /* 協同教學：同一 coteach 群組的配課須排在同一時段 */
 const coteachMembers = gid => (gid ? state.assignments.filter(a => a.coteach === gid) : []);
@@ -197,7 +213,8 @@ function computeConflicts() {
     if (!a) continue;
     const [classId, day, period] = key.split('|');
     const dp = day + '|' + period;
-    (byDP[dp] = byDP[dp] || []).push({ key, classId, a });
+    // 每一分組都是一個「授課實例」（各自老師/教室）
+    assignmentGroups(a).forEach(g => (byDP[dp] = byDP[dp] || []).push({ key, classId, a, teacherId: g.teacherId, roomId: g.roomId }));
   }
   for (const dp in byDP) {
     const list = byDP[dp];
@@ -207,12 +224,12 @@ function computeConflicts() {
         // 同一協同群組彼此共用教師/教室是刻意的，不算衝堂
         const sameGroup = A.a.coteach && A.a.coteach === B.a.coteach;
         if (sameGroup) continue;
-        if (A.a.teacherId && A.a.teacherId === B.a.teacherId) {
-          const msg = '教師衝堂：' + teacherName(A.a.teacherId);
+        if (A.teacherId && A.teacherId === B.teacherId) {
+          const msg = '教師衝堂：' + teacherName(A.teacherId);
           add(A.key, msg); add(B.key, msg);
         }
-        if (A.a.roomId && A.a.roomId === B.a.roomId) {
-          const msg = '教室衝堂：' + roomName(A.a.roomId);
+        if (A.roomId && A.roomId === B.roomId) {
+          const msg = '教室衝堂：' + roomName(A.roomId);
           add(A.key, msg); add(B.key, msg);
         }
       }
@@ -244,13 +261,15 @@ function computeConflicts() {
       (next && state.slots[slotKey(classId, day, next)] === a.id);
     if (!paired) add(key, '連堂未相鄰');
   }
-  // teacher unavailable
+  // teacher unavailable（逐組檢查）
   for (const key in state.slots) {
     const a = assignmentById(state.slots[key]);
     if (!a) continue;
     const [, day, period] = key.split('|');
-    const t = teacherById(a.teacherId);
-    if (t && (t.unavailable || []).includes(day + '|' + period)) add(key, '教師不排課時段：' + t.name);
+    assignmentGroups(a).forEach(g => {
+      const t = teacherById(g.teacherId);
+      if (t && (t.unavailable || []).includes(day + '|' + period)) add(key, '教師不排課時段：' + t.name);
+    });
   }
   return conflicts;
 }
@@ -362,7 +381,7 @@ function paletteHTML(classId) {
         style="border-left-color:${color}" data-action="select-assignment" data-id="${a.id}">
         <div>
           <div class="chip-name">${esc(subjectName(a.subjectId))}</div>
-          <div class="chip-sub">${esc(teacherName(a.teacherId))}${a.roomId ? ' · ' + esc(roomName(a.roomId)) : ''}${a.consecutive ? ' · 連堂' : ''}${a.coteach ? ' · 🔗協同' : ''}</div>
+          <div class="chip-sub">${isGrouped(a) ? '👥' : ''}${esc(teachersLabel(a))}${roomsLabel(a) ? ' · ' + esc(roomsLabel(a)) : ''}${a.consecutive ? ' · 連堂' : ''}${a.coteach ? ' · 🔗協同' : ''}</div>
         </div>
         ${cnt}
       </div>`;
@@ -392,8 +411,8 @@ function timetableHTML(classId, conflicts, editable) {
         html += `<td class="cell ${editable ? 'placeable' : ''}" ${editable ? `data-action="cell-click" data-key="${key}"` : ''}
           title="${conf ? esc(conf.join('；')) : ''}">
           <div class="cell-lesson ${conf ? 'conflict' : ''}" style="background:${color};color:${textOn(color)}">
-            ${a.coteach ? '🔗' : ''}${esc(subjectName(a.subjectId))}
-            <small>${esc(teacherName(a.teacherId))}${a.roomId ? '·' + esc(roomName(a.roomId)) : ''}</small>
+            ${a.coteach ? '🔗' : ''}${isGrouped(a) ? '👥' : ''}${esc(subjectName(a.subjectId))}
+            <small>${esc(teachersLabel(a))}${roomsLabel(a) ? '·' + esc(roomsLabel(a)) : ''}</small>
             ${conf ? `<span class="conf-mark">⚠ ${conf.some(c => c.includes('衝堂')) ? '衝堂' : conf.some(c => c.startsWith('協同')) ? '協同未同步' : '連堂未相鄰'}</span>` : ''}
           </div></td>`;
       } else if (open) {
@@ -447,10 +466,10 @@ function viewAssignments() {
       : `<span class="pill amber">${placed}/${a.periods}</span>`;
     return `<tr>
       <td>${esc((classById(a.classId) || {}).name || '?')}</td>
-      <td><span class="pill" style="background:${subjectColor(a.subjectId)};color:${textOn(subjectColor(a.subjectId))}">${esc(subjectName(a.subjectId))}</span>${a.coteach ? ` <span class="pill blue" title="協同教學：${esc(coteachMembers(a.coteach).filter(m => m.id !== a.id).map(m => (classById(m.classId) || {}).name).join('、'))}">🔗協同</span>` : ''}</td>
-      <td>${esc(teacherName(a.teacherId))}</td>
+      <td><span class="pill" style="background:${subjectColor(a.subjectId)};color:${textOn(subjectColor(a.subjectId))}">${esc(subjectName(a.subjectId))}</span>${isGrouped(a) ? ` <span class="pill amber" title="分組教學：${esc(assignmentGroups(a).length)} 組不同老師">👥分組</span>` : ''}${a.coteach ? ` <span class="pill blue" title="協同教學：${esc(coteachMembers(a.coteach).filter(m => m.id !== a.id).map(m => (classById(m.classId) || {}).name).join('、'))}">🔗協同</span>` : ''}</td>
+      <td>${esc(teachersLabel(a))}</td>
       <td>${a.periods}</td>
-      <td>${a.roomId ? esc(roomName(a.roomId)) : '<span style="color:var(--muted)">—</span>'}</td>
+      <td>${roomsLabel(a) ? esc(roomsLabel(a)) : '<span style="color:var(--muted)">—</span>'}</td>
       <td>${a.consecutive ? '是' : '—'}</td>
       <td>${status}</td>
       <td class="row-actions">
@@ -472,41 +491,68 @@ function coteachPickerHTML(subjectId, meId, groupId) {
     const otherGroup = a.coteach && a.coteach !== groupId;
     return `<label class="checkbox" style="margin-bottom:6px;font-weight:400">
       <input type="checkbox" data-coteach data-id="${a.id}" ${checked ? 'checked' : ''}>
-      ${esc((classById(a.classId) || {}).name || '')} · ${esc(teacherName(a.teacherId))}（${a.periods}節）${otherGroup ? ' <span class="pill amber">已在其他協同組</span>' : ''}
+      ${esc((classById(a.classId) || {}).name || '')} · ${esc(teachersLabel(a))}（${a.periods}節）${otherGroup ? ' <span class="pill amber">已在其他協同組</span>' : ''}
     </label>`;
   }).join('');
 }
+
+let modalGroups = []; // 配課 modal 編輯中的分組 [{teacherId, roomId, label}]
+function groupsEditorHTML() {
+  const multi = modalGroups.length > 1;
+  const tOpts = sel => state.teachers.map(x => `<option value="${x.id}" ${x.id === sel ? 'selected' : ''}>${esc(x.name)}（${esc(x.type || '')}）</option>`).join('');
+  const rOpts = sel => `<option value="">— 無教室 —</option>` + state.rooms.map(x => `<option value="${x.id}" ${x.id === sel ? 'selected' : ''}>${esc(x.name)}</option>`).join('');
+  const rows = modalGroups.map((g, i) => `
+    <div class="group-row" data-idx="${i}">
+      ${multi ? `<input type="text" class="grp-label" placeholder="組名" value="${esc(g.label || '')}" style="width:70px">` : ''}
+      <select class="grp-teacher">${tOpts(g.teacherId)}</select>
+      <select class="grp-room">${rOpts(g.roomId)}</select>
+      ${multi ? `<button type="button" class="icon-btn" data-action="del-group-row" data-idx="${i}">🗑️</button>` : ''}
+    </div>`).join('');
+  return rows + `<button type="button" class="ghost" data-action="add-group-row" style="margin-top:6px;padding:5px 10px;font-size:13px">＋ 新增分組（不同老師同時上）</button>`;
+}
+function syncGroupsFromDOM() {
+  const rows = Array.from(document.querySelectorAll('#groupsEditor .group-row'));
+  if (rows.length) modalGroups = rows.map(r => ({
+    teacherId: r.querySelector('.grp-teacher').value,
+    roomId: r.querySelector('.grp-room').value,
+    label: (r.querySelector('.grp-label') ? r.querySelector('.grp-label').value.trim() : ''),
+  }));
+}
+function refreshGroupsEditor() { const el = $('#groupsEditor'); if (el) el.innerHTML = groupsEditorHTML(); }
 
 function assignmentModal(existing) {
   if (state.classes.length === 0 || state.subjects.length === 0 || state.teachers.length === 0) {
     openModal({ title: '無法新增配課', body: `<p>請先建立至少一個<b>班級</b>、<b>科目</b>與<b>教師</b>。</p>` });
     return;
   }
-  const a = existing || { classId: state.classes[0].id, subjectId: state.subjects[0].id, teacherId: state.teachers[0].id, periods: 1, roomId: '', consecutive: false };
+  const a = existing || { classId: state.classes[0].id, subjectId: state.subjects[0].id, periods: 1, consecutive: false };
   const meId = existing ? existing.id : '';
   const groupId = existing ? (existing.coteach || '') : '';
+  modalGroups = existing ? assignmentGroups(existing).map(g => ({ teacherId: g.teacherId, roomId: g.roomId || '', label: g.label || '' }))
+    : [{ teacherId: state.teachers[0].id, roomId: '', label: '' }];
   const opt = (arr, sel, label) => arr.map(x => `<option value="${x.id}" ${x.id === sel ? 'selected' : ''}>${esc(label(x))}</option>`).join('');
   openModal({
     title: existing ? '編輯配課' : '新增配課',
     body: `
-      <label class="field"><span>班級</span><select id="aClass">${opt(state.classes, a.classId, x => x.name)}</select></label>
-      <label class="field"><span>科目</span><select id="aSubject">${opt(state.subjects, a.subjectId, x => x.name)}</select></label>
-      <label class="field"><span>授課教師</span><select id="aTeacher">${opt(state.teachers, a.teacherId, x => x.name + '（' + (x.type || '') + '）')}</select></label>
+      <div class="field-row">
+        <label class="field"><span>班級</span><select id="aClass">${opt(state.classes, a.classId, x => x.name)}</select></label>
+        <label class="field"><span>科目</span><select id="aSubject">${opt(state.subjects, a.subjectId, x => x.name)}</select></label>
+      </div>
       <div class="field-row">
         <label class="field"><span>每週節數</span><input type="number" id="aPeriods" min="1" max="40" value="${a.periods}"></label>
-        <label class="field"><span>專科教室（可留空）</span>
-          <select id="aRoom"><option value="">— 不需要 —</option>${opt(state.rooms, a.roomId, x => x.name)}</select></label>
+        <label class="field" style="display:flex;align-items:flex-end"><label class="checkbox"><input type="checkbox" id="aConsec" ${a.consecutive ? 'checked' : ''}> 需連堂</label></label>
       </div>
-      <label class="checkbox" style="margin-bottom:12px"><input type="checkbox" id="aConsec" ${a.consecutive ? 'checked' : ''}> 需連堂</label>
-      <label class="field" style="margin-bottom:4px"><span>🔗 協同教學（勾選要與此課「同時段一起上」的其他班同科目配課）</span></label>
+      <label class="field" style="margin-bottom:4px"><span>👥 授課教師 / 分組（每列一位老師＋教室；<b>加到 2 列以上＝分組教學</b>，同一時段拆組不同老師）</span></label>
+      <div id="groupsEditor">${groupsEditorHTML()}</div>
+      <label class="field" style="margin:14px 0 4px"><span>🔗 協同教學（勾選要與此課「同時段一起上」的其他班同科目配課）</span></label>
       <div id="coteachPicker">${coteachPickerHTML(a.subjectId, meId, groupId)}</div>`,
     onSave: () => {
       const periods = parseInt($('#aPeriods').value, 10);
       if (!periods || periods < 1) { toast('請輸入每週節數'); return false; }
-      const data = {
-        classId: $('#aClass').value, subjectId: $('#aSubject').value, teacherId: $('#aTeacher').value,
-        periods, roomId: $('#aRoom').value, consecutive: $('#aConsec').checked,
-      };
+      syncGroupsFromDOM();
+      const groups = modalGroups.filter(g => g.teacherId);
+      if (groups.length === 0) { toast('請至少指定一位授課教師'); return false; }
+      const data = { classId: $('#aClass').value, subjectId: $('#aSubject').value, periods, consecutive: $('#aConsec').checked, groups };
       let id;
       if (existing) { Object.assign(existing, data); id = existing.id; }
       else { id = uid(); state.assignments.push({ id, ...data, coteach: '' }); }
@@ -658,7 +704,7 @@ function viewRooms() {
   if (state.rooms.length === 0) return head + emptyCard('尚無專科教室', '例如：電腦教室、自然教室、音樂教室、體育館。');
   const rows = state.rooms.map(r => `<tr>
     <td><b>${esc(r.name)}</b></td>
-    <td>${refCount(a => a.roomId === r.id)} 筆配課使用</td>
+    <td>${refCount(a => assignmentUsesRoom(a, r.id))} 筆配課使用</td>
     <td class="row-actions">
       <button class="icon-btn" data-action="edit-room" data-id="${r.id}">✏️</button>
       <button class="icon-btn" data-action="del-room" data-id="${r.id}">🗑️</button>
@@ -717,12 +763,14 @@ function teacherTimetableHTML(teacherId, conflicts) {
   const days = activeDays();
   const t = teacherById(teacherId);
   // index teacher's slots
-  const map = {}; // `${day}|${period}` -> {classId, a, key}
+  const map = {}; // `${day}|${period}` -> {classId, a, key, group}
   for (const key in state.slots) {
     const a = assignmentById(state.slots[key]);
-    if (!a || a.teacherId !== teacherId) continue;
+    if (!a) continue;
+    const g = assignmentGroups(a).find(gr => gr.teacherId === teacherId);
+    if (!g) continue;
     const [classId, day, period] = key.split('|');
-    map[day + '|' + period] = { classId, a, key };
+    map[day + '|' + period] = { classId, a, key, group: g };
   }
   let html = `<div class="print-only" style="text-align:center;font-weight:700;font-size:16px;margin-bottom:8px">${esc((t || {}).name || '')} 教師課表</div>`;
   html += `<table class="timetable"><thead><tr><th class="period-th">節次</th>${days.map(d => `<th>${DAY_LABELS[d]}</th>`).join('')}</tr></thead><tbody>`;
@@ -735,7 +783,7 @@ function teacherTimetableHTML(teacherId, conflicts) {
         const color = subjectColor(hit.a.subjectId);
         const conf = conflicts[hit.key];
         html += `<td class="cell"><div class="cell-lesson ${conf ? 'conflict' : ''}" style="background:${color};color:${textOn(color)}">
-          ${esc((classById(hit.classId) || {}).name || '')}<small>${esc(subjectName(hit.a.subjectId))}${hit.a.roomId ? '·' + esc(roomName(hit.a.roomId)) : ''}</small></div></td>`;
+          ${esc((classById(hit.classId) || {}).name || '')}${hit.group.label ? '(' + esc(hit.group.label) + ')' : ''}<small>${esc(subjectName(hit.a.subjectId))}${hit.group.roomId ? '·' + esc(roomName(hit.group.roomId)) : ''}</small></div></td>`;
       } else html += `<td class="cell ${periodHasDay(p, d) ? '' : 'blocked'}"></td>`;
     }
     html += `</tr>`;
@@ -747,11 +795,6 @@ function teacherTimetableHTML(teacherId, conflicts) {
 function exportCSV() {
   const days = activeDays();
   let rows = [['節次', ...days.map(d => DAY_LABELS[d])]];
-  const cellText = (key, teacherMode, teacherId) => {
-    if (teacherMode) return key || '';
-    const a = key ? assignmentById(state.slots[key]) : null;
-    return a ? `${subjectName(a.subjectId)}/${teacherName(a.teacherId)}` : '';
-  };
   let title = '';
   if (outputMode === 'class') {
     title = (classById(outputClassId) || {}).name || '班級';
@@ -759,7 +802,7 @@ function exportCSV() {
       if (!isLessonPeriod(p)) continue;
       rows.push([p.label, ...days.map(d => {
         const a = assignmentById(state.slots[slotKey(outputClassId, d, p.id)]);
-        return a ? `${subjectName(a.subjectId)}/${teacherName(a.teacherId)}` : '';
+        return a ? `${subjectName(a.subjectId)}/${teachersLabel(a)}` : '';
       })]);
     }
   } else {
@@ -767,7 +810,7 @@ function exportCSV() {
     const map = {};
     for (const key in state.slots) {
       const a = assignmentById(state.slots[key]);
-      if (!a || a.teacherId !== outputTeacherId) continue;
+      if (!a || !assignmentUsesTeacher(a, outputTeacherId)) continue;
       const [classId, day, period] = key.split('|');
       map[day + '|' + period] = `${(classById(classId) || {}).name || ''}/${subjectName(a.subjectId)}`;
     }
@@ -896,6 +939,7 @@ function helpContent() {
       <li><b>教師</b>：姓名、類別、<b>每週節數上限</b>；下方格子點一下出現 <b>✕</b> ＝該時段不排課（再點取消）。</li>
       <li><b>班級</b>：新增班名並選年級。</li>
       <li><b>配課</b>：一筆＝一門課＝<b>班級 × 科目 × 教師 × 每週節數</b>（可指定教室／連堂）。這是排課的清單。
+        <br>👥 <b>分組教學</b>：同一時段一個班拆成幾組、不同老師（如英語依程度分兩組）。在配課的「授課教師／分組」按「＋ 新增分組」加到 2 列以上即可，各組可設自己的老師與教室；排課時該格會同時佔用各組老師，衝堂檢查逐組進行。
         <br>⏱ <b>需連堂</b>：勾了的課代表兩節要<b>相鄰接續上</b>（同一天、中間不隔開，一組 2 節）。排課時只要放一格，會自動把相鄰的一節一起排入；若沒有相鄰兩節在一起會顯示「連堂未相鄰」。可在「設定 ▸ 排課選項」關閉自動成對。
         <br>🔗 <b>協同教學</b>：若某課要幾個班<b>同時段一起上</b>（如一忠、一孝的生活課），在配課裡勾選要協同的其他班（同科目）。排課時只要排其中一班，其他班會<b>自動排到同一格</b>；同群組彼此不算衝堂，若沒對齊會顯示「協同未同步」。</li>
     </ul>
@@ -967,7 +1011,7 @@ function delClass(id) {
 }
 function delTeacher(id) {
   const t = teacherById(id); if (!t) return;
-  const n = refCount(a => a.teacherId === id);
+  const n = refCount(a => assignmentUsesTeacher(a, id));
   if (n > 0) { toast(`「${t.name}」仍有 ${n} 筆配課，請先改配課再刪除。`); return; }
   confirmDelete(`刪除教師「${t.name}」？`, () => { state.teachers = state.teachers.filter(x => x.id !== id); });
 }
@@ -979,9 +1023,9 @@ function delSubject(id) {
 }
 function delRoom(id) {
   const r = roomById(id); if (!r) return;
-  const uses = state.assignments.filter(a => a.roomId === id);
+  const uses = state.assignments.filter(a => assignmentUsesRoom(a, id));
   confirmDelete(`刪除教室「${r.name}」？${uses.length ? '（' + uses.length + ' 筆配課的教室將清空）' : ''}`, () => {
-    uses.forEach(a => a.roomId = '');
+    uses.forEach(a => assignmentGroups(a).forEach(g => { if (g.roomId === id) g.roomId = ''; }));
     state.rooms = state.rooms.filter(x => x.id !== id);
   });
 }
@@ -1020,6 +1064,9 @@ const clickHandlers = {
   'add-room': () => roomModal(null),
   'edit-room': el => roomModal(roomById(el.dataset.id)),
   'del-room': el => delRoom(el.dataset.id),
+
+  'add-group-row': () => { syncGroupsFromDOM(); modalGroups.push({ teacherId: state.teachers[0].id, roomId: '', label: '' }); refreshGroupsEditor(); },
+  'del-group-row': el => { syncGroupsFromDOM(); modalGroups.splice(parseInt(el.dataset.idx, 10), 1); if (modalGroups.length === 0) modalGroups.push({ teacherId: state.teachers[0].id, roomId: '', label: '' }); refreshGroupsEditor(); },
 
   'add-assignment': () => assignmentModal(null),
   'edit-assignment': el => assignmentModal(assignmentById(el.dataset.id)),

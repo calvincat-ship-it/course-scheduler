@@ -98,6 +98,10 @@ input:focus, select:focus, textarea:focus { outline: 2px solid #bfdbfe; border-c
 .field-row > * { flex: 1; }
 .checkbox { display: flex; align-items: center; gap: 8px; font-weight: 600; cursor: pointer; }
 .checkbox input { width: auto; }
+.group-row { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }
+.group-row .grp-teacher { flex: 2; }
+.group-row .grp-room { flex: 1.4; }
+.group-row select, .group-row input { padding: 6px 8px; }
 
 /* ---------- Modal ---------- */
 .modal-backdrop { position: fixed; inset: 0; background: rgba(15,23,42,.45); display: flex; align-items: flex-start; justify-content: center; padding: 40px 16px; z-index: 50; overflow-y: auto; }
