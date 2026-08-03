@@ -142,7 +142,7 @@ function render() {
     case 'subjects': view.innerHTML = viewSubjects(); break;
     case 'grades': view.innerHTML = viewGrades(); break;
     case 'classes': view.innerHTML = viewClasses(); break;
-    case 'teachers': view.innerHTML = stubView('④ 教師 / 教師配課', 'Batch 3'); break;
+    case 'teachers': view.innerHTML = viewTeachers(); break;
     case 'schedule': view.innerHTML = stubView('⑤ 排課', 'Batch 4'); break;
     case 'output': view.innerHTML = stubView('課表輸出', 'Batch 4'); break;
     case 'settings': view.innerHTML = viewSettings(); break;
@@ -380,6 +380,164 @@ function delClass(id) {
 }
 
 /* ==========================================================================
+   ④ 教師 / 教師配課 / 全校交叉檢核
+   ========================================================================== */
+const teacherLoadSum = t => (t.load || []).reduce((s, L) => s + (L.hours || 0), 0);
+const classSubjectRequired = (classId, sid) => { const c = classById(classId); if (!c) return 0; const sh = gradeSubjHours(classGrade(c) || {}, sid); return sh ? sh.hours : 0; };
+function loadsForClassSubject(classId, sid) {
+  const out = [];
+  state.teachers.forEach(t => (t.load || []).forEach(L => { if (L.classId === classId && L.subjectId === sid) out.push({ teacher: t, hours: L.hours }); }));
+  return out;
+}
+function checkStaffing() {
+  const problems = [];
+  state.classes.forEach(c => {
+    classSubjectHours(c).forEach(sh => {
+      const required = sh.hours;
+      const s = subjectById(sh.subjectId);
+      const loads = loadsForClassSubject(c.id, sh.subjectId);
+      const teacherNames = loads.map(x => `${x.teacher.name}(${x.hours}節)`).join('、') || '（未指派）';
+      if (loads.length === 0) { problems.push({ className: c.name, subjectName: subjectName(sh.subjectId), required, status: '未指派老師', teacherNames }); return; }
+      if (s && s.allowGrouping) {
+        const bad = loads.filter(x => x.hours !== required);
+        if (bad.length) problems.push({ className: c.name, subjectName: subjectName(sh.subjectId), required, status: `分組節數不符（每組應各 ${required} 節）`, teacherNames });
+      } else {
+        const total = loads.reduce((a, x) => a + x.hours, 0);
+        if (total !== required) problems.push({ className: c.name, subjectName: subjectName(sh.subjectId), required, status: total < required ? `缺漏（少 ${required - total} 節）` : `超過（多 ${total - required} 節）`, teacherNames });
+        else if (loads.length > 1) problems.push({ className: c.name, subjectName: subjectName(sh.subjectId), required, status: '非分組科目卻有多位老師', teacherNames });
+      }
+    });
+  });
+  return problems;
+}
+
+function viewTeachers() {
+  const problems = checkStaffing();
+  const statusCard = state.classes.length === 0
+    ? `<div class="card"><div class="card-body"><span style="color:var(--muted)">尚無班級，請先完成「③ 班級」。</span></div></div>`
+    : `<div class="card"><div class="card-body" style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+        <div>${problems.length === 0
+          ? '<b style="color:var(--ok)">✓ 全校配課相符</b>　各班每科節數皆由教師配課填滿，可進入 ⑤ 排課。'
+          : `<b style="color:var(--danger)">⚠ 有 ${problems.length} 項配課問題</b>　各班每科節數尚未由教師配課正確填滿。`}</div>
+        <button class="ghost" data-action="check-staffing">檢查全校配課</button>
+      </div></div>`;
+  const head = `<div class="page-head"><h2>④ 教師</h2><button class="btn" data-action="add-teacher">＋ 新增教師</button></div>
+    <div class="hint" style="margin-bottom:12px;color:var(--muted)">填入教師基本資料與不排課時段，並設定其配課（教哪個班的哪一科幾節）。每位教師配課合計須等於其每周授課時數才可儲存。</div>`;
+  if (state.teachers.length === 0) return head + statusCard + emptyCard('尚無教師', '新增教師並設定配課。');
+  const rows = state.teachers.map(t => {
+    const sum = teacherLoadSum(t); const match = sum === (t.weeklyHours || 0);
+    return `<tr>
+      <td><b>${esc(t.name)}</b></td>
+      <td><span class="pill gray">${esc(t.type || '')}</span></td>
+      <td>${t.weeklyHours || 0} 節</td>
+      <td style="color:${match ? 'var(--ok)' : 'var(--danger)'};font-weight:700">${sum} 節 ${match ? '✓' : '✗'}</td>
+      <td>${(t.load || []).length} 筆</td>
+      <td>${(t.unavailable || []).length ? (t.unavailable.length + ' 個') : '—'}</td>
+      <td class="row-actions">
+        <button class="icon-btn" data-action="edit-teacher" data-id="${t.id}">✏️</button>
+        <button class="icon-btn" data-action="del-teacher" data-id="${t.id}">🗑️</button>
+      </td></tr>`;
+  }).join('');
+  return head + statusCard + `<div class="card"><table class="data">
+    <thead><tr><th>姓名</th><th>身分</th><th>每周授課</th><th>已配</th><th>配課筆數</th><th>不排課</th><th></th></tr></thead>
+    <tbody>${rows}</tbody></table></div>`;
+}
+
+let modalLoad = []; // 教師 modal 編輯中的配課 [{classId, subjectId, hours}]
+function loadEditorHTML() {
+  if (state.classes.length === 0) return `<div class="hint" style="color:var(--muted)">尚無班級，請先到「③ 班級」建立。</div>`;
+  const clsOpts = sel => state.classes.map(c => `<option value="${c.id}" ${c.id === sel ? 'selected' : ''}>${esc(c.name)}（${esc(gradeName(c.gradeId))}）</option>`).join('');
+  const subOpts = (classId, sel) => {
+    const c = classById(classId); const subs = c ? classSubjectHours(c) : [];
+    if (!subs.length) return `<option value="">（該班無科目）</option>`;
+    return subs.map(sh => `<option value="${sh.subjectId}" ${sh.subjectId === sel ? 'selected' : ''}>${esc(subjectName(sh.subjectId))}（需${sh.hours}節）</option>`).join('');
+  };
+  const rows = modalLoad.map((L, i) => `<div class="group-row" data-idx="${i}">
+      <select class="ld-class" data-change="load-class" data-idx="${i}">${clsOpts(L.classId)}</select>
+      <select class="ld-subject">${subOpts(L.classId, L.subjectId)}</select>
+      <input type="number" class="ld-hours" data-change="load-hours" min="0" max="40" value="${L.hours || ''}" placeholder="節" style="width:64px">
+      <button type="button" class="icon-btn" data-action="del-load-row" data-idx="${i}">🗑️</button>
+    </div>`).join('');
+  return rows + `<button type="button" class="ghost" data-action="add-load-row" style="margin-top:6px;padding:5px 10px;font-size:13px">＋ 新增配課（班級 → 科目 → 節數）</button>`;
+}
+function syncLoadFromDOM() {
+  modalLoad = Array.from(document.querySelectorAll('#loadEditor .group-row')).map(r => ({
+    classId: r.querySelector('.ld-class').value,
+    subjectId: r.querySelector('.ld-subject').value,
+    hours: parseInt(r.querySelector('.ld-hours').value, 10) || 0,
+  }));
+}
+function refreshLoadEditor() { const el = $('#loadEditor'); if (el) el.innerHTML = loadEditorHTML(); }
+function updateLoadSum() {
+  syncLoadFromDOM();
+  const wh = parseInt(($('#tWeekly') || {}).value, 10) || 0;
+  const sum = modalLoad.reduce((s, L) => s + (L.hours || 0), 0);
+  const el = $('#loadSum'); if (!el) return;
+  const m = sum === wh;
+  el.className = 'total-badge ' + (m ? 'ok' : 'bad');
+  el.innerHTML = `配課合計 <b>${sum}</b> / 每周授課 <b>${wh}</b> 節　${m ? '✓ 相符' : '✗ 需相符才可儲存'}`;
+}
+function teacherModal(existing) {
+  const t = existing || { name: '', type: '級任', weeklyHours: 20, unavailable: [], load: [] };
+  modalLoad = (t.load || []).map(L => ({ ...L }));
+  const typeOpts = TEACHER_TYPES.map(x => `<option ${x === t.type ? 'selected' : ''}>${x}</option>`).join('');
+  const days = activeDays(); const un = new Set(t.unavailable || []);
+  let grid = `<table class="avail"><thead><tr><th></th>${days.map(d => `<th>${DAY_LABELS[d]}</th>`).join('')}</tr></thead><tbody>`;
+  for (const p of lessonPeriods()) {
+    grid += `<tr><th>${esc(p.label)}</th>`;
+    for (const d of days) { const s = d + '|' + p.id; grid += `<td class="slot ${un.has(s) ? 'off' : ''}" data-action="toggle-avail" data-slot="${s}">${un.has(s) ? '✕' : ''}</td>`; }
+    grid += `</tr>`;
+  }
+  grid += `</tbody></table>`;
+  openModal({
+    title: existing ? '編輯教師' : '新增教師',
+    wide: true,
+    body: `
+      <div class="field-row">
+        <label class="field"><span>姓名</span><input type="text" id="tName" value="${esc(t.name)}"></label>
+        <label class="field"><span>身分別</span><select id="tType">${typeOpts}</select></label>
+        <label class="field"><span>每周授課時數</span><input type="number" id="tWeekly" data-change="weekly-hours" min="0" max="40" value="${t.weeklyHours || 0}"></label>
+      </div>
+      <label class="field" style="margin-bottom:4px"><span>教師配課（班級 → 科目 → 節數）</span></label>
+      <div id="loadEditor">${loadEditorHTML()}</div>
+      <div id="loadSum" class="total-badge"></div>
+      <label class="field" style="margin:14px 0 4px"><span>不排課時段（點格切換，✕＝不排）</span></label>
+      <div id="availGrid">${grid}</div>`,
+    onSave: () => {
+      const name = $('#tName').value.trim();
+      if (!name) { toast('請輸入姓名'); return false; }
+      const weekly = parseInt($('#tWeekly').value, 10) || 0;
+      syncLoadFromDOM();
+      const load = modalLoad.filter(L => L.classId && L.subjectId && L.hours > 0);
+      const sum = load.reduce((s, L) => s + L.hours, 0);
+      if (sum !== weekly) { toast(`配課合計 ${sum} 節與每周授課 ${weekly} 節不符，無法儲存`); return false; }
+      const unavailable = Array.from(document.querySelectorAll('#availGrid td.off')).map(td => td.dataset.slot);
+      const data = { name, type: $('#tType').value, weeklyHours: weekly, unavailable, load };
+      if (existing) Object.assign(existing, data); else state.teachers.push({ id: uid(), ...data });
+      save(); render(); toast('已儲存教師');
+      return true;
+    },
+  });
+  updateLoadSum();
+}
+function delTeacher(id) {
+  const t = teacherById(id); if (!t) return;
+  confirmDelete(`刪除教師「${t.name}」？其配課將一併移除。`, () => { state.teachers = state.teachers.filter(x => x.id !== id); });
+}
+function staffingReportModal() {
+  const problems = checkStaffing();
+  const body = problems.length === 0
+    ? `<div class="total-badge ok">✓ 全校各班每科節數皆已由教師配課正確填滿，可進入 ⑤ 排課。</div>`
+    : `<p style="color:var(--danger);font-weight:700;margin-top:0">有 ${problems.length} 項問題，請修正後再排課：</p>
+       <table class="data"><thead><tr><th>班級</th><th>科目</th><th>應配</th><th>狀況</th><th>目前老師</th></tr></thead>
+       <tbody>${problems.map(p => `<tr>
+         <td>${esc(p.className)}</td><td>${esc(p.subjectName)}</td><td>${p.required} 節</td>
+         <td style="color:var(--danger);font-weight:600">${esc(p.status)}</td><td>${esc(p.teacherNames)}</td>
+       </tr>`).join('')}</tbody></table>`;
+  openModal({ title: '全校配課檢查', wide: true, body });
+}
+
+/* ==========================================================================
    設定（上課日 / 節次定義 / 排課選項）
    ========================================================================== */
 function viewSettings() {
@@ -482,6 +640,14 @@ const clickHandlers = {
   'edit-subject': el => subjectModal(subjectById(el.dataset.id)),
   'del-subject': el => delSubject(el.dataset.id),
 
+  'add-teacher': () => teacherModal(null),
+  'edit-teacher': el => teacherModal(teacherById(el.dataset.id)),
+  'del-teacher': el => delTeacher(el.dataset.id),
+  'check-staffing': () => staffingReportModal(),
+  'toggle-avail': el => { el.classList.toggle('off'); el.textContent = el.classList.contains('off') ? '✕' : ''; },
+  'add-load-row': () => { syncLoadFromDOM(); modalLoad.push({ classId: state.classes[0] ? state.classes[0].id : '', subjectId: '', hours: 0 }); const c = state.classes[0]; if (c) { const subs = classSubjectHours(c); modalLoad[modalLoad.length - 1].subjectId = subs[0] ? subs[0].subjectId : ''; } refreshLoadEditor(); updateLoadSum(); },
+  'del-load-row': el => { syncLoadFromDOM(); modalLoad.splice(parseInt(el.dataset.idx, 10), 1); refreshLoadEditor(); updateLoadSum(); },
+
   'add-class': () => classModal(null),
   'edit-class': el => classModal(classById(el.dataset.id)),
   'del-class': el => delClass(el.dataset.id),
@@ -522,6 +688,16 @@ const changeHandlers = {
   'period-field': el => { const p = byId(state.settings.periods, el.dataset.pid); if (p) { p[el.dataset.field] = el.value; save(); } },
   'period-break': el => { const p = byId(state.settings.periods, el.dataset.pid); if (p) { p.isBreak = el.checked; save(); render(); } },
   'toggle-autopair': el => { state.settings.autoPairConsecutive = el.checked; save(); },
+  'load-class': el => {
+    syncLoadFromDOM();
+    const idx = parseInt(el.dataset.idx, 10);
+    const c = classById(el.value); const subs = c ? classSubjectHours(c) : [];
+    modalLoad[idx].classId = el.value;
+    modalLoad[idx].subjectId = subs[0] ? subs[0].subjectId : '';
+    refreshLoadEditor(); updateLoadSum();
+  },
+  'load-hours': () => updateLoadSum(),
+  'weekly-hours': () => updateLoadSum(),
 
   'grade-subj-on': el => {
     const g = gradeById(el.dataset.gid); if (!g) return;

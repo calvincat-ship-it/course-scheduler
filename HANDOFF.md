@@ -17,7 +17,10 @@
   - 設定：上課日、節次定義（isBreak）、排課選項、備份(schema 檢查)。
   - ③班級/④教師/⑤排課/輸出＝stub「開發中」。
 - **Batch 2 已完成（本機驗證通過、無 console error）**：③ 班級 CRUD（選年級）；課程(科目+節數)沿用年級、唯讀；「科目/協同」modal 每科可勾同年級其他班協同（`class.coteach={subjectId:groupId}` 對稱，`setClassCoteach`/`cleanupCoteachSingletons`；換年級清協同）。清單顯示協同科數與「年級未完成」提醒。
-- **下一步：Batch 3（教師 + 教師配課 + 交叉檢核）** — 4.1 基本+不排課；4.2 教師配課(班級→科目→時數，Σ==每周授課時數才收)；4.3 全部確認→交叉檢核各班每科節數缺漏/超過(分組視為同節)。
+- **Batch 3 已完成（本機驗證通過、無 console error）**：④ 教師。teacher={name,type,weeklyHours,unavailable,load:[{classId,subjectId,hours}]}。
+  - teacher modal：基本欄位＋配課編輯器(班級下拉→該班科目下拉→節數，modalLoad/loadEditorHTML/syncLoadFromDOM/updateLoadSum)＋不排課 grid。存檔閘門：Σload==weeklyHours 才收(4.2)。
+  - 全校交叉檢核 `checkStaffing()`(4.3)：逐(班,科)比對 required vs 教師配課；**分組科目每組各需==required、不加總**；非分組 Σ==required；未指派/缺漏/超過/非分組多師 都列出(班+科+應配+狀況+老師)。教師頁狀態卡＋「檢查全校配課」報表 modal。
+- **下一步：Batch 4（排課改版 + 課表輸出）** — slot 放 subjectId；老師由 teacher.load 推得；分組科目多師同格不算衝堂；協同(class.coteach 同群組)同步放課且不計教室衝堂；連堂自動成對(沿用設定開關)；教師/班級課表輸出、列印、CSV。班級格開放與否＝該班年級 periodDays。
 - 續跑提醒：在 redesign 分支；`git checkout redesign`；勿 push main/部署。
 
 ## （封存）main v01.05 之前的變更紀錄
