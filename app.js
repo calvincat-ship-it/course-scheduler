@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v02.00';
+const APP_VERSION = 'v02.01';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -447,22 +447,65 @@ function viewTeachers() {
 }
 
 let modalLoad = []; // 教師 modal 編輯中的配課 [{classId, subjectId, hours}]
+let editingTeacherId = null; // 正在編輯的教師 id（新增時為 null）；剩餘節數計算要排除此人自己的舊配課
+// 該(班,科)已被「其他教師」配走的節數（不含正在編輯的教師，因其配課即為 modalLoad）
+function loadHoursByOtherTeachers(classId, sid) {
+  let sum = 0;
+  state.teachers.forEach(t => {
+    if (editingTeacherId && t.id === editingTeacherId) return;
+    (t.load || []).forEach(L => { if (L.classId === classId && L.subjectId === sid) sum += (L.hours || 0); });
+  });
+  return sum;
+}
+// 目前 modal 內其他列（排除 rowIdx）對同(班,科)已填的節數
+function modalHoursOtherRows(classId, sid, rowIdx) {
+  return modalLoad.reduce((s, L, i) => (i !== rowIdx && L.classId === classId && L.subjectId === sid) ? s + (L.hours || 0) : s, 0);
+}
+// 這一列對該(班,科)還可填的剩餘節數。分組科目：每組各需 required（僅扣本 modal 同科其他列，防同一師重覆加）；非分組：required 扣其他教師與本 modal 其他列
+function remainingForRow(classId, sid, rowIdx) {
+  const required = classSubjectRequired(classId, sid);
+  const s = subjectById(sid);
+  if (s && s.allowGrouping) return Math.max(0, required - modalHoursOtherRows(classId, sid, rowIdx));
+  return Math.max(0, required - loadHoursByOtherTeachers(classId, sid) - modalHoursOtherRows(classId, sid, rowIdx));
+}
+// 該班第一個「這一列還可選」的科目 id（剩餘>0；分組科目一律可選），找不到回 ''
+function firstAvailableSubject(classId, rowIdx) {
+  const c = classById(classId); if (!c) return '';
+  const sh = classSubjectHours(c).find(x => {
+    const s = subjectById(x.subjectId);
+    return (s && s.allowGrouping) || remainingForRow(classId, x.subjectId, rowIdx) > 0;
+  });
+  return sh ? sh.subjectId : '';
+}
 function loadEditorHTML() {
   if (state.classes.length === 0) return `<div class="hint" style="color:var(--muted)">尚無班級，請先到「③ 班級」建立。</div>`;
   const clsOpts = sel => state.classes.map(c => `<option value="${c.id}" ${c.id === sel ? 'selected' : ''}>${esc(c.name)}（${esc(gradeName(c.gradeId))}）</option>`).join('');
-  const subOpts = (classId, sel) => {
+  const subOpts = (classId, sel, rowIdx) => {
     const c = classById(classId); const subs = c ? classSubjectHours(c) : [];
     if (!subs.length) return `<option value="">（該班無科目）</option>`;
-    return subs.map(sh => `<option value="${sh.subjectId}" ${sh.subjectId === sel ? 'selected' : ''}>${esc(subjectName(sh.subjectId))}（需${sh.hours}節）</option>`).join('');
+    const opts = subs.map(sh => {
+      const sid = sh.subjectId; const s = subjectById(sid);
+      const grouping = !!(s && s.allowGrouping);
+      const rem = remainingForRow(classId, sid, rowIdx);
+      const isSel = sid === sel;
+      if (!grouping && rem <= 0 && !isSel) return ''; // 已被配滿：不顯示（除非本列正選著它）
+      const tag = grouping ? `分組·每組${sh.hours}節` : (rem >= sh.hours ? `需${sh.hours}節` : `剩${rem}節`);
+      return `<option value="${sid}" ${isSel ? 'selected' : ''}>${esc(subjectName(sid))}（${tag}）</option>`;
+    }).filter(Boolean);
+    if (!opts.length) return `<option value="">（該班科目皆已配滿）</option>`;
+    return opts.join('');
   };
   const rOpts = sel => `<option value="">— 無教室 —</option>` + state.rooms.map(r => `<option value="${r.id}" ${r.id === sel ? 'selected' : ''}>${esc(r.name)}</option>`).join('');
-  const rows = modalLoad.map((L, i) => `<div class="group-row" data-idx="${i}">
+  const rows = modalLoad.map((L, i) => {
+    const rem = remainingForRow(L.classId, L.subjectId, i);
+    return `<div class="group-row" data-idx="${i}">
       <select class="ld-class" data-change="load-class" data-idx="${i}">${clsOpts(L.classId)}</select>
-      <select class="ld-subject">${subOpts(L.classId, L.subjectId)}</select>
-      <input type="number" class="ld-hours" data-change="load-hours" min="0" max="40" value="${L.hours || ''}" placeholder="節" style="width:56px">
+      <select class="ld-subject" data-change="load-subject" data-idx="${i}">${subOpts(L.classId, L.subjectId, i)}</select>
+      <input type="number" class="ld-hours" data-change="load-hours" data-idx="${i}" min="0" max="${rem}" value="${L.hours || ''}" placeholder="節" title="剩餘可填 ${rem} 節" style="width:56px">
       <select class="ld-room" title="專科教室（可留空）">${rOpts(L.roomId)}</select>
       <button type="button" class="icon-btn" data-action="del-load-row" data-idx="${i}">🗑️</button>
-    </div>`).join('');
+    </div>`;
+  }).join('');
   return rows + `<button type="button" class="ghost" data-action="add-load-row" style="margin-top:6px;padding:5px 10px;font-size:13px">＋ 新增配課（班級 → 科目 → 節數 → 教室）</button>`;
 }
 function syncLoadFromDOM() {
@@ -485,6 +528,7 @@ function updateLoadSum() {
 }
 function teacherModal(existing) {
   const t = existing || { name: '', type: '級任', weeklyHours: 20, unavailable: [], load: [] };
+  editingTeacherId = existing ? existing.id : null;
   modalLoad = (t.load || []).map(L => ({ ...L }));
   const typeOpts = TEACHER_TYPES.map(x => `<option ${x === t.type ? 'selected' : ''}>${x}</option>`).join('');
   const days = activeDays(); const un = new Set(t.unavailable || []);
@@ -515,6 +559,12 @@ function teacherModal(existing) {
       const weekly = parseInt($('#tWeekly').value, 10) || 0;
       syncLoadFromDOM();
       const load = modalLoad.filter(L => L.classId && L.subjectId && L.hours > 0);
+      // 防呆：任一列不得超過該(班,科)剩餘可配節數（分組科目上限為每組 required）
+      for (let i = 0; i < modalLoad.length; i++) {
+        const L = modalLoad[i]; if (!L.classId || !L.subjectId || !(L.hours > 0)) continue;
+        const rem = remainingForRow(L.classId, L.subjectId, i);
+        if (L.hours > rem) { toast(`「${subjectName(L.subjectId)}」超過剩餘可配 ${rem} 節`); return false; }
+      }
       const sum = load.reduce((s, L) => s + L.hours, 0);
       if (sum !== weekly) { toast(`配課合計 ${sum} 節與每周授課 ${weekly} 節不符，無法儲存`); return false; }
       const unavailable = Array.from(document.querySelectorAll('#availGrid td.off')).map(td => td.dataset.slot);
@@ -939,7 +989,7 @@ const clickHandlers = {
   'check-staffing': () => staffingReportModal(),
   'goto-teachers': () => { currentTab = 'teachers'; render(); },
   'toggle-avail': el => { el.classList.toggle('off'); el.textContent = el.classList.contains('off') ? '✕' : ''; },
-  'add-load-row': () => { syncLoadFromDOM(); modalLoad.push({ classId: state.classes[0] ? state.classes[0].id : '', subjectId: '', hours: 0 }); const c = state.classes[0]; if (c) { const subs = classSubjectHours(c); modalLoad[modalLoad.length - 1].subjectId = subs[0] ? subs[0].subjectId : ''; } refreshLoadEditor(); updateLoadSum(); },
+  'add-load-row': () => { syncLoadFromDOM(); const cid = state.classes[0] ? state.classes[0].id : ''; const idx = modalLoad.length; modalLoad.push({ classId: cid, subjectId: firstAvailableSubject(cid, idx), hours: 0 }); refreshLoadEditor(); updateLoadSum(); },
   'del-load-row': el => { syncLoadFromDOM(); modalLoad.splice(parseInt(el.dataset.idx, 10), 1); refreshLoadEditor(); updateLoadSum(); },
 
   'add-class': () => classModal(null),
@@ -1011,12 +1061,29 @@ const changeHandlers = {
   'load-class': el => {
     syncLoadFromDOM();
     const idx = parseInt(el.dataset.idx, 10);
-    const c = classById(el.value); const subs = c ? classSubjectHours(c) : [];
     modalLoad[idx].classId = el.value;
-    modalLoad[idx].subjectId = subs[0] ? subs[0].subjectId : '';
+    modalLoad[idx].subjectId = firstAvailableSubject(el.value, idx);
+    modalLoad[idx].hours = 0;
     refreshLoadEditor(); updateLoadSum();
   },
-  'load-hours': () => updateLoadSum(),
+  'load-subject': el => {
+    syncLoadFromDOM();
+    const idx = parseInt(el.dataset.idx, 10);
+    modalLoad[idx].subjectId = el.value;
+    // 換科目後把超過新剩餘的節數夾回上限
+    const rem = remainingForRow(modalLoad[idx].classId, el.value, idx);
+    if ((modalLoad[idx].hours || 0) > rem) modalLoad[idx].hours = rem;
+    refreshLoadEditor(); updateLoadSum();
+  },
+  'load-hours': el => {
+    syncLoadFromDOM();
+    const idx = parseInt(el.dataset.idx, 10);
+    const L = modalLoad[idx]; if (L) {
+      const rem = remainingForRow(L.classId, L.subjectId, idx);
+      if ((L.hours || 0) > rem) { L.hours = rem; toast(`「${subjectName(L.subjectId)}」最多只能再配 ${rem} 節`); }
+    }
+    refreshLoadEditor(); updateLoadSum();
+  },
   'weekly-hours': () => updateLoadSum(),
   'schedule-class': el => { selectedClassId = el.value; selectedSubjectId = null; render(); },
   'out-mode': el => { outputMode = el.value; render(); },
