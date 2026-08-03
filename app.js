@@ -1059,14 +1059,21 @@ function bindGlobal() {
   $('#versionTag').textContent = APP_VERSION;
 }
 
+function upgradeNoticeModal() {
+  openModal({ title: '系統改版通知', body: `<div class="help-note" style="margin:0">課務編排系統全面改版，先前的設定內容無法相容，改版後所有資料將會清除。已開啟使用過的同仁，請重新整理網頁，重新開始建置。</div>` });
+}
+
 /* ---------- Init ---------- */
 async function init() {
-  try { state = await idbGet(STATE_KEY); } catch (e) { state = null; }
-  if (!state || state.schema !== SCHEMA) { state = defaultState(); await save(); }
-  else if (!Array.isArray(state.rooms)) state.rooms = []; // v02 教室加回
+  let loaded = null;
+  try { loaded = await idbGet(STATE_KEY); } catch (e) { loaded = null; }
+  const hadOldData = !!(loaded && loaded.schema !== SCHEMA);
+  if (!loaded || loaded.schema !== SCHEMA) { state = defaultState(); await save(); }
+  else { state = loaded; if (!Array.isArray(state.rooms)) state.rooms = []; } // v02 教室加回
   bindGlobal();
   render();
-  if (!state.helpSeen) { helpModal(); state.helpSeen = true; save(); }
+  if (hadOldData) upgradeNoticeModal();                                   // 舊版同仁：改版通知
+  else if (!state.helpSeen) { helpModal(); state.helpSeen = true; save(); } // 新同仁：使用說明
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => { });
 }
 init();

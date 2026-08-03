@@ -7,7 +7,10 @@
 - 機器：桌機
 - 版本：**redesign 分支 v02.00（重構進行中）**；main 仍為 v01.05（同仁使用中，未動）
 
-## 🚧 進行中：v02 大改版（redesign 分支）
+## ✅ v02 大改版已上線（2026-08-03）
+main 已是 v02.00（redesign 合併）。舊版同仁一進來會看到「系統改版通知」(upgradeNoticeModal，偵測 schema!=2)、資料自動重置。以下為開發歷程封存。
+
+## 🚧（封存）開發歷程：v02 大改版（redesign 分支）
 > 詳見 `DESIGN.md`。**期間不 push main、不部署**（只本機 preview 測試）。全部完成經使用者確認後才合併 main。
 - 年段＝六個年級；舊資料清空（schema 2，載入舊資料即重置）。
 - **Batch 1 已完成（本機驗證通過、無 console error）**：
