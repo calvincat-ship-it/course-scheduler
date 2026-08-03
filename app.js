@@ -63,6 +63,7 @@ function defaultState() {
     version: APP_VERSION,
     settings: { days, periods, autoPairConsecutive: true },
     subjects: [],
+    rooms: [],
     grades,
     classes: [],
     teachers: [],
@@ -79,6 +80,8 @@ const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 
 function esc(str) { return String(str == null ? '' : str).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 const byId = (arr, id) => arr.find(x => x.id === id);
 const subjectById = id => byId(state.subjects, id);
+const roomById = id => byId(state.rooms, id);
+const roomName = id => (roomById(id) || {}).name || '';
 const gradeById = id => byId(state.grades, id);
 const classById = id => byId(state.classes, id);
 const teacherById = id => byId(state.teachers, id);
@@ -384,9 +387,11 @@ const teacherLoadSum = t => (t.load || []).reduce((s, L) => s + (L.hours || 0), 
 const classSubjectRequired = (classId, sid) => { const c = classById(classId); if (!c) return 0; const sh = gradeSubjHours(classGrade(c) || {}, sid); return sh ? sh.hours : 0; };
 function loadsForClassSubject(classId, sid) {
   const out = [];
-  state.teachers.forEach(t => (t.load || []).forEach(L => { if (L.classId === classId && L.subjectId === sid) out.push({ teacher: t, hours: L.hours }); }));
+  state.teachers.forEach(t => (t.load || []).forEach(L => { if (L.classId === classId && L.subjectId === sid) out.push({ teacher: t, hours: L.hours, roomId: L.roomId || '' }); }));
   return out;
 }
+function roomsForClassSubject(classId, sid) { return [...new Set(loadsForClassSubject(classId, sid).map(x => x.roomId).filter(Boolean))]; }
+function roomsLabelCS(classId, sid) { return roomsForClassSubject(classId, sid).map(roomName).join('｜'); }
 function checkStaffing() {
   const problems = [];
   state.classes.forEach(c => {
@@ -450,19 +455,22 @@ function loadEditorHTML() {
     if (!subs.length) return `<option value="">（該班無科目）</option>`;
     return subs.map(sh => `<option value="${sh.subjectId}" ${sh.subjectId === sel ? 'selected' : ''}>${esc(subjectName(sh.subjectId))}（需${sh.hours}節）</option>`).join('');
   };
+  const rOpts = sel => `<option value="">— 無教室 —</option>` + state.rooms.map(r => `<option value="${r.id}" ${r.id === sel ? 'selected' : ''}>${esc(r.name)}</option>`).join('');
   const rows = modalLoad.map((L, i) => `<div class="group-row" data-idx="${i}">
       <select class="ld-class" data-change="load-class" data-idx="${i}">${clsOpts(L.classId)}</select>
       <select class="ld-subject">${subOpts(L.classId, L.subjectId)}</select>
-      <input type="number" class="ld-hours" data-change="load-hours" min="0" max="40" value="${L.hours || ''}" placeholder="節" style="width:64px">
+      <input type="number" class="ld-hours" data-change="load-hours" min="0" max="40" value="${L.hours || ''}" placeholder="節" style="width:56px">
+      <select class="ld-room" title="專科教室（可留空）">${rOpts(L.roomId)}</select>
       <button type="button" class="icon-btn" data-action="del-load-row" data-idx="${i}">🗑️</button>
     </div>`).join('');
-  return rows + `<button type="button" class="ghost" data-action="add-load-row" style="margin-top:6px;padding:5px 10px;font-size:13px">＋ 新增配課（班級 → 科目 → 節數）</button>`;
+  return rows + `<button type="button" class="ghost" data-action="add-load-row" style="margin-top:6px;padding:5px 10px;font-size:13px">＋ 新增配課（班級 → 科目 → 節數 → 教室）</button>`;
 }
 function syncLoadFromDOM() {
   modalLoad = Array.from(document.querySelectorAll('#loadEditor .group-row')).map(r => ({
     classId: r.querySelector('.ld-class').value,
     subjectId: r.querySelector('.ld-subject').value,
     hours: parseInt(r.querySelector('.ld-hours').value, 10) || 0,
+    roomId: r.querySelector('.ld-room') ? r.querySelector('.ld-room').value : '',
   }));
 }
 function refreshLoadEditor() { const el = $('#loadEditor'); if (el) el.innerHTML = loadEditorHTML(); }
@@ -560,15 +568,17 @@ function computeConflicts() {
   const byDP = {};
   for (const key in state.slots) {
     const sid = state.slots[key]; const [classId, day, period] = key.split('|'); const dp = day + '|' + period;
-    loadsForClassSubject(classId, sid).forEach(x => (byDP[dp] = byDP[dp] || []).push({ key, classId, subjectId: sid, teacherId: x.teacher.id }));
+    loadsForClassSubject(classId, sid).forEach(x => (byDP[dp] = byDP[dp] || []).push({ key, classId, subjectId: sid, teacherId: x.teacher.id, roomId: x.roomId }));
   }
   for (const dp in byDP) {
     const list = byDP[dp];
     for (let i = 0; i < list.length; i++) for (let j = i + 1; j < list.length; j++) {
       const A = list[i], B = list[j];
-      if (A.teacherId && A.teacherId === B.teacherId) {
-        const coTogether = A.subjectId === B.subjectId && A.classId !== B.classId && classesCoteachTogether(A.classId, B.classId, A.subjectId);
-        if (!coTogether) { const msg = '教師衝堂：' + teacherName(A.teacherId); add(A.key, msg); add(B.key, msg); }
+      const coTogether = A.subjectId === B.subjectId && A.classId !== B.classId && classesCoteachTogether(A.classId, B.classId, A.subjectId);
+      if (A.teacherId && A.teacherId === B.teacherId && !coTogether) { const msg = '教師衝堂：' + teacherName(A.teacherId); add(A.key, msg); add(B.key, msg); }
+      if (A.roomId && A.roomId === B.roomId) {
+        const sameOffering = A.classId === B.classId && A.subjectId === B.subjectId;
+        if (!sameOffering && !coTogether) { const msg = '教室衝堂：' + roomName(A.roomId); add(A.key, msg); add(B.key, msg); }
       }
     }
   }
@@ -641,7 +651,7 @@ function paletteHTML(classId) {
     const partners = classCoteachPartners(c, sh.subjectId);
     return `<div class="chip ${sh.subjectId === selectedSubjectId ? 'selected' : ''} ${done && !over ? 'done' : ''}" style="border-left-color:${s.color}" data-action="select-subject" data-id="${sh.subjectId}">
       <div><div class="chip-name">${s.allowGrouping ? '👥' : ''}${s.consecutive ? '⏱' : ''}${esc(s.name)}</div>
-        <div class="chip-sub">${esc(subjectTeachersLabel(classId, sh.subjectId))}${partners.length ? ' · 🔗協同' : ''}</div></div>
+        <div class="chip-sub">${esc(subjectTeachersLabel(classId, sh.subjectId))}${roomsLabelCS(classId, sh.subjectId) ? ' · ' + esc(roomsLabelCS(classId, sh.subjectId)) : ''}${partners.length ? ' · 🔗協同' : ''}</div></div>
       <span class="chip-count" style="color:${over ? 'var(--danger)' : done ? 'var(--ok)' : 'var(--muted)'}">${placed}/${sh.hours}</span>
     </div>`;
   }).join('');
@@ -662,7 +672,7 @@ function classTimetableHTML(classId, conflicts, editable) {
         html += `<td class="cell ${editable ? 'placeable' : ''}" ${editable ? `data-action="cell-click" data-key="${key}"` : ''} title="${conf ? esc(conf.join('；')) : ''}">
           <div class="cell-lesson ${conf ? 'conflict' : ''}" style="background:${color};color:${textOn(color)}">
             ${co ? '🔗' : ''}${s && s.allowGrouping ? '👥' : ''}${esc(subjectName(sid))}
-            <small>${esc(subjectTeachersLabel(classId, sid))}</small>
+            <small>${esc(subjectTeachersLabel(classId, sid))}${roomsLabelCS(classId, sid) ? '·' + esc(roomsLabelCS(classId, sid)) : ''}</small>
             ${conf ? `<span class="conf-mark">⚠ ${conf.some(x => x.includes('衝堂') || x.includes('不排課')) ? '衝堂' : conf.some(x => x.startsWith('協同')) ? '協同未同步' : '連堂未相鄰'}</span>` : ''}
           </div></td>`;
       } else if (open) {
@@ -776,12 +786,45 @@ function viewSettings() {
       <table class="data"><thead><tr><th>名稱</th><th>開始</th><th>結束</th><th style="text-align:center">午休/分隔</th><th></th></tr></thead><tbody>${periodRows}</tbody></table>
       <p class="hint" style="color:var(--muted);margin-top:8px">勾「午休/分隔」的節（如午休）不上課、不列入各年級節次表；其餘節才會在「年級」逐格勾上課日。</p>
     </div></div>
+    <div class="card"><div class="card-body">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+        <h4 style="margin:0">專科教室</h4><button class="ghost" data-action="add-room">＋ 新增教室</button>
+      </div>
+      ${state.rooms.length === 0 ? `<div style="color:var(--muted)">尚無專科教室（例：電腦教室、自然教室、音樂教室、體育館）。教室在「④ 教師配課」逐筆指定，排課會檢查同一教室同時段是否被兩班搶用。</div>`
+      : `<table class="data"><tbody>${state.rooms.map(r => `<tr>
+          <td><b>${esc(r.name)}</b></td>
+          <td>${state.teachers.reduce((n, t) => n + (t.load || []).filter(L => L.roomId === r.id).length, 0)} 筆配課使用</td>
+          <td class="row-actions"><button class="icon-btn" data-action="edit-room" data-id="${r.id}">✏️</button><button class="icon-btn" data-action="del-room" data-id="${r.id}">🗑️</button></td>
+        </tr>`).join('')}</tbody></table>`}
+    </div></div>
     <div class="card"><div class="card-body"><h4 style="margin-top:0">排課選項</h4>
       <label class="checkbox"><input type="checkbox" data-change="toggle-autopair" ${state.settings.autoPairConsecutive !== false ? 'checked' : ''}> 需連堂排課時，自動成對放課（一組 2 節相鄰）</label>
     </div></div>
     <div class="card"><div class="card-body"><h4 style="margin-top:0">關於</h4>
-      <p style="color:var(--muted)">課務編排 ${APP_VERSION}（重構測試中）· 資料存本機瀏覽器。備份請用右上「備份」。</p>
+      <p style="color:var(--muted)">課務編排 ${APP_VERSION} · 資料存本機瀏覽器。備份請用右上「備份」。</p>
     </div></div>`;
+}
+function roomModal(existing) {
+  const r = existing || { name: '' };
+  openModal({
+    title: existing ? '編輯教室' : '新增教室',
+    body: `<label class="field"><span>教室名稱</span><input type="text" id="rName" value="${esc(r.name)}" placeholder="例：電腦教室"></label>`,
+    onSave: () => {
+      const name = $('#rName').value.trim();
+      if (!name) { toast('請輸入教室名稱'); return false; }
+      if (existing) existing.name = name; else state.rooms.push({ id: uid(), name });
+      save(); render(); toast('已儲存教室');
+      return true;
+    },
+  });
+}
+function delRoom(id) {
+  const r = roomById(id); if (!r) return;
+  const uses = state.teachers.reduce((n, t) => n + (t.load || []).filter(L => L.roomId === id).length, 0);
+  confirmDelete(`刪除教室「${r.name}」？${uses ? '（' + uses + ' 筆配課的教室將清空）' : ''}`, () => {
+    state.teachers.forEach(t => (t.load || []).forEach(L => { if (L.roomId === id) L.roomId = ''; }));
+    state.rooms = state.rooms.filter(x => x.id !== id);
+  });
 }
 
 /* ==========================================================================
@@ -862,12 +905,12 @@ function helpModal() {
       <li>點「科目 / 協同」可為每一科勾選<b>協同教學</b>的同年級其他班（同時段一起上）。</li></ul>
     <h4>④ 教師</h4>
     <ul><li>填姓名、身分、<b>每周授課時數</b>、不排課時段。</li>
-      <li><b>教師配課</b>：逐筆「班級 → 科目 → 節數」。該師配課合計<b>必須等於每周授課時數</b>才能儲存。</li>
+      <li><b>教師配課</b>：逐筆「班級 → 科目 → 節數 → 教室（可留空）」。該師配課合計<b>必須等於每周授課時數</b>才能儲存。專科教室先在「設定」建立。</li>
       <li>上方狀態卡＋「檢查全校配課」：確認<b>每班每科節數都被配齊</b>（分組視為同一節）。全部相符才可進入排課。</li></ul>
     <h4>⑤ 排課</h4>
     <ul><li>選班級 → 左側點科目 → 點課表空格放課；點已排格移除。灰色格＝該班該節不上課。</li>
       <li>分組科目自動多師同格；協同科目放一班自動同步其他班；連堂自動成對。</li>
-      <li>🔴 紅框代表需注意：教師衝堂／不排課時段／協同未同步／連堂未相鄰（移到格上看原因）。</li></ul>
+      <li>🔴 紅框代表需注意：教師衝堂／教室衝堂／不排課時段／協同未同步／連堂未相鄰（移到格上看原因）。</li></ul>
     <h4>課表輸出 / 備份</h4>
     <p>可輸出班級表、教師表，列印或存 PDF、匯出 CSV。右上「備份」可匯出/匯入 JSON（換裝置用）。</p>
     </div>`,
@@ -881,6 +924,10 @@ const clickHandlers = {
   'modal-backdrop': (el, e) => { if (e.target === el) closeModal(); },
   'modal-close': closeModal,
   'modal-save': () => { const r = modalOnSave ? modalOnSave() : true; if (r !== false) closeModal(); },
+
+  'add-room': () => roomModal(null),
+  'edit-room': el => roomModal(roomById(el.dataset.id)),
+  'del-room': el => delRoom(el.dataset.id),
 
   'add-subject': () => subjectModal(null),
   'edit-subject': el => subjectModal(subjectById(el.dataset.id)),
@@ -1016,6 +1063,7 @@ function bindGlobal() {
 async function init() {
   try { state = await idbGet(STATE_KEY); } catch (e) { state = null; }
   if (!state || state.schema !== SCHEMA) { state = defaultState(); await save(); }
+  else if (!Array.isArray(state.rooms)) state.rooms = []; // v02 教室加回
   bindGlobal();
   render();
   if (!state.helpSeen) { helpModal(); state.helpSeen = true; save(); }

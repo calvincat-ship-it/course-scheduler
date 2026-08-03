@@ -32,7 +32,8 @@
   1. `git checkout main && git merge redesign`（或 PR）。
   2. sw CACHE_NAME 已是 v02.00；push main → GH Pages 生效。
   3. ⚠ 上線後同仁舊資料(v01 schema)會被自動重置(schema 檢查)—需先告知同仁或提供轉換。目前同仁仍在用 main v01.05。
-- 尚未決：是否需要「專科教室衝堂」(新流程移除了教室)—待使用者確認。
+- **專科教室已加回 (v02, 使用者要求)**：state.rooms[{id,name}] 在「設定」CRUD；教室設在 teacher.load 每筆(roomId，分組不同組可不同教室)；computeConflicts 加教室衝堂(同教室同節，**同一堂課/同協同群組豁免**)；調色盤/格子/使用說明皆顯示教室。本機驗證通過(教室衝堂/協同豁免/modal 存 roomId)。
+- 使用者已答：**驗收 OK 就直接上線**(授權合併 redesign→main、push、Pages；同仁 v01 測試資料會被 schema 重置，使用者已知)。等使用者本機跑過確認即可執行上線。
 - 續跑提醒：在 redesign 分支；`git checkout redesign`；勿 push main/部署。
 
 ## （封存）main v01.05 之前的變更紀錄
