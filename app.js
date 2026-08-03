@@ -5,7 +5,7 @@
    資料層：IndexedDB 單一 state 文件（in-memory + 整包持久化）
    ========================================================================== */
 
-const APP_VERSION = 'v01.03';
+const APP_VERSION = 'v01.04';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 
@@ -62,6 +62,7 @@ function defaultState() {
         { id: 'p6', label: '第6節', start: '14:20', end: '15:00', days: [1, 2, 3, 4, 5] },
         { id: 'p7', label: '第7節', start: '15:20', end: '16:00', days: [1, 2, 3, 4, 5] },
       ],
+      autoPairConsecutive: true, // 需連堂的課，放課時自動成對排入相鄰節
     },
     classes: [],
     teachers: [],
@@ -76,6 +77,7 @@ function defaultState() {
 function migrate(s) {
   s.settings = s.settings || {};
   s.settings.days = s.settings.days || [1, 2, 3, 4, 5];
+  if (typeof s.settings.autoPairConsecutive !== 'boolean') s.settings.autoPairConsecutive = true; // v01.04
   s.settings.periods = s.settings.periods || defaultState().settings.periods;
   // v01.02: 節次由整週 lesson 布林 → 每日 days 陣列
   for (const p of s.settings.periods) {
@@ -148,6 +150,28 @@ function cleanupCoteachSingletons() {
   state.assignments.forEach(a => { if (a.coteach) count[a.coteach] = (count[a.coteach] || 0) + 1; });
   state.assignments.forEach(a => { if (a.coteach && count[a.coteach] < 2) a.coteach = ''; });
 }
+/* 連堂：相鄰節次判定（不跨午休/下課、不跨本日未上課的節） */
+function adjacentLessonPeriod(periodId, day, dir) {
+  const arr = state.settings.periods;
+  const i = arr.findIndex(p => p.id === periodId);
+  if (i < 0) return null;
+  const nb = arr[i + dir];
+  if (!nb || !periodHasDay(nb, day)) return null;
+  return nb.id;
+}
+/* 放一筆課到某格，並把協同同群組其他班一併放入同一格（僅填空格）。回傳協同新增班數。 */
+function placeAssignment(a, day, period) {
+  const key = slotKey(a.classId, day, period);
+  if (!state.slots[key]) state.slots[key] = a.id;
+  let linked = 0;
+  if (a.coteach) coteachMembers(a.coteach).forEach(m => {
+    if (m.id === a.id) return;
+    const mk = slotKey(m.classId, day, period);
+    if (!state.slots[mk]) { state.slots[mk] = m.id; linked++; }
+  });
+  return linked;
+}
+
 function applyCoteach(meId, memberIds) {
   const me = assignmentById(meId);
   if (!me) return;
@@ -206,6 +230,19 @@ function computeConflicts() {
         break;
       }
     }
+  }
+  // 連堂未相鄰：標記需連堂的課，若同日相鄰節沒有同一門課接續
+  for (const key in state.slots) {
+    const a = assignmentById(state.slots[key]);
+    if (!a || !a.consecutive || a.periods < 2) continue;
+    const [classId, dayStr, period] = key.split('|');
+    const day = parseInt(dayStr, 10);
+    const prev = adjacentLessonPeriod(period, day, -1);
+    const next = adjacentLessonPeriod(period, day, +1);
+    const paired =
+      (prev && state.slots[slotKey(classId, day, prev)] === a.id) ||
+      (next && state.slots[slotKey(classId, day, next)] === a.id);
+    if (!paired) add(key, '連堂未相鄰');
   }
   // teacher unavailable
   for (const key in state.slots) {
@@ -295,7 +332,7 @@ function viewSchedule() {
       <h2>排課</h2>
       <div class="hint">在左側點一個配課，再點課表空格放課；點已排的格子可移除。</div>
     </div>
-    ${totalConflictCells ? `<div class="conflict-banner no-print">⚠ 全校目前有 ${totalConflictCells} 個衝堂格子，請檢查紅框。</div>` : ''}
+    ${totalConflictCells ? `<div class="conflict-banner no-print">⚠ 全校目前有 ${totalConflictCells} 個需注意的格子（衝堂／協同未同步／連堂未相鄰），請檢查標記。</div>` : ''}
     <div class="board-toolbar no-print">
       <label>班級：</label>
       <select id="scheduleClass" data-change="schedule-class">${classOpts}</select>
@@ -357,7 +394,7 @@ function timetableHTML(classId, conflicts, editable) {
           <div class="cell-lesson ${conf ? 'conflict' : ''}" style="background:${color};color:${textOn(color)}">
             ${a.coteach ? '🔗' : ''}${esc(subjectName(a.subjectId))}
             <small>${esc(teacherName(a.teacherId))}${a.roomId ? '·' + esc(roomName(a.roomId)) : ''}</small>
-            ${conf ? `<span class="conf-mark">⚠ ${conf.some(c => c.startsWith('協同')) ? '協同未同步' : '衝堂'}</span>` : ''}
+            ${conf ? `<span class="conf-mark">⚠ ${conf.some(c => c.includes('衝堂')) ? '衝堂' : conf.some(c => c.startsWith('協同')) ? '協同未同步' : '連堂未相鄰'}</span>` : ''}
           </div></td>`;
       } else if (open) {
         html += `<td class="cell ${editable ? 'placeable' : ''}" ${editable ? `data-action="cell-click" data-key="${key}"` : ''}></td>`;
@@ -770,6 +807,11 @@ function viewSettings() {
       <div>${dayToggles}</div>
     </div></div>
     <div class="card"><div class="card-body">
+      <h4 style="margin-top:0">排課選項</h4>
+      <label class="checkbox"><input type="checkbox" data-change="toggle-autopair" ${state.settings.autoPairConsecutive !== false ? 'checked' : ''}> 需連堂排課時，自動成對放課（一組 2 節相鄰）</label>
+      <p class="hint" style="color:var(--muted);margin-top:8px">開啟時：排一筆「需連堂」的課，會自動把相鄰的一節一起排入（湊成 2 節連堂）。關閉則需手動逐格放；無論開關，需連堂的課若沒有相鄰兩節在一起，都會顯示「連堂未相鄰」提醒。</p>
+    </div></div>
+    <div class="card"><div class="card-body">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
         <h4 style="margin:0">節次表</h4>
         <button class="ghost" data-action="add-period">＋ 新增節次</button>
@@ -848,12 +890,13 @@ function helpContent() {
 
     <h4>二、各分頁</h4>
     <ul>
-      <li><b>設定</b>：勾選上課日；節次表可為<b>每一節 × 每個上課日</b>各自勾選是否上課（例：週三下午不排課，就把那幾節的「週三」取消）。未勾的格子在排課盤面顯示為灰色、不能放課；整列都不勾（午休）則顯示為分隔列。</li>
+      <li><b>設定</b>：勾選上課日；節次表可為<b>每一節 × 每個上課日</b>各自勾選是否上課（例：週三下午不排課，就把那幾節的「週三」取消）。未勾的格子在排課盤面顯示為灰色、不能放課；整列都不勾（午休）則顯示為分隔列。另有「排課選項」可切換是否<b>連堂自動成對放課</b>。</li>
       <li><b>科目</b>：新增名稱＋選顏色（課表上該科的顏色）。「需專科教室／預設連堂」為<b>註記用途</b>，實際設定在「配課」。</li>
       <li><b>教室</b>：建立會搶用的場地（電腦教室、自然教室、體育館…），排課時會檢查同時段是否被兩班同用。</li>
       <li><b>教師</b>：姓名、類別、<b>每週節數上限</b>；下方格子點一下出現 <b>✕</b> ＝該時段不排課（再點取消）。</li>
       <li><b>班級</b>：新增班名並選年級。</li>
       <li><b>配課</b>：一筆＝一門課＝<b>班級 × 科目 × 教師 × 每週節數</b>（可指定教室／連堂）。這是排課的清單。
+        <br>⏱ <b>需連堂</b>：勾了的課代表兩節要<b>相鄰接續上</b>（同一天、中間不隔開，一組 2 節）。排課時只要放一格，會自動把相鄰的一節一起排入；若沒有相鄰兩節在一起會顯示「連堂未相鄰」。可在「設定 ▸ 排課選項」關閉自動成對。
         <br>🔗 <b>協同教學</b>：若某課要幾個班<b>同時段一起上</b>（如一忠、一孝的生活課），在配課裡勾選要協同的其他班（同科目）。排課時只要排其中一班，其他班會<b>自動排到同一格</b>；同群組彼此不算衝堂，若沒對齊會顯示「協同未同步」。</li>
     </ul>
 
@@ -1002,16 +1045,21 @@ const clickHandlers = {
     }
     if (!selectedAssignmentId) { toast('先在左側點選一個配課'); return; }
     const sel = assignmentById(selectedAssignmentId);
-    state.slots[key] = selectedAssignmentId;
-    // 協同：同時把同群組其他班排入同一格（僅填入該班的空格）
-    let linked = 0;
-    if (sel && sel.coteach) coteachMembers(sel.coteach).forEach(m => {
-      if (m.id === sel.id) return;
-      const mk = slotKey(m.classId, day, period);
-      if (!state.slots[mk]) { state.slots[mk] = m.id; linked++; }
-    });
+    const dNum = parseInt(day, 10);
+    const notes = [];
+    const linked = placeAssignment(sel, day, period);   // 主格（含協同同步）
+    if (linked) notes.push(`協同同步 ${linked} 班`);
+    // 連堂：自動把相鄰一節成對排入
+    if (sel.consecutive && sel.periods >= 2 && state.settings.autoPairConsecutive !== false && placedCount(sel.id) < sel.periods) {
+      const next = adjacentLessonPeriod(period, dNum, +1);
+      const prev = adjacentLessonPeriod(period, dNum, -1);
+      const partner = (next && !state.slots[slotKey(sel.classId, day, next)]) ? next
+        : (prev && !state.slots[slotKey(sel.classId, day, prev)]) ? prev : null;
+      if (partner) { const l2 = placeAssignment(sel, day, partner); notes.push('連堂成對排入相鄰節' + (l2 ? `（協同 ${l2} 班）` : '')); }
+      else notes.push('連堂：找不到相鄰空格，請手動調整');
+    }
     save(); render();
-    if (linked) toast(`協同教學：同時排入其他 ${linked} 班`);
+    if (notes.length) toast(notes.join('；'));
   },
 
   'add-period': () => {
@@ -1059,6 +1107,7 @@ const changeHandlers = {
     const p = byId(state.settings.periods, el.dataset.pid);
     if (p) { p[el.dataset.field] = el.value; save(); }
   },
+  'toggle-autopair': el => { state.settings.autoPairConsecutive = el.checked; save(); },
   'period-day': el => {
     const p = byId(state.settings.periods, el.dataset.pid);
     if (!p) return;

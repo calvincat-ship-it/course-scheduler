@@ -5,7 +5,16 @@
 ## 最後更新
 - 時間：2026-08-03
 - 機器：桌機
-- 版本：v01.03（協同教學）
+- 版本：v01.04（連堂實作：自動成對＋未相鄰警示）
+
+## v01.04 變更
+- **連堂功能化**（原本只是標籤）。`assignment.consecutive` 現在真的生效：
+  - **自動成對放課**：放一筆需連堂的課，自動把相鄰一節一起排入（優先 next、否則 prev）。`placeAssignment()` 統一「放格＋協同同步」，連堂再呼叫一次放相鄰節；受 `placedCount<periods` 上限保護、`periods>=2` 才作用。
+  - **相鄰定義** `adjacentLessonPeriod(pid,day,dir)`：只看陣列上緊鄰的節，且該節該日有課（periodHasDay）；午休/下課(days=[])或本日未上課→不相鄰（不跨午休）。
+  - **未相鄰警示**：衝堂引擎新增「連堂未相鄰」（consecutive 且 periods>=2、同日相鄰節沒有同一門課接續）。
+  - **設定開關** `settings.autoPairConsecutive`（預設 true，migrate 補）；設定頁「排課選項」可取消勾選「需連堂排課時，自動成對放課」。關閉只停自動放，警示照舊。
+  - 盤面徽章依原因顯示「衝堂／協同未同步／連堂未相鄰」；橫幅改「需注意的格子」。
+- 版本 v01.04（APP_VERSION、sw 同步）。
 
 ## v01.03 變更
 - **協同教學**：`assignment.coteach`（群組 id）；同組配課須排同一時段。
