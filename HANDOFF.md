@@ -7,9 +7,15 @@
 - 機器：桌機
 - 版本：v01.00（MVP 骨架）
 
+## 線上位置
+- Repo：https://github.com/calvincat-ship-it/course-scheduler
+- Live（GH Pages）：https://calvincat-ship-it.github.io/course-scheduler/
+- 已開 Issues，供同仁回報問題／建議。
+
 ## 做到哪
 - 建立專案骨架：serve.js（port 5177）、PWA 四件套（index/style/app/sw/manifest/icon.svg）、CLAUDE.md、本檔。
 - 已加入 root `.claude/launch.json` 設定：`course-scheduler`。
+- **已上線**：建 GitHub repo（calvincat-ship-it）、push main、開 GH Pages（main / root），線上版實測 200、無 console error。
 - **MVP 核心功能（v01.00）**：
   - 資料層：IndexedDB 單一 state 文件（in-memory + 整包持久化），key `state`，DB `course_scheduler`。
   - 設定：節次表（可增刪改、標記上課/下課午休）、上課日切換。
@@ -27,7 +33,7 @@
 - （選配）Google Drive 同步—— 資料層已是單一 state 文件，易接。
 
 ## 待決 / 卡住的問題
-- （無）。尚未建立 GitHub remote / GH Pages（目前僅本機）。若要上線再處理。
+- （無）。已上線收集同仁回饋中。PNG 圖示尚缺（目前只有 SVG，PWA 安裝可用）。
 
 ## 注意事項（給另一台的 Claude）
 - 版本 vNN.MM：小改直接 bump minor；大改先確認。APP_VERSION（app.js）與 sw.js CACHE_NAME 要同步。
