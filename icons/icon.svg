@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="96" fill="#2563eb"/>
+  <rect x="96" y="120" width="320" height="296" rx="28" fill="#ffffff"/>
+  <rect x="96" y="120" width="320" height="64" rx="28" fill="#1e40af"/>
+  <rect x="150" y="92" width="28" height="64" rx="14" fill="#1e40af"/>
+  <rect x="334" y="92" width="28" height="64" rx="14" fill="#1e40af"/>
+  <!-- timetable grid -->
+  <g fill="#93c5fd">
+    <rect x="128" y="212" width="80" height="52" rx="8"/>
+    <rect x="216" y="212" width="80" height="52" rx="8"/>
+    <rect x="304" y="212" width="80" height="52" rx="8"/>
+    <rect x="128" y="272" width="80" height="52" rx="8"/>
+    <rect x="304" y="272" width="80" height="52" rx="8"/>
+    <rect x="128" y="332" width="80" height="52" rx="8"/>
+    <rect x="216" y="332" width="80" height="52" rx="8"/>
+  </g>
+  <!-- highlighted placed lesson -->
+  <rect x="216" y="272" width="80" height="52" rx="8" fill="#f59e0b"/>
+  <rect x="304" y="332" width="80" height="52" rx="8" fill="#10b981"/>
+</svg>

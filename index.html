@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#2563eb" />
+  <link rel="manifest" href="manifest.json" />
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="icons/icon.svg" />
+  <link rel="stylesheet" href="style.css" />
+  <title>課務編排</title>
+</head>
+<body>
+  <header class="topbar no-print">
+    <div class="brand">
+      <img src="icons/icon.svg" alt="" class="logo" />
+      <div>
+        <div class="title">課務編排</div>
+        <div class="subtitle" id="versionTag">v01.00</div>
+      </div>
+    </div>
+    <nav class="tabs" id="tabs">
+      <button data-tab="schedule" class="active">排課</button>
+      <button data-tab="assignments">配課</button>
+      <button data-tab="classes">班級</button>
+      <button data-tab="teachers">教師</button>
+      <button data-tab="subjects">科目</button>
+      <button data-tab="rooms">教室</button>
+      <button data-tab="output">課表輸出</button>
+      <button data-tab="settings">設定</button>
+    </nav>
+    <div class="topbar-actions">
+      <button id="backupBtn" class="ghost" title="匯出 / 匯入備份">備份</button>
+    </div>
+  </header>
+
+  <main id="view"></main>
+
+  <div id="modalRoot"></div>
+  <div id="toast" class="toast" hidden></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
