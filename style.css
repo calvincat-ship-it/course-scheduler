@@ -85,6 +85,7 @@ table.data tr:hover td { background: #f8fafc; }
 .pill.gray { background: #f1f5f9; color: #475569; }
 .pill.green { background: #dcfce7; color: #15803d; }
 .pill.amber { background: #fef3c7; color: #b45309; }
+.pill.teal { background: #ccfbf1; color: #0f766e; }
 .pill.red { background: var(--danger-bg); color: var(--danger); }
 
 /* ---------- Forms ---------- */

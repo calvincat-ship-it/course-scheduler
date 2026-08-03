@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v02.01';
+const APP_VERSION = 'v02.02';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -68,6 +68,7 @@ function defaultState() {
     classes: [],
     teachers: [],
     slots: {},
+    slotTeachers: {}, // 分節上課科目：每格記錄該節由哪位老師上（key 同 slots）
     helpSeen: false,
   };
 }
@@ -158,21 +159,23 @@ function render() {
    ========================================================================== */
 function viewSubjects() {
   const head = `<div class="page-head"><h2>① 科目</h2><button class="btn" data-action="add-subject">＋ 新增科目</button></div>
-    <div class="hint" style="margin-bottom:12px;color:var(--muted)">先建立全校要開的科目。勾「可分組教學」的科目：同一班可由多位老師同時分組上課（配課不計教師衝堂、排課可放同一節）。</div>`;
+    <div class="hint" style="margin-bottom:12px;color:var(--muted)">先建立全校要開的科目，並選教學型態：<b>單一教師</b>整科一位老師；<b>👥 分組教學</b>同班多師「同一節」平行上；<b>✂️ 分節上課</b>多師分攤節數、各上「不同節」（如生活 6 節＝A 上 4＋B 上 2）。</div>`;
   if (state.subjects.length === 0) return head + emptyCard('尚無科目', '例如：國語、數學、英語、自然、體育、藝術…');
+  const modePill = s => s.splitTeachers ? '<span class="pill teal">✂️ 分節上課</span>' : s.allowGrouping ? '<span class="pill amber">👥 分組教學</span>' : '<span style="color:var(--muted)">單一教師</span>';
   const rows = state.subjects.map(s => `<tr>
     <td><span class="pill" style="background:${s.color};color:${textOn(s.color)}">${esc(s.name)}</span></td>
-    <td>${s.allowGrouping ? '<span class="pill amber">👥 可分組</span>' : '<span style="color:var(--muted)">—</span>'}</td>
+    <td>${modePill(s)}</td>
     <td>${s.consecutive ? '<span class="pill blue">⏱ 需連堂</span>' : '<span style="color:var(--muted)">—</span>'}</td>
     <td class="row-actions">
       <button class="icon-btn" data-action="edit-subject" data-id="${s.id}">✏️</button>
       <button class="icon-btn" data-action="del-subject" data-id="${s.id}">🗑️</button>
     </td></tr>`).join('');
   return head + `<div class="card"><table class="data">
-    <thead><tr><th>科目</th><th>分組教學</th><th>連堂</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
+    <thead><tr><th>科目</th><th>教學型態</th><th>連堂</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 function subjectModal(existing) {
-  const s = existing || { name: '', color: COLORS[state.subjects.length % COLORS.length], allowGrouping: false, consecutive: false };
+  const s = existing || { name: '', color: COLORS[state.subjects.length % COLORS.length], allowGrouping: false, splitTeachers: false, consecutive: false };
+  const mode = s.splitTeachers ? 'split' : s.allowGrouping ? 'group' : 'single';
   openModal({
     title: existing ? '編輯科目' : '新增科目',
     body: `
@@ -180,12 +183,18 @@ function subjectModal(existing) {
         <label class="field" style="flex:2"><span>科目名稱</span><input type="text" id="sName" value="${esc(s.name)}"></label>
         <label class="field" style="flex:1"><span>顏色</span><input type="color" id="sColor" value="${s.color}" style="height:40px;padding:2px"></label>
       </div>
-      <label class="checkbox" style="margin-bottom:10px"><input type="checkbox" id="sGroup" ${s.allowGrouping ? 'checked' : ''}> 👥 可分組教學（同班多師同時上，配課不計教師衝堂、排課可同節）</label>
+      <label class="field" style="margin-bottom:6px"><span>教學型態</span>
+        <select id="sMode">
+          <option value="single" ${mode === 'single' ? 'selected' : ''}>單一教師（整科由一位老師上）</option>
+          <option value="group" ${mode === 'group' ? 'selected' : ''}>👥 分組教學（同班多師「同一節」平行上，不計衝堂）</option>
+          <option value="split" ${mode === 'split' ? 'selected' : ''}>✂️ 分節上課（多師分攤節數、各上「不同節」，如生活 A上4＋B上2）</option>
+        </select></label>
       <label class="checkbox"><input type="checkbox" id="sConsec" ${s.consecutive ? 'checked' : ''}> ⏱ 需連堂（排課時兩節相鄰接續上）</label>`,
     onSave: () => {
       const name = $('#sName').value.trim();
       if (!name) { toast('請輸入科目名稱'); return false; }
-      const data = { name, color: $('#sColor').value, allowGrouping: $('#sGroup').checked, consecutive: $('#sConsec').checked };
+      const m = $('#sMode').value;
+      const data = { name, color: $('#sColor').value, allowGrouping: m === 'group', splitTeachers: m === 'split', consecutive: $('#sConsec').checked };
       if (existing) Object.assign(existing, data); else state.subjects.push({ id: uid(), ...data });
       save(); render(); toast('已儲存科目');
       return true;
@@ -404,10 +413,14 @@ function checkStaffing() {
       if (s && s.allowGrouping) {
         const bad = loads.filter(x => x.hours !== required);
         if (bad.length) problems.push({ className: c.name, subjectName: subjectName(sh.subjectId), required, status: `分組節數不符（每組應各 ${required} 節）`, teacherNames });
+      } else if (s && s.splitTeachers) {
+        // 分節上課：多師分攤，加總＝需求即可，允許多位老師
+        const total = loads.reduce((a, x) => a + x.hours, 0);
+        if (total !== required) problems.push({ className: c.name, subjectName: subjectName(sh.subjectId), required, status: total < required ? `分節加總不足（少 ${required - total} 節）` : `分節加總超過（多 ${total - required} 節）`, teacherNames });
       } else {
         const total = loads.reduce((a, x) => a + x.hours, 0);
         if (total !== required) problems.push({ className: c.name, subjectName: subjectName(sh.subjectId), required, status: total < required ? `缺漏（少 ${required - total} 節）` : `超過（多 ${total - required} 節）`, teacherNames });
-        else if (loads.length > 1) problems.push({ className: c.name, subjectName: subjectName(sh.subjectId), required, status: '非分組科目卻有多位老師', teacherNames });
+        else if (loads.length > 1) problems.push({ className: c.name, subjectName: subjectName(sh.subjectId), required, status: '非分組科目卻有多位老師（如需分攤請將科目設為「分節上課」）', teacherNames });
       }
     });
   });
@@ -578,7 +591,11 @@ function teacherModal(existing) {
 }
 function delTeacher(id) {
   const t = teacherById(id); if (!t) return;
-  confirmDelete(`刪除教師「${t.name}」？其配課將一併移除。`, () => { state.teachers = state.teachers.filter(x => x.id !== id); });
+  confirmDelete(`刪除教師「${t.name}」？其配課將一併移除。`, () => {
+    state.teachers = state.teachers.filter(x => x.id !== id);
+    // 清掉分節上課中指派給此師的格子（該節課因老師移除而清空）
+    for (const k in state.slotTeachers) { if (state.slotTeachers[k] === id) { delete state.slotTeachers[k]; delete state.slots[k]; } }
+  });
 }
 function staffingReportModal() {
   const problems = checkStaffing();
@@ -598,11 +615,33 @@ function staffingReportModal() {
    ========================================================================== */
 let selectedClassId = null;
 let selectedSubjectId = null;
+let selectedTeacherId = null; // 分節上課：選取的調色盤色塊是哪位老師（非分節為 null）
 let outputMode = 'class';
 let outputClassId = null;
 let outputTeacherId = null;
 
 const subjectPlaced = (classId, sid) => { let n = 0; for (const k in state.slots) if (k.startsWith(classId + '|') && state.slots[k] === sid) n++; return n; };
+// 分節上課：某(班,科)已排給某位老師的節數
+const placedByTeacher = (classId, sid, tid) => { let n = 0; for (const k in state.slots) if (k.startsWith(classId + '|') && state.slots[k] === sid && state.slotTeachers[k] === tid) n++; return n; };
+// 一格實際的上課老師/教室：分節科目→該格記錄的單一老師（含其該科教室）；其餘→該(班,科)全部配課老師（分組平行、單一師）
+function slotAssignments(key) {
+  const sid = state.slots[key]; if (!sid) return [];
+  const classId = key.split('|')[0]; const s = subjectById(sid);
+  const loads = loadsForClassSubject(classId, sid);
+  if (s && s.splitTeachers) {
+    const tid = state.slotTeachers[key]; if (!tid) return [];
+    const L = loads.find(x => x.teacher.id === tid);
+    return [{ teacherId: tid, roomId: L ? (L.roomId || '') : '' }];
+  }
+  return loads.map(x => ({ teacherId: x.teacher.id, roomId: x.roomId || '' }));
+}
+// 一格顯示的老師名稱標籤（分節→該格老師；其餘→全部配課老師）
+function slotTeachersLabel(key) {
+  const sid = state.slots[key]; if (!sid) return '';
+  const classId = key.split('|')[0]; const s = subjectById(sid);
+  if (s && s.splitTeachers) { const tid = state.slotTeachers[key]; return tid ? teacherName(tid) : '（未指定老師）'; }
+  return subjectTeachersLabel(classId, sid);
+}
 const classesCoteachTogether = (a, b, sid) => { const ca = classById(a), cb = classById(b); return ca && cb && ca.coteach && cb.coteach && ca.coteach[sid] && ca.coteach[sid] === cb.coteach[sid]; };
 function adjacentOpenPeriod(grade, periodId, day, dir) {
   const arr = state.settings.periods; const i = arr.findIndex(p => p.id === periodId);
@@ -610,7 +649,12 @@ function adjacentOpenPeriod(grade, periodId, day, dir) {
   if (!nb || nb.isBreak || !gradePeriodHasDay(grade, nb.id, day)) return null;
   return nb.id;
 }
-function teacherScheduled(t) { return (t.load || []).reduce((s, L) => s + subjectPlaced(L.classId, L.subjectId), 0); }
+function teacherScheduled(t) {
+  return (t.load || []).reduce((sum, L) => {
+    const s = subjectById(L.subjectId);
+    return sum + ((s && s.splitTeachers) ? placedByTeacher(L.classId, L.subjectId, t.id) : subjectPlaced(L.classId, L.subjectId));
+  }, 0);
+}
 
 function computeConflicts() {
   const conflicts = {};
@@ -618,7 +662,7 @@ function computeConflicts() {
   const byDP = {};
   for (const key in state.slots) {
     const sid = state.slots[key]; const [classId, day, period] = key.split('|'); const dp = day + '|' + period;
-    loadsForClassSubject(classId, sid).forEach(x => (byDP[dp] = byDP[dp] || []).push({ key, classId, subjectId: sid, teacherId: x.teacher.id, roomId: x.roomId }));
+    slotAssignments(key).forEach(x => (byDP[dp] = byDP[dp] || []).push({ key, classId, subjectId: sid, teacherId: x.teacherId, roomId: x.roomId }));
   }
   for (const dp in byDP) {
     const list = byDP[dp];
@@ -633,8 +677,8 @@ function computeConflicts() {
     }
   }
   for (const key in state.slots) {
-    const sid = state.slots[key]; const [classId, day, period] = key.split('|');
-    loadsForClassSubject(classId, sid).forEach(x => { if ((x.teacher.unavailable || []).includes(day + '|' + period)) add(key, '教師不排課時段：' + x.teacher.name); });
+    const [classId, day, period] = key.split('|');
+    slotAssignments(key).forEach(x => { const t = teacherById(x.teacherId); if (t && (t.unavailable || []).includes(day + '|' + period)) add(key, '教師不排課時段：' + t.name); });
   }
   for (const key in state.slots) {
     const sid = state.slots[key]; const [classId, day, period] = key.split('|');
@@ -655,11 +699,16 @@ function computeConflicts() {
 const teacherName = id => (teacherById(id) || {}).name || '?';
 function subjectTeachersLabel(classId, sid) { return loadsForClassSubject(classId, sid).map(x => x.teacher.name).join('｜') || '（未指派）'; }
 
-function placeSubject(classId, day, period, sid) {
+function placeSubject(classId, day, period, sid, teacherId) {
   const dNum = parseInt(day, 10);
   const key = slotKey(classId, day, period);
-  if (!state.slots[key]) state.slots[key] = sid;
+  const s = subjectById(sid);
+  if (!state.slots[key]) {
+    state.slots[key] = sid;
+    if (s && s.splitTeachers && teacherId) state.slotTeachers[key] = teacherId;
+  }
   let linked = 0;
+  if (s && s.splitTeachers) return linked; // 分節上課不走協同同步（各師各上不同節）
   const c = classById(classId); const gid = c && c.coteach && c.coteach[sid];
   if (gid) state.classes.filter(x => x.id !== classId && x.coteach && x.coteach[sid] === gid).forEach(p => {
     const g = classGrade(p); const mk = slotKey(p.id, day, period);
@@ -695,16 +744,39 @@ function viewSchedule() {
 function paletteHTML(classId) {
   const c = classById(classId); const subs = classSubjectHours(c);
   if (subs.length === 0) return `<div class="empty">此班年級尚未設定科目節數</div>`;
-  return subs.map(sh => {
-    const s = subjectById(sh.subjectId); if (!s) return '';
-    const placed = subjectPlaced(classId, sh.subjectId); const done = placed >= sh.hours, over = placed > sh.hours;
-    const partners = classCoteachPartners(c, sh.subjectId);
-    return `<div class="chip ${sh.subjectId === selectedSubjectId ? 'selected' : ''} ${done && !over ? 'done' : ''}" style="border-left-color:${s.color}" data-action="select-subject" data-id="${sh.subjectId}">
+  const chips = [];
+  subs.forEach(sh => {
+    const sid = sh.subjectId; const s = subjectById(sid); if (!s) return;
+    if (s.splitTeachers) {
+      // 分節上課：每位配課老師各一色塊，各自 已排/該師節數
+      const loads = loadsForClassSubject(classId, sid);
+      if (loads.length === 0) {
+        chips.push(`<div class="chip" style="border-left-color:${s.color};opacity:.6"><div><div class="chip-name">✂️${esc(s.name)}</div><div class="chip-sub">尚未在「④教師」配課</div></div></div>`);
+        return;
+      }
+      loads.forEach(L => {
+        const tid = L.teacher.id; const placed = placedByTeacher(classId, sid, tid);
+        const done = placed >= L.hours, over = placed > L.hours;
+        const seld = sid === selectedSubjectId && tid === selectedTeacherId;
+        const room = L.roomId ? ' · ' + esc(roomName(L.roomId)) : '';
+        chips.push(`<div class="chip ${seld ? 'selected' : ''} ${done && !over ? 'done' : ''}" style="border-left-color:${s.color}" data-action="select-subject" data-id="${sid}" data-teacher="${tid}">
+          <div><div class="chip-name">✂️${s.consecutive ? '⏱' : ''}${esc(s.name)}</div>
+            <div class="chip-sub">${esc(L.teacher.name)}${room}</div></div>
+          <span class="chip-count" style="color:${over ? 'var(--danger)' : done ? 'var(--ok)' : 'var(--muted)'}">${placed}/${L.hours}</span>
+        </div>`);
+      });
+      return;
+    }
+    const placed = subjectPlaced(classId, sid); const done = placed >= sh.hours, over = placed > sh.hours;
+    const partners = classCoteachPartners(c, sid);
+    const seld = sid === selectedSubjectId && !selectedTeacherId;
+    chips.push(`<div class="chip ${seld ? 'selected' : ''} ${done && !over ? 'done' : ''}" style="border-left-color:${s.color}" data-action="select-subject" data-id="${sid}">
       <div><div class="chip-name">${s.allowGrouping ? '👥' : ''}${s.consecutive ? '⏱' : ''}${esc(s.name)}</div>
-        <div class="chip-sub">${esc(subjectTeachersLabel(classId, sh.subjectId))}${roomsLabelCS(classId, sh.subjectId) ? ' · ' + esc(roomsLabelCS(classId, sh.subjectId)) : ''}${partners.length ? ' · 🔗協同' : ''}</div></div>
+        <div class="chip-sub">${esc(subjectTeachersLabel(classId, sid))}${roomsLabelCS(classId, sid) ? ' · ' + esc(roomsLabelCS(classId, sid)) : ''}${partners.length ? ' · 🔗協同' : ''}</div></div>
       <span class="chip-count" style="color:${over ? 'var(--danger)' : done ? 'var(--ok)' : 'var(--muted)'}">${placed}/${sh.hours}</span>
-    </div>`;
-  }).join('');
+    </div>`);
+  });
+  return chips.join('');
 }
 function classTimetableHTML(classId, conflicts, editable) {
   const days = activeDays(); const c = classById(classId); const g = classGrade(c);
@@ -721,8 +793,8 @@ function classTimetableHTML(classId, conflicts, editable) {
         const co = classCoteachPartners(c, sid).length;
         html += `<td class="cell ${editable ? 'placeable' : ''}" ${editable ? `data-action="cell-click" data-key="${key}"` : ''} title="${conf ? esc(conf.join('；')) : ''}">
           <div class="cell-lesson ${conf ? 'conflict' : ''}" style="background:${color};color:${textOn(color)}">
-            ${co ? '🔗' : ''}${s && s.allowGrouping ? '👥' : ''}${esc(subjectName(sid))}
-            <small>${esc(subjectTeachersLabel(classId, sid))}${roomsLabelCS(classId, sid) ? '·' + esc(roomsLabelCS(classId, sid)) : ''}</small>
+            ${co ? '🔗' : ''}${s && s.allowGrouping ? '👥' : ''}${s && s.splitTeachers ? '✂️' : ''}${esc(subjectName(sid))}
+            <small>${esc(slotTeachersLabel(key))}${!(s && s.splitTeachers) && roomsLabelCS(classId, sid) ? '·' + esc(roomsLabelCS(classId, sid)) : ''}</small>
             ${conf ? `<span class="conf-mark">⚠ ${conf.some(x => x.includes('衝堂') || x.includes('不排課')) ? '衝堂' : conf.some(x => x.startsWith('協同')) ? '協同未同步' : '連堂未相鄰'}</span>` : ''}
           </div></td>`;
       } else if (open) {
@@ -770,6 +842,8 @@ function teacherTimetableHTML(teacherId, conflicts) {
   for (const key in state.slots) {
     const sid = state.slots[key]; const [classId, day, period] = key.split('|');
     if (!teaches.has(classId + '|' + sid)) continue;
+    const s = subjectById(sid);
+    if (s && s.splitTeachers && state.slotTeachers[key] !== teacherId) continue; // 分節：別位老師的節不算進來
     (map[day + '|' + period] = map[day + '|' + period] || []).push({ classId, sid, key });
   }
   let html = `<div class="print-only" style="text-align:center;font-weight:700;font-size:16px;margin-bottom:8px">${esc((t || {}).name || '')} 教師課表</div>`;
@@ -797,12 +871,12 @@ function exportCSV() {
     title = (classById(outputClassId) || {}).name || '班級';
     for (const p of state.settings.periods) {
       if (p.isBreak) continue;
-      rows.push([p.label, ...days.map(d => { const sid = state.slots[slotKey(outputClassId, d, p.id)]; return sid ? `${subjectName(sid)}/${subjectTeachersLabel(outputClassId, sid)}` : ''; })]);
+      rows.push([p.label, ...days.map(d => { const k = slotKey(outputClassId, d, p.id); const sid = state.slots[k]; return sid ? `${subjectName(sid)}/${slotTeachersLabel(k)}` : ''; })]);
     }
   } else {
     title = (teacherById(outputTeacherId) || {}).name || '教師'; const t = teacherById(outputTeacherId);
     const teaches = new Set((t.load || []).map(L => L.classId + '|' + L.subjectId)); const map = {};
-    for (const key in state.slots) { const sid = state.slots[key]; const [classId, day, period] = key.split('|'); if (!teaches.has(classId + '|' + sid)) continue; const dp = day + '|' + period; map[dp] = (map[dp] ? map[dp] + '、' : '') + `${(classById(classId) || {}).name || ''}/${subjectName(sid)}`; }
+    for (const key in state.slots) { const sid = state.slots[key]; const [classId, day, period] = key.split('|'); if (!teaches.has(classId + '|' + sid)) continue; const s = subjectById(sid); if (s && s.splitTeachers && state.slotTeachers[key] !== outputTeacherId) continue; const dp = day + '|' + period; map[dp] = (map[dp] ? map[dp] + '、' : '') + `${(classById(classId) || {}).name || ''}/${subjectName(sid)}`; }
     for (const p of state.settings.periods) { if (p.isBreak) continue; rows.push([p.label, ...days.map(d => map[d + '|' + p.id] || '')]); }
   }
   const csv = '﻿' + rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\r\n');
@@ -910,7 +984,7 @@ function importJSON() {
       try {
         const data = JSON.parse(reader.result);
         if (!data || data.schema !== SCHEMA) throw new Error('版本不符（需 schema ' + SCHEMA + '）');
-        state = data; save(); closeModal(); selectedGradeId = null; render(); toast('已匯入備份');
+        state = data; if (!state.slotTeachers || typeof state.slotTeachers !== 'object') state.slotTeachers = {}; save(); closeModal(); selectedGradeId = null; render(); toast('已匯入備份');
       } catch (e) { toast('匯入失敗：' + e.message); }
     };
     reader.readAsText(file);
@@ -945,7 +1019,7 @@ function helpModal() {
     <p class="help-flow">①科目 ▸ ②年級 ▸ ③班級 ▸ ④教師 ▸ ⑤排課 ▸ 課表輸出</p>
     <h4>① 科目</h4>
     <ul><li>建立全校科目、選顏色。</li>
-      <li>👥 <b>可分組教學</b>：勾了的科目（如英語）可由多位老師同時分組上，排課時同一格多師、不算衝堂。</li>
+      <li><b>教學型態</b>三選一：<b>單一教師</b>整科一位老師上；<b>👥 分組教學</b>（如英語）同班多師「同一節」平行分組上、不算衝堂；<b>✂️ 分節上課</b>多師分攤節數、各上「不同節」（如生活 6 節＝A 上 4＋B 上 2）。</li>
       <li>⏱ <b>需連堂</b>：勾了的科目排課時自動把兩節排在相鄰位置。</li></ul>
     <h4>② 年級（一~六年級各一張）</h4>
     <ul><li><b>2.1 節次表</b>：每個年級逐格勾「哪節×哪個上課日有課」（例：週三下午不上課就取消那幾格）。</li>
@@ -956,9 +1030,11 @@ function helpModal() {
     <h4>④ 教師</h4>
     <ul><li>填姓名、身分、<b>每周授課時數</b>、不排課時段。</li>
       <li><b>教師配課</b>：逐筆「班級 → 科目 → 節數 → 教室（可留空）」。該師配課合計<b>必須等於每周授課時數</b>才能儲存。專科教室先在「設定」建立。</li>
-      <li>上方狀態卡＋「檢查全校配課」：確認<b>每班每科節數都被配齊</b>（分組視為同一節）。全部相符才可進入排課。</li></ul>
+      <li>上方狀態卡＋「檢查全校配課」：確認<b>每班每科節數都被配齊</b>（分組每師各需足額；分節多師加總＝需求）。全部相符才可進入排課。</li>
+      <li>✂️ <b>分節上課</b>科目：直接把節數拆給不同老師（如生活給 A 4 節、B 2 節），下拉會顯示各科<b>剩餘節數</b>、填的節數不超過剩餘。</li></ul>
     <h4>⑤ 排課</h4>
     <ul><li>選班級 → 左側點科目 → 點課表空格放課；點已排格移除。灰色格＝該班該節不上課。</li>
+      <li>✂️ <b>分節上課</b>科目：左側每位老師各一個色塊，先點「要放哪位老師」再點格，該格就記下由誰上（各上不同節）。</li>
       <li>分組科目自動多師同格；協同科目放一班自動同步其他班；連堂自動成對。</li>
       <li>🔴 紅框代表需注意：教師衝堂／教室衝堂／不排課時段／協同未同步／連堂未相鄰（移到格上看原因）。</li></ul>
     <h4>課表輸出 / 備份</h4>
@@ -1018,24 +1094,30 @@ const clickHandlers = {
   'move-period-up': el => movePeriod(el.dataset.pid, -1),
   'move-period-down': el => movePeriod(el.dataset.pid, 1),
 
-  'select-subject': el => { selectedSubjectId = (selectedSubjectId === el.dataset.id) ? null : el.dataset.id; render(); },
+  'select-subject': el => {
+    const sid = el.dataset.id; const tid = el.dataset.teacher || null;
+    if (selectedSubjectId === sid && selectedTeacherId === tid) { selectedSubjectId = null; selectedTeacherId = null; }
+    else { selectedSubjectId = sid; selectedTeacherId = tid; }
+    render();
+  },
   'cell-click': el => {
     const key = el.dataset.key; const [classId, day, period] = key.split('|'); const dNum = parseInt(day, 10);
     if (state.slots[key]) {
-      const sid = state.slots[key]; delete state.slots[key];
+      const sid = state.slots[key]; delete state.slots[key]; delete state.slotTeachers[key];
       const c = classById(classId); const gid = c && c.coteach && c.coteach[sid];
-      if (gid) state.classes.filter(x => x.id !== classId && x.coteach && x.coteach[sid] === gid).forEach(p => { const mk = slotKey(p.id, day, period); if (state.slots[mk] === sid) delete state.slots[mk]; });
+      if (gid) state.classes.filter(x => x.id !== classId && x.coteach && x.coteach[sid] === gid).forEach(p => { const mk = slotKey(p.id, day, period); if (state.slots[mk] === sid) { delete state.slots[mk]; delete state.slotTeachers[mk]; } });
       save(); render(); return;
     }
     if (!selectedSubjectId) { toast('先在左側點選一個科目'); return; }
-    const sid = selectedSubjectId; const s = subjectById(sid);
-    const notes = []; const linked = placeSubject(classId, day, period, sid);
+    const sid = selectedSubjectId; const s = subjectById(sid); const tid = selectedTeacherId;
+    if (s && s.splitTeachers && !tid) { toast('分節上課請在左側選擇「哪位老師」的色塊再放課'); return; }
+    const notes = []; const linked = placeSubject(classId, day, period, sid, tid);
     if (linked) notes.push(`協同同步 ${linked} 班`);
     if (s && s.consecutive && state.settings.autoPairConsecutive !== false && subjectPlaced(classId, sid) < classSubjectRequired(classId, sid)) {
       const g = classGrade(classById(classId));
       const next = adjacentOpenPeriod(g, period, dNum, +1), prev = adjacentOpenPeriod(g, period, dNum, -1);
       const partner = (next && !state.slots[slotKey(classId, day, next)]) ? next : (prev && !state.slots[slotKey(classId, day, prev)]) ? prev : null;
-      if (partner) { const l2 = placeSubject(classId, day, partner, sid); notes.push('連堂成對排入相鄰節' + (l2 ? `（協同 ${l2} 班）` : '')); }
+      if (partner) { const l2 = placeSubject(classId, day, partner, sid, tid); notes.push('連堂成對排入相鄰節' + (l2 ? `（協同 ${l2} 班）` : '')); }
       else notes.push('連堂：找不到相鄰空格');
     }
     save(); render(); if (notes.length) toast(notes.join('；'));
@@ -1085,7 +1167,7 @@ const changeHandlers = {
     refreshLoadEditor(); updateLoadSum();
   },
   'weekly-hours': () => updateLoadSum(),
-  'schedule-class': el => { selectedClassId = el.value; selectedSubjectId = null; render(); },
+  'schedule-class': el => { selectedClassId = el.value; selectedSubjectId = null; selectedTeacherId = null; render(); },
   'out-mode': el => { outputMode = el.value; render(); },
   'out-class': el => { outputClassId = el.value; render(); },
   'out-teacher': el => { outputTeacherId = el.value; render(); },
@@ -1136,7 +1218,7 @@ async function init() {
   try { loaded = await idbGet(STATE_KEY); } catch (e) { loaded = null; }
   const hadOldData = !!(loaded && loaded.schema !== SCHEMA);
   if (!loaded || loaded.schema !== SCHEMA) { state = defaultState(); await save(); }
-  else { state = loaded; if (!Array.isArray(state.rooms)) state.rooms = []; } // v02 教室加回
+  else { state = loaded; if (!Array.isArray(state.rooms)) state.rooms = []; if (!state.slotTeachers || typeof state.slotTeachers !== 'object') state.slotTeachers = {}; } // v02 教室加回；v02.02 分節上課
   bindGlobal();
   render();
   if (hadOldData) upgradeNoticeModal();                                   // 舊版同仁：改版通知
