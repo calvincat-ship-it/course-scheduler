@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v02.02';
+const APP_VERSION = 'v03.00';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -61,7 +61,7 @@ function defaultState() {
   return {
     schema: SCHEMA,
     version: APP_VERSION,
-    settings: { days, periods, autoPairConsecutive: true },
+    settings: { days, periods, autoPairConsecutive: true, reportSchool: '臺東縣成功鎮三民國民小學', reportYear: '113', subjectMap: {} },
     subjects: [],
     rooms: [],
     grades,
@@ -831,7 +831,10 @@ function viewOutput() {
       ? `<select id="outClass" data-change="out-class">${state.classes.map(c => `<option value="${c.id}" ${c.id === outputClassId ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>`
       : `<select id="outTeacher" data-change="out-teacher">${state.teachers.map(t => `<option value="${t.id}" ${t.id === outputTeacherId ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select>`}
       <button class="ghost" data-action="print-out">🖨️ 列印 / 存 PDF</button>
-      <button class="ghost" data-action="csv-out">⬇️ 匯出 CSV</button></div>`;
+      <button class="ghost" data-action="csv-out">⬇️ 匯出 CSV</button>
+      <span style="width:1px;height:20px;background:var(--line);margin:0 4px"></span>
+      <button class="btn" data-action="all-class-docx">📄 所有班級課表(.docx)</button>
+      <button class="btn" data-action="all-teacher-docx">📄 所有教師課表(.docx)</button></div>`;
   const grid = outputMode === 'class' ? classTimetableHTML(outputClassId, conflicts, false) : teacherTimetableHTML(outputTeacherId, conflicts);
   return `<div class="page-head no-print"><h2>課表輸出</h2></div>${modeSel}<div class="card"><div class="card-body"><div class="grid-wrap">${grid}</div></div></div>`;
 }
@@ -882,6 +885,20 @@ function exportCSV() {
   const csv = '﻿' + rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\r\n');
   downloadBlob(csv, `課表_${title}.csv`, 'text/csv;charset=utf-8'); toast('已匯出 CSV');
 }
+const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+function reportOpts() { return { school: state.settings.reportSchool, year: state.settings.reportYear, subjectMap: state.settings.subjectMap }; }
+function exportAllClassDocx() {
+  if (!state.classes.length) { toast('尚無班級'); return; }
+  if (typeof DocxGen === 'undefined') { toast('輸出模組未載入'); return; }
+  try { downloadBlob(DocxGen.build(state, reportOpts()).classesDocx(), '所有班級課表.docx', DOCX_MIME); toast(`已輸出 ${state.classes.length} 班課表`); }
+  catch (e) { console.error(e); toast('輸出失敗：' + e.message); }
+}
+function exportAllTeacherDocx() {
+  if (!state.teachers.length) { toast('尚無教師'); return; }
+  if (typeof DocxGen === 'undefined') { toast('輸出模組未載入'); return; }
+  try { downloadBlob(DocxGen.build(state, reportOpts()).teachersDocx(), '所有教師課表.docx', DOCX_MIME); toast(`已輸出 ${state.teachers.length} 位教師課表`); }
+  catch (e) { console.error(e); toast('輸出失敗：' + e.message); }
+}
 function emptyState(title, sub) { return `<div class="card"><div class="empty"><div style="font-size:18px;font-weight:700;margin-bottom:6px">${esc(title)}</div><div>${esc(sub)}</div></div></div>`; }
 
 /* ==========================================================================
@@ -923,6 +940,20 @@ function viewSettings() {
     </div></div>
     <div class="card"><div class="card-body"><h4 style="margin-top:0">排課選項</h4>
       <label class="checkbox"><input type="checkbox" data-change="toggle-autopair" ${state.settings.autoPairConsecutive !== false ? 'checked' : ''}> 需連堂排課時，自動成對放課（一組 2 節相鄰）</label>
+    </div></div>
+    <div class="card"><div class="card-body"><h4 style="margin-top:0">課表輸出格式（Word .docx）</h4>
+      <p class="hint" style="color:var(--muted);margin:0 0 10px">「課表輸出」的📄一鍵輸出所有班級／教師課表會用到以下設定。</p>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px">
+        <label class="field"><span>校名</span><input type="text" data-change="report-field" data-field="reportSchool" value="${esc(state.settings.reportSchool || '')}" style="min-width:260px"></label>
+        <label class="field"><span>學年度</span><input type="text" data-change="report-field" data-field="reportYear" value="${esc(state.settings.reportYear || '')}" style="width:90px"></label>
+      </div>
+      <h5 style="margin:0 0 6px">科目顯示名稱對照（輸出用；留空＝用原名）</h5>
+      <table class="data"><tbody>${state.subjects.map(s => {
+        const eff = (state.settings.subjectMap && state.settings.subjectMap[s.name] != null) ? state.settings.subjectMap[s.name]
+          : (typeof DocxGen !== 'undefined' && DocxGen.DEFAULT_MAP[s.name] != null ? DocxGen.DEFAULT_MAP[s.name] : s.name);
+        return `<tr><td style="width:140px">${esc(s.name)}</td><td><input type="text" data-change="subjmap-field" data-subj="${esc(s.name)}" value="${esc(eff)}" style="width:200px"></td></tr>`;
+      }).join('')}</tbody></table>
+      <p class="hint" style="color:var(--muted);margin-top:8px">母語可用「/」分列（如 阿美語/閩南語）。固定版面（整潔活動、導師時間、午餐、午休、第八節、週三下午教學研究、學生人數欄）已比照範本內建。</p>
     </div></div>
     <div class="card"><div class="card-body"><h4 style="margin-top:0">關於</h4>
       <p style="color:var(--muted)">課務編排 ${APP_VERSION} · 資料存本機瀏覽器。備份請用右上「備份」。</p>
@@ -1125,6 +1156,8 @@ const clickHandlers = {
 
   'print-out': () => window.print(),
   'csv-out': exportCSV,
+  'all-class-docx': exportAllClassDocx,
+  'all-teacher-docx': exportAllTeacherDocx,
 
   'export-json': exportJSON,
   'import-json': importJSON,
@@ -1140,6 +1173,8 @@ const changeHandlers = {
   'period-field': el => { const p = byId(state.settings.periods, el.dataset.pid); if (p) { p[el.dataset.field] = el.value; save(); } },
   'period-break': el => { const p = byId(state.settings.periods, el.dataset.pid); if (p) { p.isBreak = el.checked; save(); render(); } },
   'toggle-autopair': el => { state.settings.autoPairConsecutive = el.checked; save(); },
+  'report-field': el => { state.settings[el.dataset.field] = el.value; save(); },
+  'subjmap-field': el => { if (!state.settings.subjectMap) state.settings.subjectMap = {}; const v = el.value.trim(); if (v === '') delete state.settings.subjectMap[el.dataset.subj]; else state.settings.subjectMap[el.dataset.subj] = v; save(); },
   'load-class': el => {
     syncLoadFromDOM();
     const idx = parseInt(el.dataset.idx, 10);
@@ -1219,6 +1254,10 @@ async function init() {
   const hadOldData = !!(loaded && loaded.schema !== SCHEMA);
   if (!loaded || loaded.schema !== SCHEMA) { state = defaultState(); await save(); }
   else { state = loaded; if (!Array.isArray(state.rooms)) state.rooms = []; if (!state.slotTeachers || typeof state.slotTeachers !== 'object') state.slotTeachers = {}; } // v02 教室加回；v02.02 分節上課
+  // v03.00 課表輸出格式欄位 guard（舊資料補預設）
+  if (!state.settings.reportSchool) state.settings.reportSchool = '臺東縣成功鎮三民國民小學';
+  if (!state.settings.reportYear) state.settings.reportYear = '113';
+  if (!state.settings.subjectMap || typeof state.settings.subjectMap !== 'object') state.settings.subjectMap = {};
   bindGlobal();
   render();
   if (hadOldData) upgradeNoticeModal();                                   // 舊版同仁：改版通知

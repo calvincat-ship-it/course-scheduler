@@ -1,8 +1,9 @@
-const CACHE_NAME = 'course-scheduler-v02.02';
+const CACHE_NAME = 'course-scheduler-v03.00';
 const ASSETS = [
   './',
   './index.html',
   './style.css',
+  './docx_gen.js',
   './app.js',
   './manifest.json',
   './icons/icon.svg',
