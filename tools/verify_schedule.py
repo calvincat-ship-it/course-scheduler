@@ -305,3 +305,21 @@ main_pm=sum(1 for gid in grades for (d,p) in cells_of(gid) if p in('p5','p6','p7
 print(f"偏好: 國語在第一節 {ch_p1} 格(共30可能) ; 主科(國/數)排到下午 {main_pm} 格")
 print(f"R10: 教師單日最多節數(含母語)={maxall} ; 非母語一律<=5 已檢查")
 print(f"P3: 級任老師相鄰兩節連堂 共 {home_pairs} 組")
+# P4 每日平衡（母語教師除外）
+NATT2={tid for (cid,sid),lst in load_idx.items() if sid==NATID for tid,_,_ in lst}
+worst=[]
+for t in S['teachers']:
+    tid=t['id']
+    if tid in NATT2: continue
+    un=set(t['unavailable']); fdays=[d for d in DAYS if d!=3 and any(f'{d}|{p}' not in un for p in PERIODS)]
+    if len(fdays)<2: continue
+    counts=[perday[tid].get(d,0) for d in fdays]
+    spread=max(counts)-min(counts)
+    if spread>1: worst.append((t['name'],counts,spread))
+allday={}
+for t in S['teachers']:
+    if t['id'] in NATT2: continue
+    allday[t['name']]=[perday[t['id']].get(d,0) for d in DAYS]  # 一二三四五(含週三)
+print(f"P4 整天平衡(週一二四五, 週三半天不計): spread>1 的教師 {len(worst)} 位" + (" -> "+", ".join(f"{n}{c}" for n,c,s in worst) if worst else "（全部整天差≤1）"))
+print("  各教師 一二三四五 節數(參考):")
+for n,c in allday.items(): print("   %-6s %s"%(n,c))

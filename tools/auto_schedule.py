@@ -218,6 +218,24 @@ for tid in HOME:
                 m.AddBoolAnd([busy[(tid,d,a)],busy[(tid,d,b)]]).OnlyEnforceIf(pr)
                 m.AddBoolOr([busy[(tid,d,a)].Not(),busy[(tid,d,b)].Not()]).OnlyEnforceIf(pr.Not())
                 obj.append(2*pr)
+# P4 每位教師(母語除外)每日排課數平衡：最小化「整天(週一二四五)」之間的離散(max-min)。
+#   週三全校下午為教學研究(半天,結構性較輕)，不納入平衡比較。
+BAL_W=6
+FULLDAYS=[d for d in DAYS if d!=3]
+for t in S['teachers']:
+    tid=t['id']
+    if tid in NATIVE_TEACHERS: continue
+    un=set(t['unavailable'])
+    fdays=[d for d in FULLDAYS if any(f'{d}|{p}' not in un for p in PERIODS)]
+    if len(fdays)<2: continue
+    dcs=[]
+    for d in fdays:
+        vs=[v for p in PERIODS for v in occ.get((tid,d,p),[])]
+        if vs: dcs.append(sum(vs))
+    if len(dcs)<2: continue
+    mx=m.NewIntVar(0,7,f'bmx_{tid}'); mn=m.NewIntVar(0,7,f'bmn_{tid}')
+    for s in dcs: m.Add(mx>=s); m.Add(mn<=s)
+    obj.append(-BAL_W*(mx-mn))
 m.Maximize(sum(obj))
 solver=cp_model.CpSolver()
 solver.parameters.max_time_in_seconds=float(sys.argv[1]) if len(sys.argv)>1 else 90.0
