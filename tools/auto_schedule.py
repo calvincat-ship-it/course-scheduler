@@ -236,6 +236,17 @@ for t in S['teachers']:
     mx=m.NewIntVar(0,7,f'bmx_{tid}'); mn=m.NewIntVar(0,7,f'bmn_{tid}')
     for s in dcs: m.Add(mx>=s); m.Add(mn<=s)
     obj.append(-BAL_W*(mx-mn))
+# P5 所有教師上午(p1-p4)儘量不要 4 節滿堂
+W5=8
+for t in S['teachers']:
+    tid=t['id']
+    for d in DAYS:
+        morn=[occ.get((tid,d,p),[]) for p in ('p1','p2','p3','p4')]
+        if any(len(x)==0 for x in morn): continue   # 某上午節此師不可能排到 -> 不可能滿堂
+        allv=[v for x in morn for v in x]
+        f4=m.NewBoolVar(f'f4_{tid}_{d}')
+        m.Add(sum(allv) <= 3 + f4)
+        obj.append(-W5*f4)
 m.Maximize(sum(obj))
 solver=cp_model.CpSolver()
 solver.parameters.max_time_in_seconds=float(sys.argv[1]) if len(sys.argv)>1 else 90.0

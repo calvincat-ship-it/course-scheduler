@@ -323,3 +323,25 @@ for t in S['teachers']:
 print(f"P4 整天平衡(週一二四五, 週三半天不計): spread>1 的教師 {len(worst)} 位" + (" -> "+", ".join(f"{n}{c}" for n,c,s in worst) if worst else "（全部整天差≤1）"))
 print("  各教師 一二三四五 節數(參考):")
 for n,c in allday.items(): print("   %-6s %s"%(n,c))
+# P5 上午滿堂(p1-p4全排)統計
+n_full4=0; who=[]
+# 重算每師每日上午任課節
+occday=collections.defaultdict(set)  # (tid,d)->set(p) 實際任課
+for gid in grades:
+    for sid in req_of(gid):
+        if sid in SPLIT:
+            for c in gc[gid]:
+                for (d,p) in cells_of(gid):
+                    if slots.get(f'{c}|{d}|{p}')==sid:
+                        tt=sT.get(f'{c}|{d}|{p}')
+                        if tt: occday[(tt,d)].add(p)
+        else:
+            ts=set(x for x,_,_ in sum((load_idx.get((c,sid),[]) for c in gc[gid]),[]))
+            for (d,p) in cells_of(gid):
+                if sub_at(gid,d,p)==sid:
+                    for tt in ts: occday[(tt,d)].add(p)
+for t in S['teachers']:
+    for d in DAYS:
+        ps=occday[(t['id'],d)]
+        if {'p1','p2','p3','p4'} <= ps: n_full4+=1; who.append(f"{t['name']}週{d}")
+print(f"P5 上午滿堂(p1-p4全排)的教師·日: {n_full4} 個" + (" -> "+", ".join(who) if who else "（無）"))
