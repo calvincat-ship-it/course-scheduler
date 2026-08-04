@@ -1,3 +1,9 @@
 desktop.ini
 .DS_Store
 node_modules
+
+# 自動填課工具的本機資料/輸出（含真實學校資料，勿入 repo）
+tools/state.json
+tools/state_filled*.json
+tools/timetable.html
+tools/report.txt
