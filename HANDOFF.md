@@ -4,38 +4,32 @@
 
 ## 最後更新
 - 時間：2026-08-04 收工
-- 機器：筆電
-- 版本：**main = v02.02（已上線）**。schema 仍為 2、向下相容，未觸發改版重置。
-- 狀態：本次兩項變更皆本機實測通過、無 console error、已 push main、GH Pages 生效。無待接續工作。
+- 機器：桌機
+- 版本：**main = v03.00（已上線）**。schema 仍為 2、向下相容，未觸發改版重置。
+- 狀態：本次變更皆已 push main、GH Pages 生效。無待接續工作。
 
-## 本次 session 做了什麼（v02.00 → v02.02）
-### v02.01 — 教師配課下拉修正（bug fix）
-- 配課下拉**不再顯示已被其他教師配滿的科目**（非分組）；部分配置顯示「剩N節」；分組顯示「分組·每組N節」。
-- 節數輸入 `max`=剩餘、change 時夾回上限並提示；換班/換科自動選第一個可配科目；存檔前防呆超額擋下。
-- `remainingForRow()` 剩餘=required−其他教師−本 modal 其他列；**排除正在編輯的教師本人**（editingTeacherId）。
+## 本次 session 做了什麼（v02.02 → v03.00）
+### 1) App 新功能 v03.00：一鍵輸出 .docx 課表
+- 課表輸出頁新增「📄 所有班級課表(.docx)」「📄 所有教師課表(.docx)」，每班/每師一頁，版面比照三民國小範本（整潔活動/導師時間/升旗/午餐/午休/第八節固定列＋分鐘/時間欄、**週三下午教學研究(合併)**、班級表右側「科目節數＋任課老師」清單＋學生人數欄留空/級任導師）。
+- 純前端自寫 OOXML＋ZIP 產生器 **`docx_gen.js`**（無依賴；獨立 `<script>` 掛 index.html＋sw ASSETS）。設定頁新增「課表輸出格式」：校名/學年度/科目顯示名稱對照（`settings.reportSchool`/`reportYear`/`subjectMap`）。
+- 已用 Node＋python-docx 驗證結構、瀏覽器內實測產出有效 .docx、UI 端到端過。sw CACHE_NAME→v03.00。
+- **踩雷**：zip local file header 必須 30 bytes（曾少一個 2-byte 欄→Word BadZipFile）。
 
-### v02.02 — 新增「分節上課」第三種科目模式（大改，已與使用者確認）
-- 需求：一科節數分攤給不同老師、各上不同節（如生活 6 節＝A 上 4＋B 上 2）。
-- 科目教學型態改**三選一**：單一教師／👥分組教學（同節平行）／✂️分節上課（不同節、節數分攤）。subjectModal 用 mode select，存成 `allowGrouping`/`splitTeachers` 兩布林。
-- **資料模型**：新增 `state.slotTeachers[key]=teacherId`（每格記錄該節由誰上），schema 不變、向下相容；init/匯入補 guard，舊資料自動補 `{}`、舊分節格缺師顯示「（未指定老師）」。
-- **核心 helper `slotAssignments(key)`**：回傳該格 [{teacherId,roomId}]——分節→只該格記錄的單一師；分組/單一→全部配課師。衝堂/不排課/教師課表/CSV/teacherScheduled 全改用它。
-- checkStaffing 分節分支：Σ==required 即合格、允許多師。
-- 調色盤：分節科目**每位配課師各一色塊**（各自 placed/該師 hours），先選老師（selectedTeacherId）再放課；placeSubject 帶 teacherId、分節跳過協同同步、連堂沿用同師；刪教師連帶清其分節格。
-- 使用說明（App 內 helpContent + 使用說明.md）已補分節上課說明。
-
-## 環境（筆電本次新增）
-- course-scheduler 原本筆電沒有→已 clone；補進 root `.claude/launch.json`（name `course-scheduler`、port 5177）。
-- 設 **global** git 身分（calvincat / calvincat@ttct.edu.tw），未來新 clone 免再設。
-- sync-start 自動掃 `.git` 資料夾，clone 後開工會自動一起 pull。
+### 2) 外部 CP-SAT 自動填課流程（新增，非 App 內功能）
+- 使用者上傳課務編排匯出 JSON＋指定規則 → 我用 OR-Tools CP-SAT 自動填課 → 產可匯入 JSON（只改 slots/slotTeachers）。
+- repo 內：`tools/auto_schedule.py`＋`tools/verify_schedule.py`（獨立驗證）＋`tools/render_timetable.py`；根目錄 **`排課規則.md`** 為完整規則書。`tools/state*.json`、`timetable.html` 已 gitignore（真實學校資料不入 repo）。
+- 規則：硬性 R1–R12＋偏好 P1–P5。詳見 `排課規則.md`。
+- **★ 母語為結構性例外**（R10/R1/P4 皆豁免母語）；**週三半天(教研)**：級任平衡納入週三、科任除外。
+- 環境：本機 `python`(Inkscape)無 ortools，要用 `C:\Users\TTCT\AppData\Local\Programs\Python\Python312\python.exe`＋`PYTHONUTF8=1`。
 
 ## 下一步
-- （無待接續工作。）roadmap 進階項仍在：一鍵自動排課引擎、半自動調課建議、領域節數參考表、Google Drive 同步、PNG 圖示。
+- （無待接續工作。）App 與自動填課流程都可續用/增修。
 
 ## 待決 / 卡住的問題
-- （無）。分節上課已完整實測（閘門/色塊計數/放課記錄師/班級+教師課表分流/不排課衝堂歸屬/migration guard）。
+- （無）docx 版面已用 python-docx 驗證結構，但**未實際在 Word 開啟確認排版微調**（欄寬/字級）——已把範例 docx 交使用者確認，如需微調再處理。
+- docx 班級表右側 legend 目前**逐科各列一行**，未做範本的「領域合併」（如健康+體育→健體）；使用者若要領域合併再加。
 
 ## 注意事項（給另一台的 Claude）
-- 版本 vNN.MM：APP_VERSION（app.js）與 sw CACHE_NAME 必須同步。小改 bump minor、大改先確認。
-- **分節上課關鍵欄位** `state.slotTeachers`（勿刪）；讀取一格實際上課師一律走 `slotAssignments(key)`，別直接 `loadsForClassSubject`（那會回傳全部配課師、分節會算錯）。
-- 測試存取：裸名 `state` 讀得到、`window.state` 讀不到（script-scope let）；in-app Browser preview 重啟會清 IndexedDB，seed 前先重啟後再寫。
 - 開工先 sync-start、收工必 sync-end；不要兩台同時改同一個檔。
+- 版本 vNN.MM：APP_VERSION(app.js)＋sw CACHE_NAME 必須同步。小改直接 bump minor、大改先確認。現 **v03.00**。
+- 自動填課要跑 CP-SAT：`python tools/auto_schedule.py <秒>` → `python tools/verify_schedule.py state_filled.json`（須 0 錯誤）；改規則時求解器＋驗證器兩邊都要同步改。
