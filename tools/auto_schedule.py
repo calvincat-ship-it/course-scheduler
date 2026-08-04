@@ -226,7 +226,9 @@ for t in S['teachers']:
     tid=t['id']
     if tid in NATIVE_TEACHERS: continue
     un=set(t['unavailable'])
-    fdays=[d for d in FULLDAYS if any(f'{d}|{p}' not in un for p in PERIODS)]
+    # 級任整天都跟自己班,週三(半天)也納入平衡;科任/兼行政因高授課,週三結構性較輕故排除
+    bal_days=DAYS if t['type']=='級任' else FULLDAYS
+    fdays=[d for d in bal_days if any(f'{d}|{p}' not in un for p in PERIODS)]
     if len(fdays)<2: continue
     dcs=[]
     for d in fdays:

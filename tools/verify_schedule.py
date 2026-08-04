@@ -323,6 +323,11 @@ for t in S['teachers']:
 print(f"P4 整天平衡(週一二四五, 週三半天不計): spread>1 的教師 {len(worst)} 位" + (" -> "+", ".join(f"{n}{c}" for n,c,s in worst) if worst else "（全部整天差≤1）"))
 print("  各教師 一二三四五 節數(參考):")
 for n,c in allday.items(): print("   %-6s %s"%(n,c))
+# 級任週三節數(使用者關注)
+home_wed=[(t['name'],perday[t['id']].get(3,0)) for t in S['teachers'] if t['type']=='級任']
+low=[f"{n}={w}" for n,w in home_wed if w<2]
+print(f"級任週三節數: "+", ".join(f"{n}{w}" for n,w in home_wed))
+print(f"  -> 週三<2節的級任: {len(low)} 位" + (" ("+", ".join(low)+")" if low else " (無)"))
 # P5 上午滿堂(p1-p4全排)統計
 n_full4=0; who=[]
 # 重算每師每日上午任課節
