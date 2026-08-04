@@ -157,6 +157,17 @@ for gid in grades:
     K=1 if gid in LOWG else 2
     terms=[X[(gid,sid,d,p)] for (d,p) in p7 for sid in LIGHT if (gid,sid,d,p) in X]
     m.Add(sum(terms)>=K)
+# R1加嚴: 第七節非輕科者必須是級任的課(全部任課教師皆級任);否則禁排
+def is_home(gid,sid):
+    ts,_=teachers_rooms(gid,sid)
+    return len(ts)>0 and all(teachers[t]['type']=='級任' for t in ts)
+for gid in grades:
+    for (d,p) in cells_of(gid):
+        if p!='p7': continue
+        for sid in req_of(gid):
+            if sid in LIGHT or sid==NATIVE: continue  # 母語鎖週四,結構性豁免(同R10)
+            if not is_home(gid,sid) and (gid,sid,d,p) in X:
+                m.Add(X[(gid,sid,d,p)]==0)
 # R10 教師單日<=5 節 (母語/週四集中為結構性例外,不計入)
 byTD=collections.defaultdict(list)
 for (tid,d,p),vs in occ_r10.items(): byTD[(tid,d)].extend(vs)
@@ -176,11 +187,13 @@ NATIVE_TEACHERS={tid for (cid,sid),lst in load_idx.items() if sid==NATIVE for ti
 for tid in NATIVE_TEACHERS:
     vs=[v for p in PERIODS for v in occ_r10.get((tid,4,p),[])]
     if vs: m.Add(sum(vs)==0)
-# R11 級任每個(有可授課的)上課日至少1節
+# R11加嚴: 級任每天「上午、下午各至少1節」(該半天無可排格則例外)
+MORN=('p1','p2','p3','p4'); AFT=('p5','p6','p7')
 for tid in HOME:
     for d in DAYS:
-        vs=[v for p in PERIODS for v in occ.get((tid,d,p),[])]
-        if vs: m.Add(sum(vs)>=1)   # 該日有可排格才要求;整日不排課則自然無 vs
+        for half in (MORN,AFT):
+            vs=[v for p in half for v in occ.get((tid,d,p),[])]
+            if vs: m.Add(sum(vs)>=1)
 # P3硬上限: 級任連堂每區塊<=3 (唯一可能的4連=上午p1-p4,故禁全上午4連)
 MORNING=['p1','p2','p3','p4']
 for tid in HOME:

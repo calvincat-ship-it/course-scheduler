@@ -224,14 +224,51 @@ NATT={tid for (cid,sid),lst in load_idx.items() if sid==NATID for tid,_,_ in lst
 for tid in NATT:
     nn=perday_nn[tid].get(4,0)
     if nn>0: errs.append(f'[R12] {teachers[tid]["name"]} 週四排了 {nn} 節非母語課')
-# R11 級任每個非全阻擋日至少1節
+# R1加嚴: 第七節非輕科者必須級任的課
+def is_home_v(gid,sid):
+    ts=set(x for x,_,_ in sum((load_idx.get((c,sid),[]) for c in gc[gid]),[]))
+    return len(ts)>0 and all(teachers[t]['type']=='級任' for t in ts)
+for gid in grades:
+    for (d,p) in cells_of(gid):
+        if p!='p7': continue
+        s=sub_at(gid,d,p)
+        if s and s not in LIGHT and s!=NATID and not is_home_v(gid,s):
+            errs.append(f'[R1嚴] {grades[gid]["name"]} 週{d}第七節排非輕科且非級任課: {NAME[s]}')
+# R11加嚴: 級任每天上午/下午各至少1節(該半天有格且非全阻擋才要求)
+# 各級任任教年級
+home_grade={}
+for t in S['teachers']:
+    if t['type']!='級任': continue
+    cids=set(L['classId'] for L in t['load'])
+    gset=set(classes[c]['gradeId'] for c in cids)
+    home_grade[t['id']]=gset
+# 各級任實際任課節(由 slots 重建)
+taught=collections.defaultdict(set)  # (tid,d)->set(p)
+for gid in grades:
+    for sid in req_of(gid):
+        if sid in SPLIT:
+            for c in gc[gid]:
+                for (d,p) in cells_of(gid):
+                    if slots.get(f'{c}|{d}|{p}')==sid:
+                        tt=sT.get(f'{c}|{d}|{p}')
+                        if tt: taught[(tt,d)].add(p)
+        else:
+            ts=set(x for x,_,_ in sum((load_idx.get((c,sid),[]) for c in gc[gid]),[]))
+            for (d,p) in cells_of(gid):
+                if sub_at(gid,d,p)==sid:
+                    for tt in ts: taught[(tt,d)].add(p)
 for t in S['teachers']:
     if t['type']!='級任': continue
     tid=t['id']; un=set(t['unavailable'])
-    for d in DAYS:
-        blocked=all(f'{d}|{p}' in un for p in PERIODS)
-        if not blocked and perday[tid].get(d,0)<1:
-            errs.append(f'[R11] {t["name"]} 週{d} 整天空堂(該日非全阻擋)')
+    for gid in home_grade[tid]:
+        for d in DAYS:
+            for half in (('p1','p2','p3','p4'),('p5','p6','p7')):
+                cells_half=[p for p in half if d in grades[gid]['periodDays'].get(p,[])]
+                if not cells_half: continue                    # 該半天無節次
+                if all(f'{d}|{p}' in un for p in cells_half): continue  # 全被不排課擋
+                if not (taught[(tid,d)] & set(cells_half)):
+                    hn='上午' if half[0]=='p1' else '下午'
+                    errs.append(f'[R11嚴] {t["name"]} 週{d}{hn} 無課')
 # P3上限 級任連堂<=3 (禁上午p1-p4連4) — 由 slots 重建實際任課節
 for t in S['teachers']:
     if t['type']!='級任': continue
