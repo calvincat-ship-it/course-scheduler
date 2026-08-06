@@ -88,6 +88,12 @@ table.data tr:hover td { background: #f8fafc; }
 .pill.teal { background: #ccfbf1; color: #0f766e; }
 .pill.red { background: var(--danger-bg); color: var(--danger); }
 
+/* ---------- Subject lock (排課限制) ---------- */
+.lock-group { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+.lock-group .lock-label { min-width: 118px; padding-top: 4px; color: var(--muted); font-size: 13px; }
+.chk-row { display: flex; flex-wrap: wrap; gap: 6px 14px; flex: 1; }
+.checkbox.chk-inline { display: inline-flex; margin: 0; font-weight: 400; }
+
 /* ---------- Forms ---------- */
 label.field { display: block; margin-bottom: 12px; }
 label.field > span { display: block; font-size: 13px; font-weight: 600; margin-bottom: 4px; color: var(--muted); }
