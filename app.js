@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v05.00';
+const APP_VERSION = 'v05.01';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -413,6 +413,7 @@ function delClass(id) {
   confirmDelete(`刪除班級「${c.name}」？`, () => {
     removeClassFromAllCoteach(id);
     for (const k in state.slots) if (k.startsWith(id + '|')) delete state.slots[k];
+    state.teachers.forEach(t => { if (t.homeroomClassId === id) t.homeroomClassId = ''; }); // 清除指向此班的導師設定
     state.classes = state.classes.filter(x => x.id !== id);
   });
 }
@@ -472,7 +473,7 @@ function viewTeachers() {
     const sum = teacherLoadSum(t); const match = sum === (t.weeklyHours || 0);
     return `<tr>
       <td><b>${esc(t.name)}</b></td>
-      <td><span class="pill gray">${esc(t.type || '')}</span></td>
+      <td><span class="pill gray">${esc(t.type || '')}</span>${t.type === '級任' && t.homeroomClassId && classById(t.homeroomClassId) ? `<span class="pill blue" style="margin-left:4px">🎓 ${esc(classById(t.homeroomClassId).name)}導師</span>` : ''}</td>
       <td>${t.weeklyHours || 0} 節</td>
       <td style="color:${match ? 'var(--ok)' : 'var(--danger)'};font-weight:700">${sum} 節 ${match ? '✓' : '✗'}</td>
       <td>${(t.load || []).length} 筆</td>
@@ -572,6 +573,7 @@ function teacherModal(existing) {
   editingTeacherId = existing ? existing.id : null;
   modalLoad = (t.load || []).map(L => ({ ...L }));
   const typeOpts = TEACHER_TYPES.map(x => `<option ${x === t.type ? 'selected' : ''}>${x}</option>`).join('');
+  const hrClsOpts = `<option value="">（未指定）</option>` + state.classes.map(c => `<option value="${c.id}" ${t.homeroomClassId === c.id ? 'selected' : ''}>${esc(c.name)}（${esc(gradeName(c.gradeId))}）</option>`).join('');
   const days = activeDays(); const un = new Set(t.unavailable || []);
   let grid = `<table class="avail"><thead><tr><th></th>${days.map(d => `<th>${DAY_LABELS[d]}</th>`).join('')}</tr></thead><tbody>`;
   for (const p of lessonPeriods()) {
@@ -586,10 +588,11 @@ function teacherModal(existing) {
     body: `
       <div class="field-row">
         <label class="field"><span>姓名</span><input type="text" id="tName" value="${esc(t.name)}"></label>
-        <label class="field"><span>身分別</span><select id="tType">${typeOpts}</select></label>
+        <label class="field"><span>身分別</span><select id="tType" data-change="teacher-type">${typeOpts}</select></label>
         <label class="field"><span>每周授課時數</span><input type="number" id="tWeekly" data-change="weekly-hours" min="0" max="40" value="${t.weeklyHours || 0}"></label>
         <label class="field"><span>單日上限（0＝用全域）</span><input type="number" id="tMaxDay" min="0" max="20" value="${t.maxPerDay || 0}"></label>
       </div>
+      <label class="field" id="homeroomField" style="max-width:320px;margin-bottom:6px;display:${t.type === '級任' ? '' : 'none'}"><span>擔任導師的班級（級任）</span><select id="tHomeroom">${hrClsOpts}</select></label>
       <label class="field" style="margin-bottom:4px"><span>教師配課（班級 → 科目 → 節數）</span></label>
       <div id="loadEditor">${loadEditorHTML()}</div>
       <div id="loadSum" class="total-badge"></div>
@@ -610,7 +613,9 @@ function teacherModal(existing) {
       const sum = load.reduce((s, L) => s + L.hours, 0);
       if (sum !== weekly) { toast(`配課合計 ${sum} 節與每周授課 ${weekly} 節不符，無法儲存`); return false; }
       const unavailable = Array.from(document.querySelectorAll('#availGrid td.off')).map(td => td.dataset.slot);
-      const data = { name, type: $('#tType').value, weeklyHours: weekly, maxPerDay: parseInt($('#tMaxDay').value, 10) || 0, unavailable, load };
+      const type = $('#tType').value;
+      const homeroomClassId = (type === '級任' && $('#tHomeroom')) ? $('#tHomeroom').value : '';
+      const data = { name, type, weeklyHours: weekly, maxPerDay: parseInt($('#tMaxDay').value, 10) || 0, homeroomClassId, unavailable, load };
       if (existing) Object.assign(existing, data); else state.teachers.push({ id: uid(), ...data });
       save(); render(); toast('已儲存教師');
       return true;
@@ -1424,7 +1429,7 @@ function helpModal() {
     <ul><li>新增班級並選年級；課程（科目＋節數）<b>自動沿用該年級</b>設定、不需重填。</li>
       <li>點「科目 / 協同」可為每一科勾選<b>協同教學</b>的同年級其他班（同時段一起上）。</li></ul>
     <h4>④ 教師</h4>
-    <ul><li>填姓名、身分、<b>每周授課時數</b>、不排課時段。</li>
+    <ul><li>填姓名、身分、<b>每周授課時數</b>、不排課時段。身分選<b>級任</b>時，可設定其<b>擔任導師的班級</b>。</li>
       <li><b>教師配課</b>：逐筆「班級 → 科目 → 節數 → 教室（可留空）」。該師配課合計<b>必須等於每周授課時數</b>才能儲存。專科教室先在「設定」建立。</li>
       <li>上方狀態卡＋「檢查全校配課」：確認<b>每班每科節數都被配齊</b>（分組每師各需足額；分節多師加總＝需求）。全部相符才可進入排課。</li>
       <li>✂️ <b>分節上課</b>科目：直接把節數拆給不同老師（如生活給 A 4 節、B 2 節），下拉會顯示各科<b>剩餘節數</b>、填的節數不超過剩餘。</li></ul>
@@ -1560,6 +1565,7 @@ const changeHandlers = {
     if ((modalLoad[idx].hours || 0) > rem) modalLoad[idx].hours = rem;
     refreshLoadEditor(); updateLoadSum();
   },
+  'teacher-type': el => { const f = $('#homeroomField'); if (f) f.style.display = el.value === '級任' ? '' : 'none'; },
   'load-hours': el => {
     syncLoadFromDOM();
     const idx = parseInt(el.dataset.idx, 10);
