@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v04.00';
+const APP_VERSION = 'v04.01';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -204,14 +204,25 @@ function subjectModal(existing) {
       <div class="field" style="margin-bottom:8px"><span>排課限制（給自動排課用；不勾＝不限。手動排課不受限）</span></div>
       <div class="lock-group"><div class="lock-label">只排在這些<b>上課日</b>：</div><div class="chk-row">${dayChecks || '<span style="color:var(--muted)">尚無上課日</span>'}</div></div>
       <div class="lock-group"><div class="lock-label">只排在這些<b>節次</b>：</div><div class="chk-row">${perChecks}</div></div>
-      <div class="hint" style="color:var(--muted);font-size:12px">例：母語只勾「週四」；彈性在地勾「週五」＋「第1節」；體育只勾「第2/3/6/7節」。</div>`,
+      <div class="hint" style="color:var(--muted);font-size:12px;margin-bottom:12px">例：母語只勾「週四」；彈性在地勾「週五」＋「第1節」；體育只勾「第2/3/6/7節」。</div>
+      <div class="field" style="margin-bottom:8px"><span>進階排課（給自動排課用）</span></div>
+      <label class="checkbox chk-inline" style="margin-right:16px"><input type="checkbox" id="sDistinct" ${s.distinctDays ? 'checked' : ''}> 每天最多 1 節（多節分散不同天）</label>
+      <label class="checkbox chk-inline"><input type="checkbox" id="sGap" ${s.gapDays ? 'checked' : ''}> 兩節不排相鄰兩天（隔天以上，如體育）</label>
+      <label class="field" style="margin-top:10px"><span>偏好時段（軟性，盡量滿足）</span>
+        <select id="sBand">
+          <option value="any" ${(s.preferBand || 'any') === 'any' ? 'selected' : ''}>不限</option>
+          <option value="am" ${s.preferBand === 'am' ? 'selected' : ''}>偏好上午（如主科）</option>
+          <option value="pm" ${s.preferBand === 'pm' ? 'selected' : ''}>偏好下午</option>
+        </select></label>
+      <label class="checkbox" style="margin-top:6px"><input type="checkbox" id="sExCap" ${s.excludeDailyCap ? 'checked' : ''}> 不列入教師單日節數上限（如母語課）</label>
+      <div class="hint" style="color:var(--muted);font-size:12px">「每天最多1節/隔天」與「需連堂」互斥（連堂本就同日兩節），設連堂時此兩項自動忽略。</div>`,
     onSave: () => {
       const name = $('#sName').value.trim();
       if (!name) { toast('請輸入科目名稱'); return false; }
       const m = $('#sMode').value;
       const ld = Array.from(document.querySelectorAll('.s-lockday:checked')).map(el => parseInt(el.value, 10));
       const lp = Array.from(document.querySelectorAll('.s-lockper:checked')).map(el => el.value);
-      const data = { name, color: $('#sColor').value, allowGrouping: m === 'group', splitTeachers: m === 'split', consecutive: $('#sConsec').checked, lockDays: ld, lockPeriods: lp };
+      const data = { name, color: $('#sColor').value, allowGrouping: m === 'group', splitTeachers: m === 'split', consecutive: $('#sConsec').checked, lockDays: ld, lockPeriods: lp, distinctDays: $('#sDistinct').checked, gapDays: $('#sGap').checked, preferBand: $('#sBand').value, excludeDailyCap: $('#sExCap').checked };
       if (existing) Object.assign(existing, data); else state.subjects.push({ id: uid(), ...data });
       save(); render(); toast('已儲存科目');
       return true;
@@ -577,6 +588,7 @@ function teacherModal(existing) {
         <label class="field"><span>姓名</span><input type="text" id="tName" value="${esc(t.name)}"></label>
         <label class="field"><span>身分別</span><select id="tType">${typeOpts}</select></label>
         <label class="field"><span>每周授課時數</span><input type="number" id="tWeekly" data-change="weekly-hours" min="0" max="40" value="${t.weeklyHours || 0}"></label>
+        <label class="field"><span>單日上限（0＝用全域）</span><input type="number" id="tMaxDay" min="0" max="20" value="${t.maxPerDay || 0}"></label>
       </div>
       <label class="field" style="margin-bottom:4px"><span>教師配課（班級 → 科目 → 節數）</span></label>
       <div id="loadEditor">${loadEditorHTML()}</div>
@@ -598,7 +610,7 @@ function teacherModal(existing) {
       const sum = load.reduce((s, L) => s + L.hours, 0);
       if (sum !== weekly) { toast(`配課合計 ${sum} 節與每周授課 ${weekly} 節不符，無法儲存`); return false; }
       const unavailable = Array.from(document.querySelectorAll('#availGrid td.off')).map(td => td.dataset.slot);
-      const data = { name, type: $('#tType').value, weeklyHours: weekly, unavailable, load };
+      const data = { name, type: $('#tType').value, weeklyHours: weekly, maxPerDay: parseInt($('#tMaxDay').value, 10) || 0, unavailable, load };
       if (existing) Object.assign(existing, data); else state.teachers.push({ id: uid(), ...data });
       save(); render(); toast('已儲存教師');
       return true;
@@ -747,7 +759,16 @@ function assignmentsAtDP(day, period, ignoreKey) {
   }
   return out;
 }
-// 這一格能否合法排入該科(該師)：格開放且空、符合科目日/節限制、老師不排課、無教師/教室衝堂
+const isMorningPeriod = pid => { const p = byId(state.settings.periods, pid); return p ? (p.start || '') < '12:00' : false; };
+// 教師單日節數上限（0＝不限）：個別覆寫優先、否則用全域
+function teacherDailyCap(teacherId) { const t = teacherById(teacherId); const per = t && t.maxPerDay ? t.maxPerDay : 0; return per > 0 ? per : (state.settings.maxLessonsPerDay || 0); }
+// 該師某日已排的節數（不列入上限的科目不計；以不同節次去重，協同同節只算一次）
+function teacherDayLoad(teacherId, day) {
+  const set = new Set();
+  for (const key in state.slots) { const parts = key.split('|'); if (parseInt(parts[1], 10) !== day) continue; const s = subjectById(state.slots[key]); if (s && s.excludeDailyCap) continue; slotAssignments(key).forEach(x => { if (x.teacherId === teacherId) set.add(parts[2]); }); }
+  return set.size;
+}
+// 這一格能否合法排入該科(該師)：格開放且空、符合科目日/節限制、老師不排課、無教師/教室衝堂、進階硬約束
 function canPlaceAt(classId, day, period, sid, teacherId) {
   const key = slotKey(classId, day, period);
   if (state.slots[key]) return false;
@@ -774,6 +795,15 @@ function canPlaceAt(classId, day, period, sid, teacherId) {
       const sameOffering = e.classId === classId && e.subjectId === sid;
       if (!sameOffering && !coTogether) return false;
     }
+  }
+  // 進階硬約束（連堂科目不套用分散/隔天：連堂本就同日兩節）
+  if (!s.consecutive && (s.gapDays || s.distinctDays)) {
+    for (const k in state.slots) { if (state.slots[k] !== sid) continue; const kp = k.split('|'); if (kp[0] !== classId) continue; const ud = parseInt(kp[1], 10);
+      if (s.gapDays) { if (Math.abs(ud - day) < 2) return false; } else if (ud === day) return false; }
+  }
+  // 教師單日節數上限
+  if (!s.excludeDailyCap) {
+    for (const a of news) { const cap = teacherDailyCap(a.teacherId); if (cap > 0 && teacherDayLoad(a.teacherId, day) + 1 > cap) return false; }
   }
   return true;
 }
@@ -828,61 +858,97 @@ function buildAutoUnits() {
   units.sort((a, b) => (a.loose - b.loose) || (b.consec - a.consec));
   return units;
 }
-function runAutoSchedule(clearFirst) {
-  if (clearFirst) { state.slots = {}; state.slotTeachers = {}; }
-  let units = buildAutoUnits();
-  const unplaced = [];
-  let guard = 0;
+// 單格軟性評分（越低越好）：偏好時段、同科分散不同天、教師每日平衡、上午避免湊滿
+function cellSoftScore(classId, day, period, sid, teacherId) {
+  const s = subjectById(sid); let sc = 0;
+  if (s.preferBand === 'am' && !isMorningPeriod(period)) sc += 4;
+  if (s.preferBand === 'pm' && isMorningPeriod(period)) sc += 4;
+  if (!s.consecutive) { for (const key in state.slots) { if (state.slots[key] === sid) { const p = key.split('|'); if (p[0] === classId && parseInt(p[1], 10) === day) { sc += 3; break; } } } }
+  const tids = s.splitTeachers ? [teacherId] : loadsForClassSubject(classId, sid).map(x => x.teacher.id);
+  tids.forEach(tid => { if (tid) sc += teacherDayLoad(tid, day) * 0.5; });
+  if (isMorningPeriod(period)) tids.forEach(tid => { if (!tid) return; let am = 0; for (const key in state.slots) { const p = key.split('|'); if (parseInt(p[1], 10) === day && isMorningPeriod(p[2])) slotAssignments(key).forEach(x => { if (x.teacherId === tid) am++; }); } if (am >= 3) sc += 2; });
+  return sc;
+}
+// 整體方案軟性罰分（越低越好）：教師每日節數離散、上午滿堂、偏好時段、同科同日重複
+function scoreSolution() {
+  let pen = 0; const perTD = {};
+  for (const key in state.slots) { const p = key.split('|'); const d = parseInt(p[1], 10); slotAssignments(key).forEach(x => { if (!x.teacherId) return; (perTD[x.teacherId] = perTD[x.teacherId] || {}); (perTD[x.teacherId][d] = perTD[x.teacherId][d] || new Set()).add(p[2]); }); }
+  for (const tid in perTD) { const dd = perTD[tid]; const sizes = Object.values(dd).map(s => s.size); if (sizes.length) pen += Math.max(...sizes) - Math.min(...sizes);
+    for (const d in dd) { let am = 0; dd[d].forEach(pid => { if (isMorningPeriod(pid)) am++; }); if (am >= 4) pen += 2; } }
+  const seen = {};
+  for (const key in state.slots) { const sid = state.slots[key]; const s = subjectById(sid); const p = key.split('|');
+    if (s.preferBand === 'am' && !isMorningPeriod(p[2])) pen += 1;
+    if (s.preferBand === 'pm' && isMorningPeriod(p[2])) pen += 1;
+    if (!s.consecutive) { const k = p[0] + '|' + sid + '|' + p[1]; seen[k] = (seen[k] || 0) + 1; } }
+  for (const k in seen) if (seen[k] > 1) pen += (seen[k] - 1);
+  return pen;
+}
+// 一趟貪婪填課（靜態緊度序 + 軟分挑格 + 隨機抖動）；直接寫入 state.slots
+function greedyRun(units, rnd) {
+  const unplaced = []; let guard = 0;
   while (units.length && guard++ < 20000) {
-    // MRV：挑目前實際可用格最少的單元
-    let bi = 0, bc = Infinity, bCands = null;
-    for (let i = 0; i < units.length; i++) {
-      const u = units[i]; const cands = candidateCells(u.classId, u.sid, u.teacherId);
-      if (cands.length < bc) { bc = cands.length; bi = i; bCands = cands; if (bc === 0) break; }
+    const u = units.shift();
+    const cands = candidateCells(u.classId, u.sid, u.teacherId);
+    if (!cands.length) { unplaced.push(u); continue; }
+    let best = null, bestScore = Infinity, bestPartner = null;
+    for (const cell of cands) {
+      let sc = cellSoftScore(u.classId, cell.day, cell.period, u.sid, u.teacherId) + rnd() * 0.9;
+      let partner = null;
+      if (u.consec) { partner = adjacentLegalCell(u.classId, u.sid, u.teacherId, cell.day, cell.period); if (!partner) sc += 5; }
+      if (sc < bestScore) { bestScore = sc; best = cell; bestPartner = partner; }
     }
-    const u = units[bi];
-    if (bc === 0) { unplaced.push(u); units.splice(bi, 1); continue; }
-    // 連堂：優先選有合法相鄰空格的主格，一次放兩節
-    let chosen = null, partner = null;
-    if (u.consec) {
-      for (const cell of bCands) { const pr = adjacentLegalCell(u.classId, u.sid, u.teacherId, cell.day, cell.period); if (pr) { chosen = cell; partner = pr; break; } }
-    }
-    if (!chosen) chosen = bCands[0];
-    placeSubject(u.classId, String(chosen.day), chosen.period, u.sid, u.teacherId);
-    units.splice(bi, 1);
-    if (partner) {
-      placeSubject(u.classId, String(partner.day), partner.period, u.sid, u.teacherId);
+    placeSubject(u.classId, String(best.day), best.period, u.sid, u.teacherId);
+    if (u.consec && bestPartner) {
+      placeSubject(u.classId, String(bestPartner.day), bestPartner.period, u.sid, u.teacherId);
       const j = units.findIndex(x => x.classId === u.classId && x.sid === u.sid && x.teacherId === u.teacherId);
       if (j >= 0) units.splice(j, 1);
     }
   }
-  save();
-  return { unplaced };
+  return unplaced;
+}
+// 隨機重啟求解：多趟貪婪，保留「排最多、其次罰分最低」的最佳解
+function runAutoSchedule(clearFirst) {
+  const baseSlots = clearFirst ? {} : { ...state.slots };
+  const baseST = clearFirst ? {} : { ...state.slotTeachers };
+  let seed = 20260804; const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+  let best = null, runs = 0; const t0 = performance.now(); const BUDGET = 2500;
+  do {
+    state.slots = { ...baseSlots }; state.slotTeachers = { ...baseST };
+    const units = buildAutoUnits();
+    units.forEach(u => (u._r = rnd()));
+    units.sort((a, b) => (a.loose - b.loose) || (b.consec - a.consec) || (a._r - b._r));
+    const unplaced = greedyRun(units, rnd);
+    const placed = Object.keys(state.slots).length; const penalty = scoreSolution();
+    const key = placed * 100000 - penalty;
+    if (!best || key > best.key) best = { key, slots: { ...state.slots }, slotTeachers: { ...state.slotTeachers }, unplaced, placed, penalty };
+    runs++;
+  } while (performance.now() - t0 < BUDGET && runs < 300);
+  state.slots = best.slots; state.slotTeachers = best.slotTeachers; save();
+  return { unplaced: best.unplaced, runs, ms: Math.round(performance.now() - t0), penalty: best.penalty };
 }
 function autoScheduleModal() {
   const problems = checkStaffing();
   if (problems.length) { toast('尚有配課問題，請先在「④ 教師」把各班每科節數配齊'); return; }
   openModal({
     title: '🪄 自動排課（全校）',
-    body: `<p style="margin-top:0">依科目的教學型態與排課限制、教師配課與不排課時段，自動把各班每科排滿，並避開教師/教室衝堂。</p>
-      <p style="color:var(--muted);font-size:13px">這是輔助工具：能排的先排滿，排不下的會列出讓你手動處理。排完仍可自由手動微調。進階最佳化（跨日間隔、每日節數平衡等）尚未納入。</p>
+    body: `<p style="margin-top:0">依科目的教學型態與排課限制、教師配課、不排課時段與教師單日上限，自動把各班每科排滿，並避開教師/教室衝堂。會多次嘗試取較佳解（教師每日節數較平均、偏好時段盡量滿足）。</p>
+      <p style="color:var(--muted);font-size:13px">這是輔助工具：能排的先排滿，排不下的會列出讓你手動處理。排完仍可自由手動微調。</p>
       <label class="checkbox" style="margin-top:8px"><input type="checkbox" id="autoClear" checked> 清空現有排課，全部重排（取消則只補空格、保留已排）</label>`,
     saveLabel: '開始排課',
     onSave: () => {
       const clear = $('#autoClear').checked;
-      const t0 = performance.now();
-      const { unplaced } = runAutoSchedule(clear);
-      const ms = Math.round(performance.now() - t0);
+      const r = runAutoSchedule(clear);
       render();
-      setTimeout(() => autoResultModal(unplaced, ms), 0); // 等 modal-save 關掉設定 modal 後再開結果 modal
+      setTimeout(() => autoResultModal(r.unplaced, r), 0); // 等 modal-save 關掉設定 modal 後再開結果 modal
       return true;
     },
   });
 }
-function autoResultModal(unplaced, ms) {
+function autoResultModal(unplaced, r) {
   const total = Object.keys(state.slots).length;
   const conf = Object.keys(computeConflicts()).length;
-  let body = `<div class="total-badge ${unplaced.length ? 'bad' : 'ok'}">${unplaced.length ? `⚠ 有 ${unplaced.length} 節排不下（其餘已排）` : '✓ 全部排滿'}　·　已排 ${total} 格　·　衝堂 ${conf}　·　${ms}ms</div>`;
+  let body = `<div class="total-badge ${unplaced.length ? 'bad' : 'ok'}">${unplaced.length ? `⚠ 有 ${unplaced.length} 節排不下（其餘已排）` : '✓ 全部排滿'}　·　已排 ${total} 格　·　衝堂 ${conf}</div>
+    <p style="color:var(--muted);font-size:12px;margin:6px 0 0">嘗試 ${r.runs} 種排法取最佳（品質分 ${r.penalty}，越低越好）·　${r.ms}ms</p>`;
   if (unplaced.length) {
     const agg = {};
     unplaced.forEach(u => { const k = u.classId + '|' + u.sid + '|' + (u.teacherId || ''); agg[k] = agg[k] || { u, n: 0 }; agg[k].n++; });
@@ -1119,6 +1185,9 @@ function viewSettings() {
     </div></div>
     <div class="card"><div class="card-body"><h4 style="margin-top:0">排課選項</h4>
       <label class="checkbox"><input type="checkbox" data-change="toggle-autopair" ${state.settings.autoPairConsecutive !== false ? 'checked' : ''}> 需連堂排課時，自動成對放課（一組 2 節相鄰）</label>
+      <label class="field" style="max-width:320px;margin-top:12px"><span>教師單日節數上限（自動排課用；0＝不限）</span>
+        <input type="number" min="0" max="20" data-change="set-maxperday" value="${state.settings.maxLessonsPerDay || 0}"></label>
+      <p class="hint" style="color:var(--muted);margin:6px 0 0">自動排課會避免任一教師單日超過此上限。個別教師可在「④ 教師」設不同上限；勾「不列入上限」的科目（如母語）不計。</p>
     </div></div>
     <div class="card"><div class="card-body"><h4 style="margin-top:0">課表輸出格式（Word .docx）</h4>
       <p class="hint" style="color:var(--muted);margin:0 0 10px">「課表輸出」的📄一鍵輸出所有班級／教師課表會用到以下設定。</p>
@@ -1231,7 +1300,8 @@ function helpModal() {
     <ul><li>建立全校科目、選顏色。</li>
       <li><b>教學型態</b>三選一：<b>單一教師</b>整科一位老師上；<b>👥 分組教學</b>（如英語）同班多師「同一節」平行分組上、不算衝堂；<b>✂️ 分節上課</b>多師分攤節數、各上「不同節」（如生活 6 節＝A 上 4＋B 上 2）。</li>
       <li>⏱ <b>需連堂</b>：勾了的科目排課時自動把兩節排在相鄰位置。</li>
-      <li>🔒 <b>排課限制</b>（給自動排課用）：可勾「只排在某些上課日／某些節次」。例：母語只勾週四、彈性在地勾週五＋第1節、體育只勾第2/3/6/7節。不勾＝不限；手動排課不受此限。</li></ul>
+      <li>🔒 <b>排課限制</b>（給自動排課用）：可勾「只排在某些上課日／某些節次」。例：母語只勾週四、彈性在地勾週五＋第1節、體育只勾第2/3/6/7節。不勾＝不限；手動排課不受此限。</li>
+      <li><b>進階排課</b>：可設「每天最多1節（分散不同天）」「兩節不排相鄰兩天（隔天，如體育）」「偏好時段（上午/下午）」「不列入教師單日上限（如母語）」，供自動排課參考。教師單日節數上限在「設定」設全域、「④教師」可個別覆寫。</li></ul>
     <h4>② 年級（一~六年級各一張）</h4>
     <ul><li><b>2.1 節次表</b>：每個年級逐格勾「哪節×哪個上課日有課」（例：週三下午不上課就取消那幾格）。</li>
       <li><b>2.2 科目節數</b>：勾該年級開的科目、填一周節數。<b>科目節數總和＝節次表可用節數</b>時，年級才算完成（分頁顯示 ✓）。</li></ul>
@@ -1245,7 +1315,7 @@ function helpModal() {
       <li>✂️ <b>分節上課</b>科目：直接把節數拆給不同老師（如生活給 A 4 節、B 2 節），下拉會顯示各科<b>剩餘節數</b>、填的節數不超過剩餘。</li></ul>
     <h4>⑤ 排課</h4>
     <ul><li>選班級 → 左側點科目 → 點課表空格放課；點已排格移除。灰色格＝該班該節不上課。</li>
-      <li>🪄 <b>自動排課</b>（選用）：右上按鈕一鍵把各班每科排滿，會遵守科目的排課限制、教師配課與不排課時段、並避開所有衝堂。可選「清空重排」或「只補空格（保留已排）」。排不下的課會列出讓你手動處理；排完仍可自由手動微調。（進階最佳化如跨日間隔、每日節數平衡尚未納入。）</li>
+      <li>🪄 <b>自動排課</b>（選用）：右上按鈕一鍵把各班每科排滿，會遵守科目的排課限制、進階限制（分散不同天/隔天）、教師配課、不排課時段、教師單日上限、並避開所有衝堂；還會多次嘗試取較佳解（教師每日節數較平均、偏好時段盡量滿足）。可選「清空重排」或「只補空格（保留已排）」。排不下的課會列出讓你手動處理；排完仍可自由手動微調。</li>
       <li>✂️ <b>分節上課</b>科目：左側每位老師各一個色塊，先點「要放哪位老師」再點格，該格就記下由誰上（各上不同節）。</li>
       <li>分組科目自動多師同格；協同科目放一班自動同步其他班；連堂自動成對。</li>
       <li>🔴 紅框代表需注意：教師衝堂／教室衝堂／不排課時段／協同未同步／連堂未相鄰（移到格上看原因）。</li></ul>
@@ -1355,6 +1425,7 @@ const changeHandlers = {
   'period-field': el => { const p = byId(state.settings.periods, el.dataset.pid); if (p) { p[el.dataset.field] = el.value; save(); } },
   'period-break': el => { const p = byId(state.settings.periods, el.dataset.pid); if (p) { p.isBreak = el.checked; save(); render(); } },
   'toggle-autopair': el => { state.settings.autoPairConsecutive = el.checked; save(); },
+  'set-maxperday': el => { state.settings.maxLessonsPerDay = parseInt(el.value, 10) || 0; save(); },
   'report-field': el => { state.settings[el.dataset.field] = el.value; save(); },
   'subjmap-field': el => { if (!state.settings.subjectMap) state.settings.subjectMap = {}; const v = el.value.trim(); if (v === '') delete state.settings.subjectMap[el.dataset.subj]; else state.settings.subjectMap[el.dataset.subj] = v; save(); },
   'load-class': el => {
