@@ -86,6 +86,13 @@ table.data tr:hover td { background: #f8fafc; }
 .pill.green { background: #dcfce7; color: #15803d; }
 .pill.amber { background: #fef3c7; color: #b45309; }
 .pill.teal { background: #ccfbf1; color: #0f766e; }
+
+/* ---------- 半自動建議 ---------- */
+.ghost.mini { padding: 2px 7px; font-size: 11px; line-height: 1.4; white-space: nowrap; }
+.suggest-list { display: flex; flex-direction: column; gap: 6px; }
+.suggest-row { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink); cursor: pointer; font: inherit; }
+.suggest-row:hover { border-color: var(--brand); background: #eff6ff; }
+.sug-dot { width: 12px; height: 12px; border-radius: 3px; flex: none; }
 .pill.red { background: var(--danger-bg); color: var(--danger); }
 
 /* ---------- Subject lock (排課限制) ---------- */

@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v04.01';
+const APP_VERSION = 'v05.00';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -770,6 +770,7 @@ function teacherDayLoad(teacherId, day) {
 }
 // 這一格能否合法排入該科(該師)：格開放且空、符合科目日/節限制、老師不排課、無教師/教室衝堂、進階硬約束
 function canPlaceAt(classId, day, period, sid, teacherId) {
+  day = parseInt(day, 10); // 正規化：格子鍵傳入是字串，年級 periodDays/lockDays 存數字，需一致
   const key = slotKey(classId, day, period);
   if (state.slots[key]) return false;
   const c = classById(classId); const g = classGrade(c);
@@ -961,6 +962,118 @@ function autoResultModal(unplaced, r) {
   openModal({ title: '自動排課結果', wide: true, body });
 }
 
+/* ---------- 半自動排課建議（手排輔助）：空格建議 + 調課連鎖 ---------- */
+const periodLabel = pid => (byId(state.settings.periods, pid) || {}).label || pid;
+// 某(班,科[,師])還差幾節未排
+function subjectRemaining(classId, sid, teacherId) {
+  const s = subjectById(sid); if (!s) return 0;
+  if (s.splitTeachers) { const L = loadsForClassSubject(classId, sid).find(x => x.teacher.id === teacherId); return L ? L.hours - placedByTeacher(classId, sid, teacherId) : 0; }
+  return classSubjectRequired(classId, sid) - subjectPlaced(classId, sid);
+}
+// 該班所有開放格（不論空滿）
+function openGridCells(classId) {
+  const g = classGrade(classById(classId)); const out = []; if (!g) return out;
+  for (const d of activeDays()) for (const p of lessonPeriods()) if (gradePeriodHasDay(g, p.id, d)) out.push({ day: d, period: p.id });
+  return out;
+}
+// 「單純可調」科目：非分組/分節/連堂、該班非協同（調課連鎖只動這種，確保單格搬移不影響其他班）
+function isSimpleSubject(sid, classId) {
+  const s = subjectById(sid); if (!s) return false;
+  if (s.allowGrouping || s.splitTeachers || s.consecutive) return false;
+  const c = classById(classId); if (c && c.coteach && c.coteach[sid]) return false;
+  return true;
+}
+// 這一格「可以放什麼」：該班尚缺、且合法可放的 (科,師)
+function suggestionsForCell(classId, day, period) {
+  const out = [];
+  classSubjectHours(classById(classId)).forEach(sh => {
+    const sid = sh.subjectId; const s = subjectById(sid); if (!s) return;
+    if (s.splitTeachers) {
+      loadsForClassSubject(classId, sid).forEach(L => {
+        if (subjectRemaining(classId, sid, L.teacher.id) > 0 && canPlaceAt(classId, day, period, sid, L.teacher.id))
+          out.push({ sid, teacherId: L.teacher.id, name: s.name, teacherLabel: L.teacher.name, color: s.color, split: true });
+      });
+    } else if (subjectRemaining(classId, sid, null) > 0 && canPlaceAt(classId, day, period, sid, null)) {
+      out.push({ sid, teacherId: null, name: s.name, teacherLabel: subjectTeachersLabel(classId, sid), color: s.color });
+    }
+  });
+  return out;
+}
+// 找調課連鎖：搬動班內「單純」課讓 (sid,teacher) 能排進 classId。回傳 {cell, moves:[{from,to,sid}]} 或 null。state-preserving。
+function findEvictionChain(classId, sid, teacherId, maxDepth) {
+  const savedSlots = { ...state.slots }, savedST = { ...state.slotTeachers };
+  const budget = { n: 4000 };
+  function dfs(curSid, curTeacher, depth, avoid) {
+    if (budget.n-- <= 0) return null;
+    for (const c of candidateCells(classId, curSid, curTeacher)) { const k = slotKey(classId, c.day, c.period); if (!avoid.has(k)) return { cell: k, moves: [] }; }
+    if (depth <= 0) return null;
+    for (const cell of openGridCells(classId)) {
+      const k = slotKey(classId, cell.day, cell.period); if (avoid.has(k)) continue;
+      const occSid = state.slots[k]; if (!occSid) continue;
+      if (!isSimpleSubject(occSid, classId)) continue;
+      delete state.slots[k]; const occT = state.slotTeachers[k]; if (occT) delete state.slotTeachers[k];
+      let ret = null;
+      if (canPlaceAt(classId, cell.day, cell.period, curSid, curTeacher)) {
+        const nav = new Set(avoid); nav.add(k);
+        const sub = dfs(occSid, null, depth - 1, nav);
+        if (sub) ret = { cell: k, moves: [...sub.moves, { from: k, to: sub.cell, sid: occSid }] };
+      }
+      state.slots[k] = occSid; if (occT) state.slotTeachers[k] = occT;
+      if (ret) return ret;
+    }
+    return null;
+  }
+  let result = null;
+  try { result = dfs(sid, teacherId, maxDepth, new Set()); }
+  finally { state.slots = savedSlots; state.slotTeachers = savedST; }
+  return result;
+}
+// 放課共用邏輯（協同同步 + 連堂成對），回傳提示；供手動點格與建議放入共用
+function placeWithExtras(classId, day, period, sid, tid) {
+  const s = subjectById(sid); const dNum = parseInt(day, 10); const notes = [];
+  const linked = placeSubject(classId, day, period, sid, tid);
+  if (linked) notes.push(`協同同步 ${linked} 班`);
+  if (s && s.consecutive && state.settings.autoPairConsecutive !== false && subjectPlaced(classId, sid) < classSubjectRequired(classId, sid)) {
+    const g = classGrade(classById(classId));
+    const next = adjacentOpenPeriod(g, period, dNum, +1), prev = adjacentOpenPeriod(g, period, dNum, -1);
+    const partner = (next && !state.slots[slotKey(classId, day, next)]) ? next : (prev && !state.slots[slotKey(classId, day, prev)]) ? prev : null;
+    if (partner) { const l2 = placeSubject(classId, day, partner, sid, tid); notes.push('連堂成對排入相鄰節' + (l2 ? `（協同 ${l2} 班）` : '')); }
+    else notes.push('連堂：找不到相鄰空格');
+  }
+  save();
+  return notes;
+}
+function cellSuggestModal(classId, day, period) {
+  const sugg = suggestionsForCell(classId, day, period);
+  const head = `<p style="margin-top:0">「${esc((classById(classId) || {}).name || '')}」${DAY_LABELS[+day]} ${esc(periodLabel(period))} 這一格可以放：</p>`;
+  if (!sugg.length) { openModal({ title: '空格建議', body: head + `<p style="color:var(--muted)">目前沒有可放的課——可能該班的課都排完了，或剩下的科目受衝堂/排課限制擋住。若某科排不下，可用左側調色盤該科的「🔧 喬課」看調課建議。</p>` }); return; }
+  const key = slotKey(classId, day, period);
+  const rows = sugg.map(x => `<button class="suggest-row" data-action="place-suggestion" data-key="${key}" data-sid="${x.sid}" data-teacher="${x.teacherId || ''}">
+      <span class="sug-dot" style="background:${x.color}"></span>
+      <span><b>${x.split ? '✂️' : ''}${esc(x.name)}</b> <span style="color:var(--muted)">· ${esc(x.teacherLabel)}</span></span>
+    </button>`).join('');
+  openModal({ title: '空格建議 · 點一項放入', body: head + `<div class="suggest-list">${rows}</div>` });
+}
+function swapSuggestModal(classId, sid, teacherId) {
+  if (!isSimpleSubject(sid, classId)) { toast('此科為分組/協同/分節/連堂，暫不支援自動調課建議，請手動處理'); return; }
+  const chain = findEvictionChain(classId, sid, teacherId, 3);
+  const clsName = (classById(classId) || {}).name || '';
+  if (!chain) { openModal({ title: '調課建議', body: `<p style="margin-top:0">找不到 3 步內的調課方式，讓「${esc(subjectName(sid))}」排進「${esc(clsName)}」。</p><p style="color:var(--muted)">建議：放寬該科的排課限制、調整教師不排課時段或單日上限，或先手動挪動更多課後再試。</p>` }); return; }
+  const stepHtml = chain.moves.map((m, i) => { const a = m.from.split('|'), b = m.to.split('|');
+    return `<li>把「<b>${esc(subjectName(m.sid))}</b>」從 ${DAY_LABELS[+a[1]]}${esc(periodLabel(a[2]))} → 移到 ${DAY_LABELS[+b[1]]}${esc(periodLabel(b[2]))}</li>`; }).join('');
+  const t = chain.cell.split('|');
+  const finalHtml = `<li>再把「<b>${esc(subjectName(sid))}</b>」放到 ${DAY_LABELS[+t[1]]}${esc(periodLabel(t[2]))}</li>`;
+  const body = `<p style="margin-top:0">要讓「<b>${esc(subjectName(sid))}</b>」排進「${esc(clsName)}」，建議這樣調（${chain.moves.length ? chain.moves.length + ' 步移動' : '直接放入'}）：</p>
+    <ol style="line-height:1.9">${stepHtml}${finalHtml}</ol>
+    <p style="color:var(--muted);font-size:12px">套用後不會產生任何衝堂；若不滿意可手動移除再重排。</p>`;
+  openModal({ title: '調課建議', wide: true, body, saveLabel: '套用建議', onSave: () => {
+    chain.moves.forEach(m => { delete state.slots[m.from]; delete state.slotTeachers[m.from]; state.slots[m.to] = m.sid; });
+    placeSubject(classId, t[1], t[2], sid, teacherId);
+    save(); render(); toast('已套用調課建議');
+    return true;
+  } });
+}
+
 function viewSchedule() {
   if (state.classes.length === 0) return emptyState('尚未建立班級', '請先完成 ①科目 ②年級 ③班級 ④教師，再來排課。');
   const problems = checkStaffing();
@@ -974,7 +1087,7 @@ function viewSchedule() {
   const totalConf = Object.keys(conflicts).length;
   const classOpts = state.classes.map(c => `<option value="${c.id}" ${c.id === selectedClassId ? 'selected' : ''}>${esc(c.name)}（${esc(gradeName(c.gradeId))}）</option>`).join('');
   return `
-    <div class="page-head no-print"><h2>⑤ 排課</h2><div class="hint">左側點科目，再點課表空格放課；點已排的格子可移除。</div></div>
+    <div class="page-head no-print"><h2>⑤ 排課</h2><div class="hint">左側點科目→點空格放課；點已排格移除。<b>點空格（未選科目）</b>會列出「這格可放什麼」；排不下的科目按「🔧 喬課」看調課建議。</div></div>
     ${totalConf ? `<div class="conflict-banner no-print">⚠ 全校目前有 ${totalConf} 個需注意的格子（教師衝堂／不排課／協同未同步／連堂未相鄰）。</div>` : ''}
     <div class="board-toolbar no-print"><label>班級：</label><select id="scheduleClass" data-change="schedule-class">${classOpts}</select>
       <button class="btn" data-action="auto-schedule" style="margin-left:auto">🪄 自動排課</button></div>
@@ -1015,9 +1128,11 @@ function paletteHTML(classId) {
     const placed = subjectPlaced(classId, sid); const done = placed >= sh.hours, over = placed > sh.hours;
     const partners = classCoteachPartners(c, sid);
     const seld = sid === selectedSubjectId && !selectedTeacherId;
+    const stuck = !done && isSimpleSubject(sid, classId) && candidateCells(classId, sid, null).length === 0;
     chips.push(`<div class="chip ${seld ? 'selected' : ''} ${done && !over ? 'done' : ''}" style="border-left-color:${s.color}" data-action="select-subject" data-id="${sid}">
       <div><div class="chip-name">${s.allowGrouping ? '👥' : ''}${s.consecutive ? '⏱' : ''}${esc(s.name)}</div>
         <div class="chip-sub">${esc(subjectTeachersLabel(classId, sid))}${roomsLabelCS(classId, sid) ? ' · ' + esc(roomsLabelCS(classId, sid)) : ''}${partners.length ? ' · 🔗協同' : ''}</div></div>
+      ${stuck ? `<button class="ghost mini" data-action="suggest-swap" data-id="${sid}" title="這科排不下，看調課建議">🔧 喬課</button>` : ''}
       <span class="chip-count" style="color:${over ? 'var(--danger)' : done ? 'var(--ok)' : 'var(--muted)'}">${placed}/${sh.hours}</span>
     </div>`);
   });
@@ -1315,6 +1430,8 @@ function helpModal() {
       <li>✂️ <b>分節上課</b>科目：直接把節數拆給不同老師（如生活給 A 4 節、B 2 節），下拉會顯示各科<b>剩餘節數</b>、填的節數不超過剩餘。</li></ul>
     <h4>⑤ 排課</h4>
     <ul><li>選班級 → 左側點科目 → 點課表空格放課；點已排格移除。灰色格＝該班該節不上課。</li>
+      <li>💡 <b>空格建議</b>：未選科目時直接點空格，會列出「這一格可以放哪些課」（合法、不衝堂），點一項即放入。</li>
+      <li>🔧 <b>喬課（調課建議）</b>：某科排不下時，調色盤該科會出現「🔧 喬課」，按下會建議「把哪幾堂挪去哪，就能空出位置」（含多步連鎖），可一鍵套用、保證不產生衝堂。</li>
       <li>🪄 <b>自動排課</b>（選用）：右上按鈕一鍵把各班每科排滿，會遵守科目的排課限制、進階限制（分散不同天/隔天）、教師配課、不排課時段、教師單日上限、並避開所有衝堂；還會多次嘗試取較佳解（教師每日節數較平均、偏好時段盡量滿足）。可選「清空重排」或「只補空格（保留已排）」。排不下的課會列出讓你手動處理；排完仍可自由手動微調。</li>
       <li>✂️ <b>分節上課</b>科目：左側每位老師各一個色塊，先點「要放哪位老師」再點格，該格就記下由誰上（各上不同節）。</li>
       <li>分組科目自動多師同格；協同科目放一班自動同步其他班；連堂自動成對。</li>
@@ -1391,20 +1508,18 @@ const clickHandlers = {
       if (gid) state.classes.filter(x => x.id !== classId && x.coteach && x.coteach[sid] === gid).forEach(p => { const mk = slotKey(p.id, day, period); if (state.slots[mk] === sid) { delete state.slots[mk]; delete state.slotTeachers[mk]; } });
       save(); render(); return;
     }
-    if (!selectedSubjectId) { toast('先在左側點選一個科目'); return; }
+    if (!selectedSubjectId) { cellSuggestModal(classId, day, period); return; }
     const sid = selectedSubjectId; const s = subjectById(sid); const tid = selectedTeacherId;
     if (s && s.splitTeachers && !tid) { toast('分節上課請在左側選擇「哪位老師」的色塊再放課'); return; }
-    const notes = []; const linked = placeSubject(classId, day, period, sid, tid);
-    if (linked) notes.push(`協同同步 ${linked} 班`);
-    if (s && s.consecutive && state.settings.autoPairConsecutive !== false && subjectPlaced(classId, sid) < classSubjectRequired(classId, sid)) {
-      const g = classGrade(classById(classId));
-      const next = adjacentOpenPeriod(g, period, dNum, +1), prev = adjacentOpenPeriod(g, period, dNum, -1);
-      const partner = (next && !state.slots[slotKey(classId, day, next)]) ? next : (prev && !state.slots[slotKey(classId, day, prev)]) ? prev : null;
-      if (partner) { const l2 = placeSubject(classId, day, partner, sid, tid); notes.push('連堂成對排入相鄰節' + (l2 ? `（協同 ${l2} 班）` : '')); }
-      else notes.push('連堂：找不到相鄰空格');
-    }
-    save(); render(); if (notes.length) toast(notes.join('；'));
+    const notes = placeWithExtras(classId, day, period, sid, tid);
+    render(); if (notes.length) toast(notes.join('；'));
   },
+  'place-suggestion': el => {
+    const [classId, day, period] = el.dataset.key.split('|');
+    const notes = placeWithExtras(classId, day, period, el.dataset.sid, el.dataset.teacher || null);
+    closeModal(); render(); if (notes.length) toast(notes.join('；'));
+  },
+  'suggest-swap': el => swapSuggestModal(selectedClassId, el.dataset.id, el.dataset.teacher || null),
 
   'print-out': () => window.print(),
   'csv-out': exportCSV,
