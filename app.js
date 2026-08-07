@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v08.04';
+const APP_VERSION = 'v08.05';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -245,12 +245,16 @@ function cellIsLocked(key) {
 }
 function finalizeLock() {
   state.lockFinalized = true;
-  if (!state.selfReleased) {                     // 首次完成鎖定：偵測自編格 → 釋放為空白
-    const selfKeys = Object.keys(state.slots).filter(isSelfSlot);
-    state.selfCells = selfKeys;
-    selfKeys.forEach(k => { delete state.slots[k]; delete state.slotTeachers[k]; delete state.slotContent[k]; });
-    state.selfReleased = true;
-  }
+  // 每次完成鎖定都「即時重新判斷」自編格（依目前排課），不依賴上一次的結果
+  const detected = Object.keys(state.slots).filter(isSelfSlot);
+  const prev = new Set(state.selfCells || []);
+  // 釋放：新偵測到、且先前不在自編清單的格 → 清空（先前已是自編／已被導師選課者不再清，保護其內容）
+  detected.forEach(k => { if (!prev.has(k)) { delete state.slots[k]; delete state.slotTeachers[k]; delete state.slotContent[k]; } });
+  // 自編清單＝這次偵測到的 ∪ 先前仍成立者（目前仍空白待選、或仍被判為自編）；先前若已被改成非自編課程則剔除
+  const detectedSet = new Set(detected);
+  const keptPrev = (state.selfCells || []).filter(k => detectedSet.has(k) || !state.slots[k]);
+  state.selfCells = [...new Set([...keptPrev, ...detected])];
+  state.selfReleased = true;
 }
 // 導師選課候選＝本班級任導師在本班的配課科目；並追蹤各科節數
 function homeroomTeacher(classId) { return state.teachers.find(t => t.homeroomClassId === classId) || null; }
@@ -1379,7 +1383,7 @@ function classTimetableHTML(classId, conflicts, editable) {
       const selecting = editable && lockMode;                       // 單格選取中
       const cellSel = (state.lockedCells || []).includes(key);      // 此格已在單格鎖定清單
       const isLocked = editable && cellIsLocked(key);               // 定稿後此格唯讀
-      const selfCell = isSelfCell(key);                             // 系統偵測的自編格（定稿後釋放）
+      const selfCell = state.lockFinalized && isSelfCell(key);      // 系統偵測的自編格（定稿後釋放）
       const selfPreview = editable && !state.lockFinalized && !!sid && isSelfSlot(key); // 定稿前即時預覽：本班級任導師任課
       const canSelect = selecting && !selfPreview;                  // 自編（預覽）格在單格鎖定時不可鎖
       const lockMark = isLocked ? '<span class="lock-mark">🔒</span>' : '';
