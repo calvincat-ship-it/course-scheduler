@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v07.00';
+const APP_VERSION = 'v07.01';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -18,7 +18,7 @@ const SCHEMA = 2;
      https://calvincat-ship-it.github.io   （正式：GitHub Pages）
      http://localhost:5177                  （本機測試）
    設定好後把用戶端 ID 貼到下面即可啟用；留空時雲端同步顯示「尚未設定」。 */
-const GOOGLE_CLIENT_ID = '';
+const GOOGLE_CLIENT_ID = '682239566772-mp9bofvp17baa7487rja86et1fud6rmu.apps.googleusercontent.com';
 const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.appdata';
 const CLOUD_KEY = 'course_cloud_v1';         // localStorage：雲端連線狀態（與 IDB 的 state 分開）
 const CLOUD_FILE_NAME = 'course-backup.json';
