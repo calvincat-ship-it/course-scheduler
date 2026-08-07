@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v08.00';
+const APP_VERSION = 'v08.01';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -115,6 +115,7 @@ function defaultState() {
     slots: {},
     slotTeachers: {}, // 分節上課科目：每格記錄該節由哪位老師上（key 同 slots）
     slotContent: {},  // v08.00 自編課程：每個自編格的內容文字（導師填），key 同 slots
+    locked: false,    // v08.01 鎖定：定稿後非自編格唯讀，僅開放自編格內容編輯
     helpSeen: false,
   };
 }
@@ -1068,6 +1069,7 @@ function runAutoSchedule(clearFirst) {
   return { unplaced: best.unplaced, runs, ms: Math.round(performance.now() - t0), penalty: best.penalty };
 }
 function autoScheduleModal() {
+  if (state.locked) { toast('課表已鎖定，請先解除鎖定再自動排課'); return; }
   const problems = checkStaffing();
   if (problems.length) { toast('尚有配課問題，請先在「④ 教師」把各班每科節數配齊'); return; }
   openModal({
@@ -1192,7 +1194,7 @@ function selfDesignedCellModal(key) {
     saveLabel: '儲存內容',
     body: `<label class="field"><span>${esc((s || {}).name || '自編課程')}內容（開放線上填課後由導師填）</span>
         <input type="text" id="sdContent" value="${esc(content)}" placeholder="如：自主學習、閱讀、社團… 可留空"></label>
-      <div style="margin-top:14px"><button class="ghost" data-action="del-selfcell" data-key="${esc(key)}">🗑️ 移除此自編格</button></div>`,
+      ${state.locked ? '' : `<div style="margin-top:14px"><button class="ghost" data-action="del-selfcell" data-key="${esc(key)}">🗑️ 移除此自編格</button></div>`}`,
     onSave: () => {
       const v = $('#sdContent').value.trim();
       if (v) state.slotContent[key] = v; else delete state.slotContent[key];
@@ -1243,14 +1245,18 @@ function viewSchedule() {
   if (!selectedClassId || !classById(selectedClassId)) selectedClassId = state.classes[0].id;
   const conflicts = computeConflicts();
   const totalConf = Object.keys(conflicts).length;
+  const locked = !!state.locked;
   const classOpts = state.classes.map(c => `<option value="${c.id}" ${c.id === selectedClassId ? 'selected' : ''}>${esc(c.name)}（${esc(gradeName(c.gradeId))}）</option>`).join('');
   return `
-    <div class="page-head no-print"><h2>⑤ 排課</h2><div class="hint">左側點科目→點空格放課；點已排格移除。<b>點空格（未選科目）</b>會列出「這格可放什麼」；排不下的科目按「🔧 喬課」看調課建議。</div></div>
+    <div class="page-head no-print"><h2>⑤ 排課</h2><div class="hint">${locked
+      ? '課表已鎖定（定稿）：僅開放點<b>自編格</b>編輯內容。要調整排課請先解除鎖定。'
+      : '左側點科目→點空格放課；點已排格移除。<b>點空格（未選科目）</b>會列出「這格可放什麼」；排不下的科目按「🔧 喬課」看調課建議。'}</div></div>
+    ${locked ? `<div class="lock-banner no-print"><span>🔒 課表已鎖定（定稿）。目前僅開放編輯自編格內容；放課／移除／自動排課皆停用。</span><button class="btn" data-action="unlock-schedule">🔓 解除鎖定</button></div>` : ''}
     ${totalConf ? `<div class="conflict-banner no-print">⚠ 全校目前有 ${totalConf} 個需注意的格子（教師衝堂／不排課／協同未同步／連堂未相鄰）。</div>` : ''}
     <div class="board-toolbar no-print"><label>班級：</label><select id="scheduleClass" data-change="schedule-class">${classOpts}</select>
-      <button class="btn" data-action="auto-schedule" style="margin-left:auto">🪄 自動排課</button></div>
-    <div class="schedule-layout">
-      <div class="palette card no-print"><div class="card-body"><h4>科目調色盤</h4>${paletteHTML(selectedClassId)}</div></div>
+      ${locked ? '' : `<button class="ghost" data-action="lock-schedule" style="margin-left:auto" title="定稿後鎖定，只留自編格可填">🔒 鎖定課表</button><button class="btn" data-action="auto-schedule">🪄 自動排課</button>`}</div>
+    <div class="schedule-layout ${locked ? 'locked' : ''}">
+      ${locked ? '' : `<div class="palette card no-print"><div class="card-body"><h4>科目調色盤</h4>${paletteHTML(selectedClassId)}</div></div>`}
       <div class="card"><div class="card-body">
         <div class="grid-wrap">${classTimetableHTML(selectedClassId, conflicts, true)}</div>
         <div class="teacher-load no-print">${teacherLoadHTML()}</div>
@@ -1610,7 +1616,8 @@ function helpModal() {
       <li>🪄 <b>自動排課</b>（選用）：右上按鈕一鍵把各班每科排滿，會遵守科目的排課限制、進階限制（分散不同天/隔天）、教師配課、不排課時段、教師單日上限、並避開所有衝堂；還會多次嘗試取較佳解（教師每日節數較平均、偏好時段盡量滿足）。可選「清空重排」或「只補空格（保留已排）」。排不下的課會列出讓你手動處理；排完仍可自由手動微調。</li>
       <li>✂️ <b>分節上課</b>科目：左側每位老師各一個色塊，先點「要放哪位老師」再點格，該格就記下由誰上（各上不同節）。</li>
       <li>分組科目自動多師同格；協同科目放一班自動同步其他班；連堂自動成對。</li>
-      <li>🔴 紅框代表需注意：教師衝堂／教室衝堂／不排課時段／協同未同步／連堂未相鄰（移到格上看原因）。</li></ul>
+      <li>🔴 紅框代表需注意：教師衝堂／教室衝堂／不排課時段／協同未同步／連堂未相鄰（移到格上看原因）。</li>
+      <li>🔒 <b>鎖定課表</b>：排課定稿後可「鎖定課表」，所有非自編格變唯讀（不能放課/移除/自動排課），只留🧩自編格可編輯內容——供之後開放導師線上填課。隨時可「解除鎖定」。</li></ul>
     <h4>領域節數</h4>
     <ul><li><b>建議節數參考表</b>：各領域每年級每周建議節數，可自行改名稱／節數、新增或刪除領域。內建 108 課綱國小起始值，<b>請務必依課綱／貴校校對</b>。</li>
       <li><b>各年級實配對照</b>：把「② 年級」設定的科目節數依「① 科目」的所屬領域加總，和建議並排（實配 / 建議）；相符綠、不符紅底，方便檢查各領域節數是否到位。未指定領域的科目會列在「未分類」。</li></ul>
@@ -2105,6 +2112,11 @@ const clickHandlers = {
   },
   'cell-click': el => {
     const key = el.dataset.key; const [classId, day, period] = key.split('|'); const dNum = parseInt(day, 10);
+    if (state.locked) {   // 鎖定：僅開放自編格內容編輯，其餘一律擋
+      const s = subjectById(state.slots[key]);
+      if (s && s.selfDesigned) { selfDesignedCellModal(key); return; }
+      toast('課表已鎖定，僅開放編輯自編格內容。要調整請先解除鎖定。'); return;
+    }
     if (state.slots[key]) {
       const sid = state.slots[key]; const sObj = subjectById(sid);
       if (sObj && sObj.selfDesigned) { selfDesignedCellModal(key); return; }   // 自編格：改開內容編輯/移除
@@ -2126,6 +2138,9 @@ const clickHandlers = {
   },
   'suggest-swap': el => swapSuggestModal(selectedClassId, el.dataset.id, el.dataset.teacher || null),
   'del-selfcell': el => { const key = el.dataset.key; delete state.slots[key]; delete state.slotTeachers[key]; delete state.slotContent[key]; closeModal(); save(); render(); toast('已移除自編格'); },
+
+  'lock-schedule': () => openModal({ title: '鎖定課表', saveLabel: '鎖定', body: `<p style="margin-top:0">鎖定後課表定稿：<b>所有非自編格變唯讀</b>（不能放課/移除/自動排課），只保留<b>自編格可編輯內容</b>。之後開放導師線上填課即以此為準。</p><p style="color:var(--muted)">隨時可再「解除鎖定」回到自由編輯。</p>`, onSave: () => { state.locked = true; save(); render(); toast('已鎖定課表'); return true; } }),
+  'unlock-schedule': () => openModal({ title: '解除鎖定', saveLabel: '解除鎖定', body: `<p style="margin-top:0">解除後可再自由調整排課（放課／移除／自動排課）。自編格已填的內容會保留。</p>`, onSave: () => { state.locked = false; save(); render(); toast('已解除鎖定'); return true; } }),
 
   'print-out': () => window.print(),
   'csv-out': exportCSV,
