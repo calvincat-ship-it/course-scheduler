@@ -157,6 +157,7 @@ table.timetable tr.break-row td { background: #f8fafc; color: var(--muted); font
 .cell-lesson { border-radius: 6px; padding: 4px 2px; font-weight: 700; font-size: 13px; height: 100%; display: flex; flex-direction: column; justify-content: center; line-height: 1.25; }
 .cell-lesson small { font-weight: 400; font-size: 11px; opacity: .85; }
 .cell-lesson.conflict { outline: 2px solid var(--danger); box-shadow: inset 0 0 0 2px var(--danger); }
+.cell-lesson.self-designed { outline: 2px dashed rgba(255, 255, 255, .85); outline-offset: -4px; }
 .cell-lesson .conf-mark { color: var(--danger); font-size: 11px; }
 
 .board-toolbar { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
