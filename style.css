@@ -200,6 +200,13 @@ table.avail td.slot.on { background: #dcfce7; color: var(--ok); font-weight: 700
 .total-badge.ok { background: #dcfce7; color: #15803d; }
 .total-badge.bad { background: var(--danger-bg); color: var(--danger); }
 
+/* ---------- Cloud restore picker ---------- */
+.restore-list { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
+.restore-item { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; cursor: pointer; }
+.restore-item:hover { background: #f8fafc; }
+.restore-item input { margin-top: 3px; }
+.restore-item small { font-size: 12px; }
+
 /* ---------- Print ---------- */
 @media print {
   .no-print { display: none !important; }

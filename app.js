@@ -6,10 +6,25 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v06.00';
+const APP_VERSION = 'v07.00';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
+
+/* ---------- 雲端同步（Google Drive appDataFolder）常數 ----------
+   GOOGLE_CLIENT_ID：需在 Google Cloud Console 為「本 App」建立專屬 OAuth 用戶端
+   （drive.appdata scope 的隱藏資料夾是「每個 OAuth 用戶端各自獨立」，不可與血壓/記事本共用，
+   否則備份檔會混進別的 App 資料夾）。授權的 JavaScript 來源需含：
+     https://calvincat-ship-it.github.io   （正式：GitHub Pages）
+     http://localhost:5177                  （本機測試）
+   設定好後把用戶端 ID 貼到下面即可啟用；留空時雲端同步顯示「尚未設定」。 */
+const GOOGLE_CLIENT_ID = '';
+const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.appdata';
+const CLOUD_KEY = 'course_cloud_v1';         // localStorage：雲端連線狀態（與 IDB 的 state 分開）
+const CLOUD_FILE_NAME = 'course-backup.json';
+const CLOUD_PREV_NAME = 'course-backup.prev.json';
+const CLOUD_HISTORY_PREFIX = 'course-history-';
+const CLOUD_DEBOUNCE_MS = 8000;
 
 const DAY_LABELS = ['', '週一', '週二', '週三', '週四', '週五', '週六', '週日'];
 const GRADE_NAMES = ['一年級', '二年級', '三年級', '四年級', '五年級', '六年級'];
@@ -37,6 +52,16 @@ async function idbSet(key, val) {
 
 /* ---------- State ---------- */
 let state = null;
+
+/* 雲端同步 runtime（cloudState 存 localStorage；其餘僅記憶體） */
+let cloudState = loadCloudState();
+let suppressCloud = false;   // 還原期間設 true，避免還原後又立即上傳覆蓋來源
+let gisToken = null;         // { access_token, expiresAt } 僅記憶體、不落地
+let tokenClient = null;
+let cloudTimer = null;
+let cloudBusy = false;
+let snapshotInFlight = false;
+let _tokResolve = null, _tokReject = null;
 
 function defaultPeriods() {
   return [
@@ -93,7 +118,7 @@ function defaultState() {
   };
 }
 
-async function save() { await idbSet(STATE_KEY, state); }
+async function save() { await idbSet(STATE_KEY, state); scheduleCloudBackup(); maybeDailySnapshot(); }
 
 /* ---------- Helpers ---------- */
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -1423,8 +1448,9 @@ function viewSettings() {
       }).join('')}</tbody></table>
       <p class="hint" style="color:var(--muted);margin-top:8px">母語可用「/」分列（如 阿美語/閩南語）。固定版面（整潔活動、導師時間、午餐、午休、第八節、週三下午教學研究、學生人數欄）已比照範本內建。</p>
     </div></div>
+    ${cloudSettingsCard()}
     <div class="card"><div class="card-body"><h4 style="margin-top:0">關於</h4>
-      <p style="color:var(--muted)">課務編排 ${APP_VERSION} · 資料存本機瀏覽器。備份請用右上「備份」。</p>
+      <p style="color:var(--muted)">課務編排 ${APP_VERSION} · 資料存本機瀏覽器。備份請用右上「備份」或下方雲端同步。</p>
     </div></div>`;
 }
 function roomModal(existing) {
@@ -1546,8 +1572,422 @@ function helpModal() {
       <li><b>各年級實配對照</b>：把「② 年級」設定的科目節數依「① 科目」的所屬領域加總，和建議並排（實配 / 建議）；相符綠、不符紅底，方便檢查各領域節數是否到位。未指定領域的科目會列在「未分類」。</li></ul>
     <h4>課表輸出 / 備份</h4>
     <p>可輸出班級表、教師表，列印或存 PDF、匯出 CSV。右上「備份」可匯出/匯入 JSON（換裝置用）。</p>
+    <h4>☁️ 雲端同步（設定頁）</h4>
+    <ul><li>連結 Google 帳號後，排課資料會自動備份到<b>你自己的雲端硬碟</b>（App 專屬隱藏資料夾、無伺服器）。</li>
+      <li><b>多裝置接續</b>：在另一台開啟 App 時，若雲端有較新的備份會詢問是否還原，筆電／桌機可接續同一份資料。</li>
+      <li><b>還原版本</b>：可從「最新版本」或每日保留的<b>歷史版本（最多 7 份）</b>挑一個還原。可隨時「更換帳號」或「解除連結」。</li></ul>
     </div>`,
   });
+}
+
+/* ==========================================================================
+   雲端同步：Google Drive（appDataFolder）— v07.00
+   模型：整份 state 備份到「使用者自己 Google 雲端」的隱藏 App 專屬資料夾，
+   無伺服器。單一 JSON 檔、last-write-wins；開 App 若雲端較新則詢問還原；
+   偵測到跨裝置衝突時把雲端舊版另存 .prev；每天首次變更保留一份歷史版本（最多 7）。
+   ========================================================================== */
+function loadCloudState() {
+  const defaults = { enabled: false, email: '', dataOwnerEmail: '', fileId: '', prevFileId: '', lastSyncedAt: '', lastSnapshotDate: '', pendingBackup: false, backupFailed: false, deviceId: '' };
+  let s;
+  try { s = { ...defaults, ...JSON.parse(localStorage.getItem(CLOUD_KEY)) }; }
+  catch { s = { ...defaults }; }
+  if (!s.deviceId) s.deviceId = (crypto.randomUUID ? crypto.randomUUID() : uid() + uid());
+  localStorage.setItem(CLOUD_KEY, JSON.stringify(s));
+  return s;
+}
+function saveCloudState() { localStorage.setItem(CLOUD_KEY, JSON.stringify(cloudState)); }
+const cloudConfigured = () => !!GOOGLE_CLIENT_ID;
+
+function friendlyCloudErr(e) {
+  const m = (e && e.message) || '';
+  if (/popup_closed|access_denied|interaction_required|auth_failed|popup_failed/i.test(m)) return '登入未完成';
+  if (/network|Failed to fetch/i.test(m)) return '網路連線問題';
+  return '請稍後再試';
+}
+function fmtDateTime(iso) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleString('zh-TW', { dateStyle: 'short', timeStyle: 'short' });
+}
+function localDateStr(d = new Date()) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+const hasLocalData = () => state.subjects.length > 0 || state.classes.length > 0 || state.teachers.length > 0;
+
+/* ---- GIS / token ---- */
+function ensureGis() {
+  return new Promise((resolve, reject) => {
+    if (window.google && google.accounts && google.accounts.oauth2) return resolve();
+    let s = document.getElementById('gisScript');
+    if (s) { s.addEventListener('load', () => resolve()); s.addEventListener('error', () => reject(new Error('network'))); return; }
+    s = document.createElement('script');
+    s.id = 'gisScript'; s.src = 'https://accounts.google.com/gsi/client'; s.async = true; s.defer = true;
+    s.onload = () => resolve(); s.onerror = () => reject(new Error('network'));
+    document.head.appendChild(s);
+  });
+}
+function initTokenClient() {
+  tokenClient = google.accounts.oauth2.initTokenClient({
+    client_id: GOOGLE_CLIENT_ID, scope: DRIVE_SCOPE,
+    callback: (resp) => {
+      const ok = _tokResolve, fail = _tokReject; _tokResolve = _tokReject = null;
+      if (resp && resp.access_token) { gisToken = { access_token: resp.access_token, expiresAt: Date.now() + ((Number(resp.expires_in) || 3600) * 1000) }; ok && ok(resp.access_token); }
+      else fail && fail(new Error((resp && resp.error) || 'auth_failed'));
+    },
+    error_callback: (err) => { const fail = _tokReject; _tokResolve = _tokReject = null; fail && fail(new Error((err && err.type) || 'popup_closed')); },
+  });
+}
+// promptMode: 'none' 純背景（無 UI，會話失效即失敗）；'' 使用者手勢（已授權則靜默、否則彈窗）。
+async function getAccessToken(promptMode = '') {
+  await ensureGis();
+  if (gisToken && gisToken.expiresAt - 60000 > Date.now()) return gisToken.access_token;
+  if (!tokenClient) initTokenClient();
+  return new Promise((resolve, reject) => {
+    _tokResolve = resolve; _tokReject = reject;
+    try { tokenClient.requestAccessToken({ prompt: promptMode }); }
+    catch (e) { _tokResolve = _tokReject = null; reject(e); }
+  });
+}
+async function driveFetch(url, opts) {
+  let token = await getAccessToken('none');
+  const build = (t) => ({ ...opts, headers: { ...(opts && opts.headers), Authorization: 'Bearer ' + t } });
+  let res = await fetch(url, build(token));
+  if (res.status === 401) { gisToken = null; token = await getAccessToken('none'); res = await fetch(url, build(token)); }
+  return res;
+}
+
+/* ---- Drive REST ---- */
+async function driveFindFile(name) {
+  const q = encodeURIComponent(`name='${name}'`);
+  const res = await driveFetch(`https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&q=${q}&fields=files(id,name,modifiedTime,appProperties)&pageSize=5`, { method: 'GET' });
+  if (!res.ok) throw new Error('list_failed');
+  const data = await res.json();
+  return (data.files && data.files[0]) || null;
+}
+async function driveGetMeta(fileId) {
+  const res = await driveFetch(`https://www.googleapis.com/drive/v3/files/${fileId}?fields=id,appProperties,modifiedTime`, { method: 'GET' });
+  if (!res.ok) return null;
+  return res.json();
+}
+async function driveDownloadText(fileId) {
+  const res = await driveFetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, { method: 'GET' });
+  if (!res.ok) throw new Error('download_failed');
+  return res.text();
+}
+async function driveGetUserEmail() {
+  try {
+    const res = await driveFetch('https://www.googleapis.com/drive/v3/about?fields=user', { method: 'GET' });
+    if (!res.ok) return '';
+    const data = await res.json();
+    return (data.user && data.user.emailAddress) || '';
+  } catch { return ''; }
+}
+async function refreshCloudEmailIfMissing() {
+  if (!cloudState.enabled) return;
+  let changed = false;
+  if (!cloudState.email) { const email = await driveGetUserEmail(); if (email) { cloudState.email = email; changed = true; } }
+  if (cloudState.email && !cloudState.dataOwnerEmail) { cloudState.dataOwnerEmail = cloudState.email; changed = true; }
+  if (changed) { saveCloudState(); updateCloudUI(); }
+}
+async function driveUpload(fileId, name, contentStr, appProps) {
+  const boundary = 'csb' + Math.random().toString(16).slice(2);
+  const metadata = fileId ? { appProperties: appProps } : { name, parents: ['appDataFolder'], appProperties: appProps };
+  const body = `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n` + JSON.stringify(metadata) +
+    `\r\n--${boundary}\r\nContent-Type: application/json\r\n\r\n` + contentStr + `\r\n--${boundary}--`;
+  const base = 'https://www.googleapis.com/upload/drive/v3/files';
+  const url = fileId ? `${base}/${fileId}?uploadType=multipart&fields=id,appProperties` : `${base}?uploadType=multipart&fields=id,appProperties`;
+  const res = await driveFetch(url, { method: fileId ? 'PATCH' : 'POST', headers: { 'Content-Type': `multipart/related; boundary=${boundary}` }, body });
+  if (!res.ok) throw new Error('upload_failed');
+  return res.json();
+}
+async function driveCopyFile(fileId, name, appProps) {
+  const res = await driveFetch(`https://www.googleapis.com/drive/v3/files/${fileId}/copy?fields=id,appProperties,createdTime`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, parents: ['appDataFolder'], appProperties: appProps }),
+  });
+  if (!res.ok) throw new Error('copy_failed');
+  return res.json();
+}
+async function driveDelete(fileId) {
+  const res = await driveFetch(`https://www.googleapis.com/drive/v3/files/${fileId}`, { method: 'DELETE' });
+  return res.ok || res.status === 404;
+}
+async function resolveMainFileId() {
+  if (cloudState.fileId) return cloudState.fileId;
+  const f = await driveFindFile(CLOUD_FILE_NAME);
+  if (f) { cloudState.fileId = f.id; saveCloudState(); return f.id; }
+  return '';
+}
+async function preserveRemoteAsPrev(fileId) {
+  try {
+    const text = await driveDownloadText(fileId);
+    const r = await driveUpload(cloudState.prevFileId || '', CLOUD_PREV_NAME, text, { savedAt: new Date().toISOString() });
+    cloudState.prevFileId = r.id; saveCloudState();
+  } catch {}
+}
+
+/* ---- 歷史版本快照（course-history-<epoch>.json，最多 7）---- */
+function snapshotTime(f) {
+  const s = f.appProperties && f.appProperties.snapshotAt;
+  const t = s ? Date.parse(s) : Date.parse(f.createdTime || '');
+  return Number.isNaN(t) ? 0 : t;
+}
+async function listSnapshots() {
+  const q = encodeURIComponent(`name contains '${CLOUD_HISTORY_PREFIX}'`);
+  const res = await driveFetch(`https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&q=${q}&fields=files(id,name,createdTime,appProperties)&pageSize=50`, { method: 'GET' });
+  if (!res.ok) throw new Error('list_failed');
+  const data = await res.json();
+  return (data.files || []).sort((a, b) => snapshotTime(b) - snapshotTime(a));
+}
+async function pruneSnapshots(max) {
+  const snaps = await listSnapshots();
+  for (const f of snaps.slice(max)) { try { await driveDelete(f.id); } catch {} }
+}
+async function createDailySnapshot() {
+  const mainId = await resolveMainFileId();
+  if (!mainId) return;
+  const meta = await driveGetMeta(mainId);
+  const props = { snapshotAt: new Date().toISOString(), dateStr: localDateStr(), classes: (meta && meta.appProperties && meta.appProperties.classes) || '' };
+  await driveCopyFile(mainId, `${CLOUD_HISTORY_PREFIX}${Date.now()}.json`, props);
+  await pruneSnapshots(7);
+}
+function maybeDailySnapshot() {
+  if (!cloudState.enabled || suppressCloud || snapshotInFlight) return;
+  const today = localDateStr();
+  if (cloudState.lastSnapshotDate === today) return;
+  snapshotInFlight = true;
+  createDailySnapshot().then(() => { cloudState.lastSnapshotDate = today; saveCloudState(); }).catch(() => {}).finally(() => { snapshotInFlight = false; });
+}
+
+/* ---- 備份物件（整份 state）---- */
+function buildBackupObject() {
+  return { courseSchedulerBackup: true, schema: SCHEMA, exportedAt: new Date().toISOString(), state };
+}
+async function applyBackupObject(data) {
+  const st = (data && data.state) ? data.state : data;   // 容錯：允許直接是 state
+  if (!st || st.schema !== SCHEMA) throw new Error('bad_backup');
+  suppressCloud = true;
+  try {
+    state = st;
+    if (!Array.isArray(state.rooms)) state.rooms = [];
+    if (!state.slotTeachers || typeof state.slotTeachers !== 'object') state.slotTeachers = {};
+    if (!Array.isArray(state.domains)) state.domains = defaultDomains();
+    if (!state.settings.subjectMap || typeof state.settings.subjectMap !== 'object') state.settings.subjectMap = {};
+    await idbSet(STATE_KEY, state);   // 直接寫 IDB，繞過 save() 的雲端 hook
+    selectedGradeId = null;
+    render();
+  } finally { suppressCloud = false; }
+}
+
+/* ---- UI 狀態 ---- */
+function setCloudBusy(b) { cloudBusy = b; updateCloudUI(); }
+function updateCloudUI() { if (currentTab === 'settings') render(); }   // 設定頁的雲端卡片由 render 依 cloudState 重畫
+
+function scheduleCloudBackup() {
+  if (!cloudState.enabled || suppressCloud) return;
+  if (!cloudState.pendingBackup) { cloudState.pendingBackup = true; saveCloudState(); updateCloudUI(); }
+  clearTimeout(cloudTimer);
+  cloudTimer = setTimeout(() => { cloudBackupNow({}); }, CLOUD_DEBOUNCE_MS);
+}
+
+async function cloudBackupNow({ manual = false, interactive = false } = {}) {
+  if (!cloudState.enabled && !interactive) return;
+  if (cloudBusy) return;
+  setCloudBusy(true);
+  try {
+    if (interactive) await getAccessToken('');
+    const updatedAt = new Date().toISOString();
+    const bundle = buildBackupObject();
+    bundle.cloudUpdatedAt = updatedAt; bundle.deviceId = cloudState.deviceId;
+    const contentStr = JSON.stringify(bundle);
+    const fileId = await resolveMainFileId();
+    if (fileId) {
+      const meta = await driveGetMeta(fileId);
+      const remoteUpdated = meta && meta.appProperties && meta.appProperties.updatedAt;
+      if (remoteUpdated && remoteUpdated !== cloudState.lastSyncedAt) await preserveRemoteAsPrev(fileId);
+    }
+    const result = await driveUpload(fileId, CLOUD_FILE_NAME, contentStr, { updatedAt, deviceId: cloudState.deviceId, classes: String(state.classes.length) });
+    cloudState.fileId = result.id; cloudState.lastSyncedAt = updatedAt;
+    cloudState.pendingBackup = false; cloudState.backupFailed = false;
+    if (cloudState.email) cloudState.dataOwnerEmail = cloudState.email;
+    saveCloudState(); updateCloudUI();
+    if (manual) toast('已備份到雲端');
+  } catch (e) {
+    cloudState.backupFailed = true; saveCloudState(); updateCloudUI();
+    if (manual || interactive) toast('雲端備份失敗：' + friendlyCloudErr(e));
+  } finally { setCloudBusy(false); }
+}
+
+async function cloudRestore({ manual = false, confirmFirst = true, confirmMsg = '' } = {}) {
+  setCloudBusy(true);
+  try {
+    if (manual) await getAccessToken('');
+    const fileId = await resolveMainFileId();
+    if (!fileId) { if (manual) toast('雲端沒有備份可還原'); return 'none'; }
+    const text = await driveDownloadText(fileId);
+    let data; try { data = JSON.parse(text); } catch { toast('雲端備份格式錯誤'); return 'error'; }
+    const st = (data && data.state) ? data.state : data;
+    if (!st || st.schema !== SCHEMA) { toast('雲端備份格式錯誤或版本不符'); return 'error'; }
+    if (confirmFirst) {
+      const msg = confirmMsg || `確定要用雲端備份還原嗎？這會覆蓋此裝置目前所有資料（雲端共 ${(st.classes || []).length} 班）。`;
+      if (!confirm(msg)) return 'declined';
+    }
+    await applyBackupObject(data);
+    const meta = await driveGetMeta(fileId);
+    cloudState.lastSyncedAt = (meta && meta.appProperties && meta.appProperties.updatedAt) || data.cloudUpdatedAt || cloudState.lastSyncedAt;
+    cloudState.pendingBackup = false; cloudState.backupFailed = false;
+    if (cloudState.email) cloudState.dataOwnerEmail = cloudState.email;
+    saveCloudState(); updateCloudUI();
+    toast('已從雲端還原');
+    return 'restored';
+  } catch (e) { toast('雲端還原失敗：' + friendlyCloudErr(e)); return 'error'; }
+  finally { setCloudBusy(false); }
+}
+
+/* ---- 還原版本選擇器（最新 + 歷史版本）---- */
+async function openRestorePicker() {
+  setCloudBusy(true);
+  let items = [];
+  try {
+    await getAccessToken('');
+    const mainId = await resolveMainFileId();
+    if (mainId) {
+      const meta = await driveGetMeta(mainId);
+      const p = (meta && meta.appProperties) || {};
+      items.push({ value: 'latest', main: '最新版本（即時）', sub: [fmtDateTime(p.updatedAt), p.classes ? `${p.classes} 班` : ''].filter(Boolean).join('　') });
+    }
+    let snaps = []; try { snaps = await listSnapshots(); } catch {}
+    for (const f of snaps) {
+      const p = f.appProperties || {};
+      items.push({ value: f.id, main: `歷史版本　${p.dateStr || ''}`.trim(), sub: [fmtDateTime(p.snapshotAt || f.createdTime), p.classes ? `${p.classes} 班` : ''].filter(Boolean).join('　') });
+    }
+  } catch (e) { toast('讀取版本清單失敗：' + friendlyCloudErr(e)); setCloudBusy(false); return; }
+  setCloudBusy(false);
+  if (items.length === 0) { toast('雲端沒有備份可還原'); return; }
+  const rows = items.map((it, i) => `<label class="restore-item">
+    <input type="radio" name="rv" value="${esc(it.value)}" ${i === 0 ? 'checked' : ''}>
+    <span><b>${esc(it.main)}</b><br><small style="color:var(--muted)">${esc(it.sub)}</small></span></label>`).join('');
+  openModal({
+    title: '選擇還原版本', saveLabel: '還原此版本',
+    body: `<p style="margin-top:0;color:var(--muted)">還原會覆蓋此裝置目前資料，並成為雲端最新版本。</p><div class="restore-list">${rows}</div>`,
+    onSave: () => {
+      const sel = document.querySelector('input[name="rv"]:checked'); if (!sel) return false;
+      const value = sel.value; const label = sel.closest('.restore-item').querySelector('b').textContent;
+      closeModal();
+      if (value === 'latest') cloudRestore({ manual: true }); else restoreFromSnapshot(value, label);
+      return true;
+    },
+  });
+}
+async function restoreFromSnapshot(fileId, label) {
+  setCloudBusy(true);
+  try {
+    const text = await driveDownloadText(fileId);
+    let data; try { data = JSON.parse(text); } catch { toast('版本資料格式錯誤'); return; }
+    const st = (data && data.state) ? data.state : data;
+    if (!st || st.schema !== SCHEMA) { toast('版本資料格式錯誤或版本不符'); return; }
+    if (!confirm(`確定要還原到「${label}」嗎？這會覆蓋此裝置目前所有資料（該版本 ${(st.classes || []).length} 班），並成為雲端最新版本。`)) return;
+    await applyBackupObject(data);
+    cloudState.lastSyncedAt = '';   // 讓下次上傳把目前雲端最新另存為 .prev 再覆蓋
+    if (cloudState.email) cloudState.dataOwnerEmail = cloudState.email;
+    saveCloudState();
+    await cloudBackupNow({});
+    updateCloudUI(); toast('已還原並更新雲端最新版本');
+  } catch (e) { toast('還原失敗：' + friendlyCloudErr(e)); }
+  finally { setCloudBusy(false); }
+}
+
+/* ---- 首次連結：跟雲端對帳，避免任一邊資料被吃掉 ---- */
+async function cloudReconcileOnConnect() {
+  const f = await driveFindFile(CLOUD_FILE_NAME);
+  if (!f) { await cloudBackupNow({ manual: true }); return; }
+  cloudState.fileId = f.id; saveCloudState();
+  if (!hasLocalData()) { await cloudRestore({ manual: true, confirmFirst: false }); return; }
+  const restore = confirm('雲端已有一份備份。\n\n選「確定」＝用雲端資料還原到此裝置；\n選「取消」＝保留此裝置資料並上傳覆蓋雲端。');
+  if (restore) await cloudRestore({ manual: true, confirmFirst: false }); else await cloudBackupNow({ manual: true });
+}
+
+async function clearAllLocalData() {
+  suppressCloud = true;
+  try { state = defaultState(); await idbSet(STATE_KEY, state); selectedGradeId = null; currentTab = 'subjects'; render(); }
+  finally { suppressCloud = false; }
+}
+
+async function cloudConnect({ switchAccount = false } = {}) {
+  if (!cloudConfigured()) { toast('雲端同步尚未設定（需先設定 OAuth 用戶端）'); return; }
+  setCloudBusy(true);
+  try {
+    if (switchAccount) gisToken = null;
+    await getAccessToken(switchAccount ? 'select_account' : '');
+    const newEmail = await driveGetUserEmail();
+    const prevOwner = cloudState.dataOwnerEmail || cloudState.email;
+    const switching = hasLocalData() && !!prevOwner && !!newEmail && prevOwner !== newEmail;
+    if (switching && !switchAccount) {
+      const ok = confirm(`偵測到更換帳號。\n\n此裝置目前的資料屬於「${prevOwner}」，將先清除，改用「${newEmail}」的雲端資料。\n（前一個帳號的雲端備份仍會保留，之後可再切回。）\n\n確定要更換嗎？`);
+      if (!ok) { toast('已取消更換帳號'); return; }
+    }
+    if (switching) await clearAllLocalData();
+    cloudState.enabled = true; cloudState.email = newEmail;
+    cloudState.fileId = ''; cloudState.prevFileId = ''; cloudState.lastSyncedAt = ''; cloudState.lastSnapshotDate = '';
+    saveCloudState(); updateCloudUI();
+    toast(switching ? '已更換帳號' : '已連結 Google 雲端備份');
+    await cloudReconcileOnConnect();
+    if (newEmail) { cloudState.dataOwnerEmail = newEmail; saveCloudState(); updateCloudUI(); }
+  } catch (e) { toast('連結失敗：' + friendlyCloudErr(e)); }
+  finally { setCloudBusy(false); }
+}
+async function cloudSwitchAccount() {
+  if (!confirm('更換帳號會先清除此裝置上目前帳號的資料，再改用你選擇的另一個 Google 帳號的雲端資料。\n（目前帳號的雲端備份仍會保留，之後可再切回。）\n\n要選擇要更換的帳號嗎？')) return;
+  await cloudConnect({ switchAccount: true });
+}
+function cloudDisconnect() {
+  if (!confirm('解除連結後，此裝置將停止自動備份（雲端上已存的備份不會被刪除）。確定解除？')) return;
+  try { if (gisToken && window.google && google.accounts && google.accounts.oauth2) google.accounts.oauth2.revoke(gisToken.access_token, () => {}); } catch {}
+  gisToken = null;
+  Object.assign(cloudState, { enabled: false, email: '', fileId: '', prevFileId: '', lastSyncedAt: '', pendingBackup: false, backupFailed: false });
+  saveCloudState(); updateCloudUI(); toast('已解除雲端連結');
+}
+async function cloudCheckOnOpen() {
+  if (!cloudState.enabled || cloudBusy) return;
+  try {
+    const fileId = await resolveMainFileId();
+    if (!fileId) return;
+    const meta = await driveGetMeta(fileId);
+    const remoteUpdated = meta && meta.appProperties && meta.appProperties.updatedAt;
+    if (!remoteUpdated || remoteUpdated === cloudState.lastSyncedAt) return;
+    const status = await cloudRestore({ confirmFirst: true, confirmMsg: '雲端有較新的備份（可能來自其他裝置）。\n\n要用雲端資料還原到此裝置嗎？選「取消」則保留此裝置資料，之後的變更會覆蓋雲端。' });
+    if (status === 'declined') await cloudBackupNow({});
+  } catch {}
+}
+
+function cloudSettingsCard() {
+  const busy = cloudBusy ? 'disabled' : '';
+  if (!cloudConfigured()) {
+    return `<div class="card"><div class="card-body"><h4 style="margin-top:0">☁️ 雲端同步（Google 雲端硬碟）</h4>
+      <p style="color:var(--warn);margin:0">尚未設定：需先在 Google Cloud Console 建立本 App 專屬的 OAuth 用戶端，並把用戶端 ID 填入程式 <code>GOOGLE_CLIENT_ID</code>。設定後即可一鍵備份／多裝置接續。</p></div></div>`;
+  }
+  if (!cloudState.enabled) {
+    return `<div class="card"><div class="card-body"><h4 style="margin-top:0">☁️ 雲端同步（Google 雲端硬碟）</h4>
+      <p style="color:var(--muted);margin:0 0 10px">連結你的 Google 帳號，把排課資料自動備份到「你自己雲端硬碟」的 App 專屬隱藏資料夾（無伺服器）。可在筆電／桌機間接續，並保留每日歷史版本。</p>
+      <button class="btn" data-action="cloud-connect" ${busy}>🔗 連結 Google 雲端備份</button></div></div>`;
+  }
+  const last = cloudState.lastSyncedAt ? fmtDateTime(cloudState.lastSyncedAt) : '';
+  let status, cls = '';
+  if (cloudState.backupFailed) { status = `⚠ 有變更尚未備份成功${last ? `（上次成功：${last}）` : ''}，請按「立即備份」。`; cls = 'style="color:var(--danger)"'; }
+  else if (cloudState.pendingBackup) status = `備份中…${last ? `（上次：${last}）` : ''}`;
+  else if (last) status = `已連結，上次備份：${last}`;
+  else status = '已連結，尚未備份';
+  return `<div class="card"><div class="card-body"><h4 style="margin-top:0">☁️ 雲端同步（Google 雲端硬碟）</h4>
+    ${cloudState.email ? `<p style="margin:0 0 4px;color:var(--muted)">帳號：${esc(cloudState.email)}</p>` : ''}
+    <p ${cls} style="margin:0 0 12px">${esc(status)}</p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn" data-action="cloud-backup" ${busy}>⬆️ 立即備份</button>
+      <button class="ghost" data-action="cloud-restore" ${busy}>⬇️ 從雲端還原…</button>
+      <button class="ghost" data-action="cloud-switch" ${busy}>🔄 更換帳號</button>
+      <button class="ghost" data-action="cloud-disconnect" ${busy}>解除連結</button>
+    </div>
+    <p class="hint" style="color:var(--muted);margin-top:10px">自動備份：每次變更會在數秒後自動上傳。多裝置：開啟 App 時若雲端較新會詢問是否還原。歷史版本：每天首次變更保留一份、最多 7 份。</p>
+  </div></div>`;
 }
 
 /* ==========================================================================
@@ -1646,6 +2086,12 @@ const clickHandlers = {
 
   'export-json': exportJSON,
   'import-json': importJSON,
+
+  'cloud-connect': () => cloudConnect(),
+  'cloud-backup': () => cloudBackupNow({ manual: true, interactive: true }),
+  'cloud-restore': () => openRestorePicker(),
+  'cloud-switch': () => cloudSwitchAccount(),
+  'cloud-disconnect': () => cloudDisconnect(),
 };
 
 const changeHandlers = {
@@ -1758,5 +2204,10 @@ async function init() {
   if (hadOldData) upgradeNoticeModal();                                   // 舊版同仁：改版通知
   else if (!state.helpSeen) { helpModal(); state.helpSeen = true; save(); } // 新同仁：使用說明
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => { });
+  // v07.00 雲端同步：開 App 若雲端較新則詢問還原；回前景再檢查一次
+  if (cloudState.enabled && cloudConfigured()) { cloudCheckOnOpen(); refreshCloudEmailIfMissing(); }
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && cloudState.enabled && cloudConfigured()) cloudCheckOnOpen();
+  });
 }
 init();
