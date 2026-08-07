@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v08.01';
+const APP_VERSION = 'v08.02';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -115,7 +115,10 @@ function defaultState() {
     slots: {},
     slotTeachers: {}, // 分節上課科目：每格記錄該節由哪位老師上（key 同 slots）
     slotContent: {},  // v08.00 自編課程：每個自編格的內容文字（導師填），key 同 slots
-    locked: false,    // v08.01 鎖定：定稿後非自編格唯讀，僅開放自編格內容編輯
+    locked: false,        // v08.01 一鍵全鎖：定稿後非自編格全唯讀
+    lockedCells: [],      // v08.02 單格鎖定：個別鎖定的格 key 清單
+    lockFinalized: false, // v08.02 鎖定已完成（一鍵或單格）→ 自編格釋放、開放導師選課
+    selfReleased: false,  // v08.02 自編格是否已釋放為空白（只在首次完成鎖定時清一次）
     helpSeen: false,
   };
 }
@@ -204,6 +207,24 @@ function closeModal() { $('#modalRoot').innerHTML = ''; modalOnSave = null; }
    ========================================================================== */
 let currentTab = 'subjects';
 let selectedGradeId = null;
+let lockMode = false;   // v08.02 單格鎖定選取模式進行中（runtime，不持久化）
+
+/* 鎖定 helpers（v08.02） */
+function cellIsLocked(key) {
+  const s = subjectById(state.slots[key]);
+  if (s && s.selfDesigned) return false;        // 自編格永遠不鎖（釋放給導師選課）
+  if (!state.lockFinalized) return false;
+  if (state.locked) return true;                // 一鍵：非自編全鎖
+  return (state.lockedCells || []).includes(key); // 單格：僅已選格
+}
+function finalizeLock() {
+  state.lockFinalized = true;
+  if (!state.selfReleased) {                     // 首次完成鎖定：自編格釋放為空白（清一次，保護導師日後所選）
+    for (const k in state.slots) { const s = subjectById(state.slots[k]); if (s && s.selfDesigned) delete state.slotContent[k]; }
+    state.selfReleased = true;
+  }
+}
+const selfCourseOptions = () => state.subjects.filter(s => s.selfDesigned);
 
 function render() {
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === currentTab));
@@ -1069,7 +1090,7 @@ function runAutoSchedule(clearFirst) {
   return { unplaced: best.unplaced, runs, ms: Math.round(performance.now() - t0), penalty: best.penalty };
 }
 function autoScheduleModal() {
-  if (state.locked) { toast('課表已鎖定，請先解除鎖定再自動排課'); return; }
+  if (state.lockFinalized) { toast('課表已鎖定，請先解除鎖定再自動排課'); return; }
   const problems = checkStaffing();
   if (problems.length) { toast('尚有配課問題，請先在「④ 教師」把各班每科節數配齊'); return; }
   openModal({
@@ -1194,13 +1215,32 @@ function selfDesignedCellModal(key) {
     saveLabel: '儲存內容',
     body: `<label class="field"><span>${esc((s || {}).name || '自編課程')}內容（開放線上填課後由導師填）</span>
         <input type="text" id="sdContent" value="${esc(content)}" placeholder="如：自主學習、閱讀、社團… 可留空"></label>
-      ${state.locked ? '' : `<div style="margin-top:14px"><button class="ghost" data-action="del-selfcell" data-key="${esc(key)}">🗑️ 移除此自編格</button></div>`}`,
+      <div style="margin-top:14px"><button class="ghost" data-action="del-selfcell" data-key="${esc(key)}">🗑️ 移除此自編格</button></div>`,
     onSave: () => {
       const v = $('#sdContent').value.trim();
       if (v) state.slotContent[key] = v; else delete state.slotContent[key];
       save(); render(); toast('已儲存自編內容');
       return true;
     },
+  });
+}
+// 定稿後：導師點釋放的自編空格，從「自編課程」清單選課或自訂
+function selfCellPickModal(key) {
+  const [classId, day, period] = key.split('|');
+  const opts = selfCourseOptions();
+  const current = state.slotContent[key] || '';
+  const chips = opts.length
+    ? opts.map(o => `<button class="suggest-row" data-action="pick-selfcourse" data-key="${esc(key)}" data-name="${esc(o.name)}">
+        <span class="sug-dot" style="background:${o.color}"></span><span><b>${esc(o.name)}</b></span></button>`).join('')
+    : '<p style="color:var(--muted)">尚無「自編課程」科目可選——可到「① 科目」勾選 🧩 自編課程建立幾個（如自主學習、社團、閱讀）。</p>';
+  openModal({
+    title: `選擇課程 · ${(classById(classId) || {}).name || ''} ${DAY_LABELS[+day]}${periodLabel(period)}`,
+    saveLabel: '存自訂',
+    body: `<div style="margin-bottom:8px;color:var(--muted)">${current ? '目前：<b>' + esc(current) + '</b>' : '尚未選課'}</div>
+      <div class="suggest-list">${chips}</div>
+      <label class="field" style="margin-top:12px"><span>其他（自訂課程名稱）</span><input type="text" id="sdCustom" value="${esc(opts.some(o => o.name === current) ? '' : current)}" placeholder="自訂輸入後按「存自訂」"></label>
+      ${current ? `<div style="margin-top:10px"><button class="ghost" data-action="clear-selfcell" data-key="${esc(key)}">清空此格</button></div>` : ''}`,
+    onSave: () => { const v = $('#sdCustom').value.trim(); if (v) { state.slotContent[key] = v; save(); render(); toast('已存自訂課程'); } return true; },
   });
 }
 function cellSuggestModal(classId, day, period) {
@@ -1245,18 +1285,30 @@ function viewSchedule() {
   if (!selectedClassId || !classById(selectedClassId)) selectedClassId = state.classes[0].id;
   const conflicts = computeConflicts();
   const totalConf = Object.keys(conflicts).length;
-  const locked = !!state.locked;
+  const finalized = !!state.lockFinalized;
+  const selecting = lockMode;
+  const boardBusy = finalized || selecting;   // 定稿或單格選取中：隱藏調色盤/自動排課
   const classOpts = state.classes.map(c => `<option value="${c.id}" ${c.id === selectedClassId ? 'selected' : ''}>${esc(c.name)}（${esc(gradeName(c.gradeId))}）</option>`).join('');
+  const hint = selecting
+    ? '單格鎖定中：<b>點格切換鎖定</b>（🔒＝已鎖）。自編格不鎖（保留給導師）。選好後按「✔ 完成鎖定」。'
+    : finalized
+      ? '課表已鎖定（定稿）：<b>已釋放自編格</b>供導師點選課程；被鎖的格唯讀。要調整請先解除鎖定。'
+      : '左側點科目→點空格放課；點已排格移除。<b>點空格（未選科目）</b>會列出「這格可放什麼」；排不下的科目按「🔧 喬課」看調課建議。';
+  const banner = selecting
+    ? `<div class="lock-banner no-print"><span>🎯 單格鎖定中——點要鎖的格（再點取消）。目前已鎖 <b>${(state.lockedCells || []).length}</b> 格。</span><button class="btn" data-action="lockcell-done">✔ 完成鎖定</button><button class="ghost" data-action="lockcell-cancel">取消</button></div>`
+    : finalized
+      ? `<div class="lock-banner no-print"><span>🔒 課表已鎖定（${state.locked ? '一鍵全鎖' : '單格鎖定 ' + (state.lockedCells || []).length + ' 格'}）。自編格已釋放供導師選課；其餘鎖定格唯讀。</span><button class="btn" data-action="unlock-schedule">🔓 解除鎖定</button></div>`
+      : '';
+  const toolbarBtns = selecting ? '' : finalized ? '' :
+    `<button class="ghost" data-action="lock-schedule" style="margin-left:auto" title="整表一次鎖定">🔒 一鍵鎖定</button><button class="ghost" data-action="lockcell-mode" title="逐格點選要鎖的格">🎯 單格鎖定</button><button class="btn" data-action="auto-schedule">🪄 自動排課</button>`;
   return `
-    <div class="page-head no-print"><h2>⑤ 排課</h2><div class="hint">${locked
-      ? '課表已鎖定（定稿）：僅開放點<b>自編格</b>編輯內容。要調整排課請先解除鎖定。'
-      : '左側點科目→點空格放課；點已排格移除。<b>點空格（未選科目）</b>會列出「這格可放什麼」；排不下的科目按「🔧 喬課」看調課建議。'}</div></div>
-    ${locked ? `<div class="lock-banner no-print"><span>🔒 課表已鎖定（定稿）。目前僅開放編輯自編格內容；放課／移除／自動排課皆停用。</span><button class="btn" data-action="unlock-schedule">🔓 解除鎖定</button></div>` : ''}
+    <div class="page-head no-print"><h2>⑤ 排課</h2><div class="hint">${hint}</div></div>
+    ${banner}
     ${totalConf ? `<div class="conflict-banner no-print">⚠ 全校目前有 ${totalConf} 個需注意的格子（教師衝堂／不排課／協同未同步／連堂未相鄰）。</div>` : ''}
     <div class="board-toolbar no-print"><label>班級：</label><select id="scheduleClass" data-change="schedule-class">${classOpts}</select>
-      ${locked ? '' : `<button class="ghost" data-action="lock-schedule" style="margin-left:auto" title="定稿後鎖定，只留自編格可填">🔒 鎖定課表</button><button class="btn" data-action="auto-schedule">🪄 自動排課</button>`}</div>
-    <div class="schedule-layout ${locked ? 'locked' : ''}">
-      ${locked ? '' : `<div class="palette card no-print"><div class="card-body"><h4>科目調色盤</h4>${paletteHTML(selectedClassId)}</div></div>`}
+      <span style="margin-left:auto"></span>${toolbarBtns}</div>
+    <div class="schedule-layout ${boardBusy ? 'locked' : ''}">
+      ${boardBusy ? '' : `<div class="palette card no-print"><div class="card-body"><h4>科目調色盤</h4>${paletteHTML(selectedClassId)}</div></div>`}
       <div class="card"><div class="card-body">
         <div class="grid-wrap">${classTimetableHTML(selectedClassId, conflicts, true)}</div>
         <div class="teacher-load no-print">${teacherLoadHTML()}</div>
@@ -1320,24 +1372,31 @@ function classTimetableHTML(classId, conflicts, editable) {
     for (const d of days) {
       const open = g && gradePeriodHasDay(g, p.id, d);
       const key = slotKey(classId, d, p.id); const sid = state.slots[key]; const conf = conflicts[key];
+      const selecting = editable && lockMode;                       // 單格選取中
+      const cellSel = (state.lockedCells || []).includes(key);      // 此格已在單格鎖定清單
+      const isLocked = editable && cellIsLocked(key);               // 定稿後此格唯讀
+      const lockMark = isLocked ? '<span class="lock-mark">🔒</span>' : '';
+      const selMark = selecting && cellSel ? '<span class="lock-mark sel">🔒</span>' : '';
+      const dataAct = editable ? `data-action="cell-click" data-key="${key}"` : '';
       if (sid) {
         const s = subjectById(sid); const color = s ? s.color : '#94a3b8';
         if (s && s.selfDesigned) {
           const content = (state.slotContent[key] || '').trim();
-          html += `<td class="cell ${editable ? 'placeable' : ''}" ${editable ? `data-action="cell-click" data-key="${key}"` : ''} title="自編課程（點擊編輯內容 / 移除）">
-            <div class="cell-lesson self-designed" style="background:${color};color:${textOn(color)}">🧩${esc(s.name)}
-              <small>${content ? esc(content) : '（待導師填內容）'}</small></div></td>`;
+          const released = state.lockFinalized;                     // 定稿後：自編格釋放供導師選課
+          html += `<td class="cell ${editable ? 'placeable' : ''}" ${dataAct} title="${released ? '自編課程（點擊選課程）' : '自編課程（點擊編輯內容 / 移除）'}">
+            <div class="cell-lesson self-designed ${released && !content ? 'released' : ''}" style="background:${color};color:${textOn(color)}">🧩${esc(s.name)}
+              <small>${content ? esc(content) : (released ? '＋ 點選課程' : '（待導師填內容）')}</small></div></td>`;
         } else {
         const co = classCoteachPartners(c, sid).length;
-        html += `<td class="cell ${editable ? 'placeable' : ''}" ${editable ? `data-action="cell-click" data-key="${key}"` : ''} title="${conf ? esc(conf.join('；')) : ''}">
-          <div class="cell-lesson ${conf ? 'conflict' : ''}" style="background:${color};color:${textOn(color)}">
-            ${co ? '🔗' : ''}${s && s.allowGrouping ? '👥' : ''}${s && s.splitTeachers ? '✂️' : ''}${esc(subjectName(sid))}
+        html += `<td class="cell ${editable ? 'placeable' : ''} ${selecting ? 'lock-target' : ''} ${cellSel ? 'lock-sel' : ''}" ${dataAct} title="${conf ? esc(conf.join('；')) : ''}">
+          <div class="cell-lesson ${conf ? 'conflict' : ''} ${isLocked ? 'locked' : ''}" style="background:${color};color:${textOn(color)}">
+            ${lockMark}${selMark}${co ? '🔗' : ''}${s && s.allowGrouping ? '👥' : ''}${s && s.splitTeachers ? '✂️' : ''}${esc(subjectName(sid))}
             <small>${esc(slotTeachersLabel(key))}${!(s && s.splitTeachers) && roomsLabelCS(classId, sid) ? '·' + esc(roomsLabelCS(classId, sid)) : ''}</small>
             ${conf ? `<span class="conf-mark">⚠ ${conf.some(x => x.includes('衝堂') || x.includes('不排課')) ? '衝堂' : conf.some(x => x.startsWith('協同')) ? '協同未同步' : '連堂未相鄰'}</span>` : ''}
           </div></td>`;
         }
       } else if (open) {
-        html += `<td class="cell ${editable ? 'placeable' : ''}" ${editable ? `data-action="cell-click" data-key="${key}"` : ''}></td>`;
+        html += `<td class="cell ${editable ? 'placeable' : ''} ${selecting ? 'lock-target' : ''} ${cellSel ? 'lock-sel' : ''} ${isLocked ? 'blocked-lock' : ''}" ${dataAct}>${lockMark}${selMark}</td>`;
       } else {
         html += `<td class="cell blocked" title="此節本日不上課"></td>`;
       }
@@ -1558,7 +1617,7 @@ function importJSON() {
       try {
         const data = JSON.parse(reader.result);
         if (!data || data.schema !== SCHEMA) throw new Error('版本不符（需 schema ' + SCHEMA + '）');
-        state = data; if (!state.slotTeachers || typeof state.slotTeachers !== 'object') state.slotTeachers = {}; if (!state.slotContent || typeof state.slotContent !== 'object') state.slotContent = {}; save(); closeModal(); selectedGradeId = null; render(); toast('已匯入備份');
+        state = data; if (!state.slotTeachers || typeof state.slotTeachers !== 'object') state.slotTeachers = {}; if (!state.slotContent || typeof state.slotContent !== 'object') state.slotContent = {}; if (!Array.isArray(state.lockedCells)) state.lockedCells = []; save(); closeModal(); selectedGradeId = null; render(); toast('已匯入備份');
       } catch (e) { toast('匯入失敗：' + e.message); }
     };
     reader.readAsText(file);
@@ -1617,7 +1676,7 @@ function helpModal() {
       <li>✂️ <b>分節上課</b>科目：左側每位老師各一個色塊，先點「要放哪位老師」再點格，該格就記下由誰上（各上不同節）。</li>
       <li>分組科目自動多師同格；協同科目放一班自動同步其他班；連堂自動成對。</li>
       <li>🔴 紅框代表需注意：教師衝堂／教室衝堂／不排課時段／協同未同步／連堂未相鄰（移到格上看原因）。</li>
-      <li>🔒 <b>鎖定課表</b>：排課定稿後可「鎖定課表」，所有非自編格變唯讀（不能放課/移除/自動排課），只留🧩自編格可編輯內容——供之後開放導師線上填課。隨時可「解除鎖定」。</li></ul>
+      <li>🔒 <b>鎖定課表（定稿）</b>：兩種——<b>🔒 一鍵鎖定</b>整表一次鎖；<b>🎯 單格鎖定</b>逐格點選要鎖的格再按「完成鎖定」（未鎖的非自編格仍可調）。完成鎖定後 <b>🧩 自編格會釋放為空白</b>，導師點該空格從「自編課程」清單<b>選課自排</b>（或自訂）。隨時可「解除鎖定」，導師已選的課會保留。</li></ul>
     <h4>領域節數</h4>
     <ul><li><b>建議節數參考表</b>：各領域每年級每周建議節數，可自行改名稱／節數、新增或刪除領域。內建 108 課綱國小起始值，<b>請務必依課綱／貴校校對</b>。</li>
       <li><b>各年級實配對照</b>：把「② 年級」設定的科目節數依「① 科目」的所屬領域加總，和建議並排（實配 / 建議）；相符綠、不符紅底，方便檢查各領域節數是否到位。未指定領域的科目會列在「未分類」。</li></ul>
@@ -1823,6 +1882,7 @@ async function applyBackupObject(data) {
     if (!Array.isArray(state.rooms)) state.rooms = [];
     if (!state.slotTeachers || typeof state.slotTeachers !== 'object') state.slotTeachers = {};
     if (!state.slotContent || typeof state.slotContent !== 'object') state.slotContent = {};
+    if (!Array.isArray(state.lockedCells)) state.lockedCells = [];
     if (!Array.isArray(state.domains)) state.domains = defaultDomains();
     if (!state.settings.subjectMap || typeof state.settings.subjectMap !== 'object') state.settings.subjectMap = {};
     await idbSet(STATE_KEY, state);   // 直接寫 IDB，繞過 save() 的雲端 hook
@@ -2112,10 +2172,17 @@ const clickHandlers = {
   },
   'cell-click': el => {
     const key = el.dataset.key; const [classId, day, period] = key.split('|'); const dNum = parseInt(day, 10);
-    if (state.locked) {   // 鎖定：僅開放自編格內容編輯，其餘一律擋
-      const s = subjectById(state.slots[key]);
-      if (s && s.selfDesigned) { selfDesignedCellModal(key); return; }
-      toast('課表已鎖定，僅開放編輯自編格內容。要調整請先解除鎖定。'); return;
+    const sObj0 = subjectById(state.slots[key]);
+    if (lockMode) {   // 單格鎖定選取中：點格切換鎖定（自編格不鎖）
+      if (sObj0 && sObj0.selfDesigned) { toast('自編格不鎖定（保留給導師選課）'); return; }
+      const arr = state.lockedCells || (state.lockedCells = []);
+      const i = arr.indexOf(key); if (i >= 0) arr.splice(i, 1); else arr.push(key);
+      save(); render(); return;
+    }
+    if (state.lockFinalized) {   // 已定稿
+      if (sObj0 && sObj0.selfDesigned) { selfCellPickModal(key); return; }   // 自編格→導師選課
+      if (cellIsLocked(key)) { toast('此格已鎖定，要調整請先解除鎖定'); return; }
+      // 單格模式未鎖的格：排課人員仍可自由編輯 → 往下正常流程
     }
     if (state.slots[key]) {
       const sid = state.slots[key]; const sObj = subjectById(sid);
@@ -2139,8 +2206,13 @@ const clickHandlers = {
   'suggest-swap': el => swapSuggestModal(selectedClassId, el.dataset.id, el.dataset.teacher || null),
   'del-selfcell': el => { const key = el.dataset.key; delete state.slots[key]; delete state.slotTeachers[key]; delete state.slotContent[key]; closeModal(); save(); render(); toast('已移除自編格'); },
 
-  'lock-schedule': () => openModal({ title: '鎖定課表', saveLabel: '鎖定', body: `<p style="margin-top:0">鎖定後課表定稿：<b>所有非自編格變唯讀</b>（不能放課/移除/自動排課），只保留<b>自編格可編輯內容</b>。之後開放導師線上填課即以此為準。</p><p style="color:var(--muted)">隨時可再「解除鎖定」回到自由編輯。</p>`, onSave: () => { state.locked = true; save(); render(); toast('已鎖定課表'); return true; } }),
-  'unlock-schedule': () => openModal({ title: '解除鎖定', saveLabel: '解除鎖定', body: `<p style="margin-top:0">解除後可再自由調整排課（放課／移除／自動排課）。自編格已填的內容會保留。</p>`, onSave: () => { state.locked = false; save(); render(); toast('已解除鎖定'); return true; } }),
+  'lock-schedule': () => openModal({ title: '一鍵鎖定課表', saveLabel: '鎖定', body: `<p style="margin-top:0">整表定稿：<b>所有非自編格變唯讀</b>（不能放課/移除/自動排課）。<b>自編格會釋放為空白</b>，開放導師點選可自排課程。</p><p style="color:var(--muted)">隨時可再「解除鎖定」回到自由編輯。</p>`, onSave: () => { state.locked = true; finalizeLock(); save(); render(); toast('已一鍵鎖定，自編格已釋放'); return true; } }),
+  'lockcell-mode': () => { lockMode = true; render(); toast('點課表上要鎖定的格'); },
+  'lockcell-cancel': () => { lockMode = false; render(); },
+  'lockcell-done': () => openModal({ title: '完成鎖定', saveLabel: '完成鎖定', body: `<p style="margin-top:0">將以目前選取的 <b>${(state.lockedCells || []).length}</b> 格為鎖定範圍定稿：這些格變唯讀，其餘非自編格仍可編。<b>自編格會釋放為空白</b>，開放導師點選課程。</p><p style="color:var(--muted)">隨時可「解除鎖定」回到自由編輯。</p>`, onSave: () => { lockMode = false; finalizeLock(); save(); render(); toast('已完成鎖定，自編格已釋放'); return true; } }),
+  'unlock-schedule': () => openModal({ title: '解除鎖定', saveLabel: '解除鎖定', body: `<p style="margin-top:0">解除後可再自由調整排課（放課／移除／自動排課）。導師已選的自編課程會保留。</p>`, onSave: () => { state.locked = false; state.lockFinalized = false; state.lockedCells = []; lockMode = false; save(); render(); toast('已解除鎖定'); return true; } }),
+  'pick-selfcourse': el => { const key = el.dataset.key; state.slotContent[key] = el.dataset.name; closeModal(); save(); render(); toast('已選課程'); },
+  'clear-selfcell': el => { delete state.slotContent[el.dataset.key]; closeModal(); save(); render(); toast('已清空'); },
 
   'print-out': () => window.print(),
   'csv-out': exportCSV,
@@ -2258,6 +2330,7 @@ async function init() {
   if (!loaded || loaded.schema !== SCHEMA) { state = defaultState(); await save(); }
   else { state = loaded; if (!Array.isArray(state.rooms)) state.rooms = []; if (!state.slotTeachers || typeof state.slotTeachers !== 'object') state.slotTeachers = {}; } // v02 教室加回；v02.02 分節上課
   if (!state.slotContent || typeof state.slotContent !== 'object') state.slotContent = {};   // v08.00 自編課程內容
+  if (!Array.isArray(state.lockedCells)) state.lockedCells = [];                              // v08.02 單格鎖定
   // v03.00 課表輸出格式欄位 guard（舊資料補預設）
   if (!state.settings.reportSchool) state.settings.reportSchool = '臺東縣成功鎮三民國民小學';
   if (!state.settings.reportYear) state.settings.reportYear = '113';

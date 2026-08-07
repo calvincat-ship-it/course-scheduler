@@ -161,6 +161,14 @@ table.timetable tr.break-row td { background: #f8fafc; color: var(--muted); font
 .lock-banner { display: flex; align-items: center; gap: 12px; background: #fef3c7; color: #92400e; border: 1px solid #fcd34d; border-radius: 8px; padding: 10px 14px; font-weight: 600; margin-bottom: 12px; }
 .lock-banner span { flex: 1; }
 .schedule-layout.locked { grid-template-columns: 1fr; }
+td.cell { position: relative; }
+.lock-mark { position: absolute; top: 2px; right: 3px; font-size: 11px; z-index: 2; pointer-events: none; }
+.cell.lock-target { cursor: pointer; }
+.cell.lock-target:hover { outline: 2px solid var(--warn); outline-offset: -2px; }
+.cell.lock-sel { background: #fef3c7; }
+.cell-lesson.locked { opacity: .72; }
+.cell.blocked-lock { background: #f1f5f9; }
+.cell-lesson.self-designed.released { opacity: .6; font-style: italic; }
 .cell-lesson .conf-mark { color: var(--danger); font-size: 11px; }
 
 .board-toolbar { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
