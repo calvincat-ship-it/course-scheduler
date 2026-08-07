@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v05.01';
+const APP_VERSION = 'v06.00';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -50,6 +50,25 @@ function defaultPeriods() {
     { id: 'p7', label: '第7節', start: '15:20', end: '16:00', isBreak: false },
   ];
 }
+/* 領域節數參考表（108 課綱 國小 每週領域學習節數）預設起點，數字可於「領域節數」頁編輯、務必依課綱／貴校校對。
+   hours = [一,二,三,四,五,六] 年級建議節數。 */
+function defaultDomains() {
+  const D = (name, hours) => ({ id: uid(), name, hours });
+  return [
+    D('國語文', [6, 6, 5, 5, 5, 5]),
+    D('本土/新住民語文', [1, 1, 1, 1, 1, 1]),
+    D('英語文', [0, 0, 1, 1, 2, 2]),
+    D('數學', [4, 4, 4, 4, 4, 4]),
+    D('生活課程', [6, 6, 0, 0, 0, 0]),
+    D('社會', [0, 0, 3, 3, 3, 3]),
+    D('自然科學', [0, 0, 3, 3, 3, 3]),
+    D('藝術（藝文）', [0, 0, 3, 3, 3, 3]),
+    D('綜合活動', [0, 0, 2, 2, 3, 3]),
+    D('健康與體育', [3, 3, 3, 3, 3, 3]),
+    D('彈性學習', [2, 2, 3, 3, 4, 4]),
+  ];
+}
+
 function defaultState() {
   const days = [1, 2, 3, 4, 5];
   const periods = defaultPeriods();
@@ -62,6 +81,7 @@ function defaultState() {
     schema: SCHEMA,
     version: APP_VERSION,
     settings: { days, periods, autoPairConsecutive: true, reportSchool: '臺東縣成功鎮三民國民小學', reportYear: '113', subjectMap: {} },
+    domains: defaultDomains(),
     subjects: [],
     rooms: [],
     grades,
@@ -108,6 +128,24 @@ function gradeAvailableSlots(g) {
   return n;
 }
 const gradeSubjHours = (g, sid) => (g.subjectHours.find(x => x.subjectId === sid) || null);
+
+/* 領域 helpers（v06.00） */
+const domainById = id => byId(state.domains, id);
+const domainName = id => (domainById(id) || {}).name || '';
+const gradeIndex = g => state.grades.indexOf(g);                                       // 0..5 → 一~六
+function domainSuggested(d, g) { const i = gradeIndex(g); return (d.hours && d.hours[i]) || 0; }
+function gradeDomainActual(g, domainId) {
+  return g.subjectHours.reduce((sum, x) => {
+    const s = subjectById(x.subjectId);
+    return (s && s.domainId === domainId) ? sum + (x.hours || 0) : sum;
+  }, 0);
+}
+function gradeUnmappedHours(g) {
+  return g.subjectHours.reduce((sum, x) => {
+    const s = subjectById(x.subjectId);
+    return (!s || !s.domainId || !domainById(s.domainId)) ? sum + (x.hours || 0) : sum;
+  }, 0);
+}
 function gradeAssignedHours(g) { return g.subjectHours.reduce((s, x) => s + (x.hours || 0), 0); }
 function gradeComplete(g) { const a = gradeAvailableSlots(g); return a > 0 && a === gradeAssignedHours(g); }
 
@@ -148,6 +186,7 @@ function render() {
     case 'grades': view.innerHTML = viewGrades(); break;
     case 'classes': view.innerHTML = viewClasses(); break;
     case 'teachers': view.innerHTML = viewTeachers(); break;
+    case 'domains': view.innerHTML = viewDomains(); break;
     case 'schedule': view.innerHTML = viewSchedule(); break;
     case 'output': view.innerHTML = viewOutput(); break;
     case 'settings': view.innerHTML = viewSettings(); break;
@@ -168,8 +207,13 @@ function viewSubjects() {
     if ((s.lockPeriods || []).length) parts.push(s.lockPeriods.map(pid => (byId(state.settings.periods, pid) || {}).label || pid).join('/'));
     return parts.length ? `<span class="pill gray">🔒 ${esc(parts.join('｜'))}</span>` : '<span style="color:var(--muted)">—</span>';
   };
+  const domainCell = s => {
+    if (!s.domainId || !domainById(s.domainId)) return '<span style="color:var(--warn)">未分類</span>';
+    return `<span class="pill gray">${esc(domainName(s.domainId))}</span>`;
+  };
   const rows = state.subjects.map(s => `<tr>
     <td><span class="pill" style="background:${s.color};color:${textOn(s.color)}">${esc(s.name)}</span></td>
+    <td>${domainCell(s)}</td>
     <td>${modePill(s)}</td>
     <td>${s.consecutive ? '<span class="pill blue">⏱ 需連堂</span>' : '<span style="color:var(--muted)">—</span>'}</td>
     <td>${lockText(s)}</td>
@@ -178,11 +222,13 @@ function viewSubjects() {
       <button class="icon-btn" data-action="del-subject" data-id="${s.id}">🗑️</button>
     </td></tr>`).join('');
   return head + `<div class="card"><table class="data">
-    <thead><tr><th>科目</th><th>教學型態</th><th>連堂</th><th>排課限制</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
+    <thead><tr><th>科目</th><th>領域</th><th>教學型態</th><th>連堂</th><th>排課限制</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 function subjectModal(existing) {
-  const s = existing || { name: '', color: COLORS[state.subjects.length % COLORS.length], allowGrouping: false, splitTeachers: false, consecutive: false, lockDays: [], lockPeriods: [] };
+  const s = existing || { name: '', color: COLORS[state.subjects.length % COLORS.length], domainId: '', allowGrouping: false, splitTeachers: false, consecutive: false, lockDays: [], lockPeriods: [] };
   const mode = s.splitTeachers ? 'split' : s.allowGrouping ? 'group' : 'single';
+  const domainOpts = `<option value="">（未分類）</option>` +
+    state.domains.map(d => `<option value="${d.id}" ${s.domainId === d.id ? 'selected' : ''}>${esc(d.name)}</option>`).join('');
   const lockDays = new Set(s.lockDays || []);
   const lockPeriods = new Set(s.lockPeriods || []);
   const dayChecks = activeDays().map(d => `<label class="checkbox chk-inline"><input type="checkbox" class="s-lockday" value="${d}" ${lockDays.has(d) ? 'checked' : ''}> ${DAY_LABELS[d]}</label>`).join('');
@@ -194,6 +240,8 @@ function subjectModal(existing) {
         <label class="field" style="flex:2"><span>科目名稱</span><input type="text" id="sName" value="${esc(s.name)}"></label>
         <label class="field" style="flex:1"><span>顏色</span><input type="color" id="sColor" value="${s.color}" style="height:40px;padding:2px"></label>
       </div>
+      <label class="field" style="margin-bottom:6px"><span>所屬領域（供「領域節數」對照；可留未分類）</span>
+        <select id="sDomain">${domainOpts}</select></label>
       <label class="field" style="margin-bottom:6px"><span>教學型態</span>
         <select id="sMode">
           <option value="single" ${mode === 'single' ? 'selected' : ''}>單一教師（整科由一位老師上）</option>
@@ -222,7 +270,7 @@ function subjectModal(existing) {
       const m = $('#sMode').value;
       const ld = Array.from(document.querySelectorAll('.s-lockday:checked')).map(el => parseInt(el.value, 10));
       const lp = Array.from(document.querySelectorAll('.s-lockper:checked')).map(el => el.value);
-      const data = { name, color: $('#sColor').value, allowGrouping: m === 'group', splitTeachers: m === 'split', consecutive: $('#sConsec').checked, lockDays: ld, lockPeriods: lp, distinctDays: $('#sDistinct').checked, gapDays: $('#sGap').checked, preferBand: $('#sBand').value, excludeDailyCap: $('#sExCap').checked };
+      const data = { name, color: $('#sColor').value, domainId: $('#sDomain').value, allowGrouping: m === 'group', splitTeachers: m === 'split', consecutive: $('#sConsec').checked, lockDays: ld, lockPeriods: lp, distinctDays: $('#sDistinct').checked, gapDays: $('#sGap').checked, preferBand: $('#sBand').value, excludeDailyCap: $('#sExCap').checked };
       if (existing) Object.assign(existing, data); else state.subjects.push({ id: uid(), ...data });
       save(); render(); toast('已儲存科目');
       return true;
@@ -642,6 +690,58 @@ function staffingReportModal() {
          <td style="color:var(--danger);font-weight:600">${esc(p.status)}</td><td>${esc(p.teacherNames)}</td>
        </tr>`).join('')}</tbody></table>`;
   openModal({ title: '全校配課檢查', wide: true, body });
+}
+
+/* ==========================================================================
+   領域節數參考（v06.00）：建議節數參考表（可編輯）＋ 各年級實配對照
+   ========================================================================== */
+function viewDomains() {
+  const grades = state.grades; // g1..g6，順序＝一~六
+  const gh = GRADE_NAMES.map(n => `<th style="text-align:center;width:66px">${esc(n.replace('年級', ''))}</th>`).join('');
+  const head = `<div class="page-head"><h2>領域節數</h2><button class="btn" data-action="add-domain">＋ 新增領域</button></div>
+    <div class="hint" style="margin-bottom:12px;color:var(--muted)">各領域每年級的<b>建議節數</b>（可編輯）與<b>目前實配</b>對照。實配＝「② 年級」已設科目節數，依「① 科目」所選「所屬領域」加總。<b style="color:var(--warn)">下方預設數字為 108 課綱起點，請務必依課綱／貴校實況校對。</b></div>`;
+
+  // 建議節數參考表（可編輯）
+  const refRows = state.domains.map(d => `<tr>
+    <td><input type="text" data-change="domain-name" data-id="${d.id}" value="${esc(d.name)}" style="min-width:150px"></td>
+    ${grades.map((g, i) => `<td style="text-align:center"><input type="number" min="0" max="40" data-change="domain-hours" data-id="${d.id}" data-grade="${i}" value="${(d.hours && d.hours[i]) || 0}" style="width:52px"></td>`).join('')}
+    <td class="row-actions"><button class="icon-btn" data-action="del-domain" data-id="${d.id}">🗑️</button></td>
+  </tr>`).join('');
+  const refCard = `<div class="card"><div class="card-body">
+    <h4 style="margin-top:0">建議節數參考表（每週節數，可編輯）</h4>
+    <div class="grid-wrap"><table class="data">
+      <thead><tr><th>領域</th>${gh}<th></th></tr></thead><tbody>${refRows}</tbody></table></div>
+    <p class="hint" style="color:var(--muted);margin-top:8px">改名稱、改節數或新增／刪除領域皆即時儲存。科目在「① 科目」逐科指定所屬領域。</p>
+  </div></div>`;
+
+  // 實配對照矩陣（實配 / 建議）
+  const cmpCell = (act, sug) => {
+    if (sug === 0 && act === 0) return `<td style="text-align:center;color:var(--muted)">–</td>`;
+    const ok = act === sug;
+    return `<td style="text-align:center;${ok ? '' : 'background:var(--danger-bg)'}"><b style="color:${ok ? 'var(--ok)' : 'var(--danger)'}">${act}</b><span style="color:var(--muted)"> / ${sug}</span></td>`;
+  };
+  const cmpRows = state.domains.map(d => `<tr>
+    <td>${esc(d.name)}</td>
+    ${grades.map(g => cmpCell(gradeDomainActual(g, d.id), domainSuggested(d, g))).join('')}
+  </tr>`).join('');
+  const unmapped = grades.map(g => gradeUnmappedHours(g));
+  const unmapRow = unmapped.some(x => x > 0)
+    ? `<tr><td style="color:var(--warn)">未分類科目</td>${grades.map((g, i) => `<td style="text-align:center;color:var(--warn)">${unmapped[i] || '–'}</td>`).join('')}</tr>`
+    : '';
+  const totalRow = `<tr style="border-top:2px solid var(--line)"><td><b>合計（實配 / 可用格數）</b></td>${grades.map(g => {
+    const a = gradeAssignedHours(g), av = gradeAvailableSlots(g), ok = a === av;
+    return `<td style="text-align:center"><b style="color:${ok ? 'var(--ok)' : 'var(--danger)'}">${a}</b><span style="color:var(--muted)"> / ${av}</span></td>`;
+  }).join('')}</tr>`;
+  const cmpCard = `<div class="card"><div class="card-body">
+    <h4 style="margin-top:0">各年級實配對照（實配 / 建議）</h4>
+    <div class="grid-wrap"><table class="data">
+      <thead><tr><th>領域</th>${gh}</tr></thead><tbody>${cmpRows}${unmapRow}${totalRow}</tbody></table></div>
+    <p class="hint" style="color:var(--muted);margin-top:8px">
+      <b style="color:var(--ok)">綠</b>＝實配與建議相符；<b style="color:var(--danger)">紅底</b>＝不符；「–」＝建議與實配皆 0。
+      <b style="color:var(--warn)">未分類科目</b>＝該科在「① 科目」未指定所屬領域，未計入任何領域。合計列的可用格數來自「② 年級」節次表。</p>
+  </div></div>`;
+
+  return head + refCard + cmpCard;
 }
 
 /* ==========================================================================
@@ -1417,7 +1517,7 @@ function helpModal() {
     <h4>操作順序（有前後關係，請照號碼走）</h4>
     <p class="help-flow">①科目 ▸ ②年級 ▸ ③班級 ▸ ④教師 ▸ ⑤排課 ▸ 課表輸出</p>
     <h4>① 科目</h4>
-    <ul><li>建立全校科目、選顏色。</li>
+    <ul><li>建立全校科目、選顏色，並可指定<b>所屬領域</b>（供「領域節數」頁對照，可留未分類）。</li>
       <li><b>教學型態</b>三選一：<b>單一教師</b>整科一位老師上；<b>👥 分組教學</b>（如英語）同班多師「同一節」平行分組上、不算衝堂；<b>✂️ 分節上課</b>多師分攤節數、各上「不同節」（如生活 6 節＝A 上 4＋B 上 2）。</li>
       <li>⏱ <b>需連堂</b>：勾了的科目排課時自動把兩節排在相鄰位置。</li>
       <li>🔒 <b>排課限制</b>（給自動排課用）：可勾「只排在某些上課日／某些節次」。例：母語只勾週四、彈性在地勾週五＋第1節、體育只勾第2/3/6/7節。不勾＝不限；手動排課不受此限。</li>
@@ -1441,6 +1541,9 @@ function helpModal() {
       <li>✂️ <b>分節上課</b>科目：左側每位老師各一個色塊，先點「要放哪位老師」再點格，該格就記下由誰上（各上不同節）。</li>
       <li>分組科目自動多師同格；協同科目放一班自動同步其他班；連堂自動成對。</li>
       <li>🔴 紅框代表需注意：教師衝堂／教室衝堂／不排課時段／協同未同步／連堂未相鄰（移到格上看原因）。</li></ul>
+    <h4>領域節數</h4>
+    <ul><li><b>建議節數參考表</b>：各領域每年級每周建議節數，可自行改名稱／節數、新增或刪除領域。內建 108 課綱國小起始值，<b>請務必依課綱／貴校校對</b>。</li>
+      <li><b>各年級實配對照</b>：把「② 年級」設定的科目節數依「① 科目」的所屬領域加總，和建議並排（實配 / 建議）；相符綠、不符紅底，方便檢查各領域節數是否到位。未指定領域的科目會列在「未分類」。</li></ul>
     <h4>課表輸出 / 備份</h4>
     <p>可輸出班級表、教師表，列印或存 PDF、匯出 CSV。右上「備份」可匯出/匯入 JSON（換裝置用）。</p>
     </div>`,
@@ -1471,6 +1574,16 @@ const clickHandlers = {
   'toggle-avail': el => { el.classList.toggle('off'); el.textContent = el.classList.contains('off') ? '✕' : ''; },
   'add-load-row': () => { syncLoadFromDOM(); const cid = state.classes[0] ? state.classes[0].id : ''; const idx = modalLoad.length; modalLoad.push({ classId: cid, subjectId: firstAvailableSubject(cid, idx), hours: 0 }); refreshLoadEditor(); updateLoadSum(); },
   'del-load-row': el => { syncLoadFromDOM(); modalLoad.splice(parseInt(el.dataset.idx, 10), 1); refreshLoadEditor(); updateLoadSum(); },
+
+  'add-domain': () => { state.domains.push({ id: uid(), name: '新領域', hours: [0, 0, 0, 0, 0, 0] }); save(); render(); },
+  'del-domain': el => {
+    const d = domainById(el.dataset.id); if (!d) return;
+    const used = state.subjects.filter(s => s.domainId === d.id);
+    confirmDelete(`刪除領域「${d.name}」？${used.length ? '（' + used.length + ' 個科目將變回未分類）' : ''}`, () => {
+      state.subjects.forEach(s => { if (s.domainId === d.id) s.domainId = ''; });
+      state.domains = state.domains.filter(x => x.id !== d.id);
+    });
+  },
 
   'add-class': () => classModal(null),
   'edit-class': el => classModal(classById(el.dataset.id)),
@@ -1548,6 +1661,13 @@ const changeHandlers = {
   'set-maxperday': el => { state.settings.maxLessonsPerDay = parseInt(el.value, 10) || 0; save(); },
   'report-field': el => { state.settings[el.dataset.field] = el.value; save(); },
   'subjmap-field': el => { if (!state.settings.subjectMap) state.settings.subjectMap = {}; const v = el.value.trim(); if (v === '') delete state.settings.subjectMap[el.dataset.subj]; else state.settings.subjectMap[el.dataset.subj] = v; save(); },
+  'domain-name': el => { const d = domainById(el.dataset.id); if (d) { d.name = el.value; save(); render(); } },
+  'domain-hours': el => {
+    const d = domainById(el.dataset.id); if (!d) return;
+    if (!Array.isArray(d.hours)) d.hours = [0, 0, 0, 0, 0, 0];
+    d.hours[parseInt(el.dataset.grade, 10)] = parseInt(el.value, 10) || 0;
+    save(); render();
+  },
   'load-class': el => {
     syncLoadFromDOM();
     const idx = parseInt(el.dataset.idx, 10);
@@ -1632,6 +1752,7 @@ async function init() {
   if (!state.settings.reportSchool) state.settings.reportSchool = '臺東縣成功鎮三民國民小學';
   if (!state.settings.reportYear) state.settings.reportYear = '113';
   if (!state.settings.subjectMap || typeof state.settings.subjectMap !== 'object') state.settings.subjectMap = {};
+  if (!Array.isArray(state.domains)) state.domains = defaultDomains();                 // v06.00 領域節數參考表
   bindGlobal();
   render();
   if (hadOldData) upgradeNoticeModal();                                   // 舊版同仁：改版通知
