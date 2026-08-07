@@ -169,6 +169,9 @@ td.cell { position: relative; }
 .cell-lesson.locked { opacity: .72; }
 .cell.blocked-lock { background: #f1f5f9; }
 .cell-lesson.self-designed.released { opacity: .6; font-style: italic; }
+.lock-mark.self { left: 3px; right: auto; }
+.cell.self-preview .cell-lesson { outline: 2px dashed rgba(255, 255, 255, .7); outline-offset: -3px; }
+.cell.self-preview.lock-target:hover { outline: none; cursor: not-allowed; }
 .cell-lesson .conf-mark { color: var(--danger); font-size: 11px; }
 
 .board-toolbar { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }

@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v08.03';
+const APP_VERSION = 'v08.04';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -1302,7 +1302,7 @@ function viewSchedule() {
   const boardBusy = finalized || selecting;   // 定稿或單格選取中：隱藏調色盤/自動排課
   const classOpts = state.classes.map(c => `<option value="${c.id}" ${c.id === selectedClassId ? 'selected' : ''}>${esc(c.name)}（${esc(gradeName(c.gradeId))}）</option>`).join('');
   const hint = selecting
-    ? '單格鎖定中：<b>點格切換鎖定</b>（🔒＝已鎖）。自編格不鎖（保留給導師）。選好後按「✔ 完成鎖定」。'
+    ? '單格鎖定中：<b>點格切換鎖定</b>（🔒＝已鎖）。<b>🧩 格＝級任導師任課</b>，完成鎖定後自動釋放為導師自編、<b>不可鎖</b>。選好後按「✔ 完成鎖定」。'
     : finalized
       ? '課表已鎖定（定稿）：<b>已釋放自編格</b>供導師點選課程；被鎖的格唯讀。要調整請先解除鎖定。'
       : '左側點科目→點空格放課；點已排格移除。<b>點空格（未選科目）</b>會列出「這格可放什麼」；排不下的科目按「🔧 喬課」看調課建議。';
@@ -1379,9 +1379,11 @@ function classTimetableHTML(classId, conflicts, editable) {
       const selecting = editable && lockMode;                       // 單格選取中
       const cellSel = (state.lockedCells || []).includes(key);      // 此格已在單格鎖定清單
       const isLocked = editable && cellIsLocked(key);               // 定稿後此格唯讀
-      const selfCell = isSelfCell(key);                             // 系統偵測的自編格（定稿後）
+      const selfCell = isSelfCell(key);                             // 系統偵測的自編格（定稿後釋放）
+      const selfPreview = editable && !state.lockFinalized && !!sid && isSelfSlot(key); // 定稿前即時預覽：本班級任導師任課
+      const canSelect = selecting && !selfPreview;                  // 自編（預覽）格在單格鎖定時不可鎖
       const lockMark = isLocked ? '<span class="lock-mark">🔒</span>' : '';
-      const selMark = selecting && cellSel ? '<span class="lock-mark sel">🔒</span>' : '';
+      const selMark = canSelect && cellSel ? '<span class="lock-mark sel">🔒</span>' : '';
       const dataAct = editable ? `data-action="cell-click" data-key="${key}"` : '';
       if (selfCell) {                                               // 自編格：導師選課（釋放後不論空/已選）
         const s = sid ? subjectById(sid) : null; const color = s ? s.color : '#10b981';
@@ -1391,14 +1393,15 @@ function classTimetableHTML(classId, conflicts, editable) {
       } else if (sid) {
         const s = subjectById(sid); const color = s ? s.color : '#94a3b8';
         const co = classCoteachPartners(c, sid).length;
-        html += `<td class="cell ${editable ? 'placeable' : ''} ${selecting ? 'lock-target' : ''} ${cellSel ? 'lock-sel' : ''}" ${dataAct} title="${conf ? esc(conf.join('；')) : ''}">
+        const selfBadge = selfPreview ? '<span class="lock-mark self" title="級任導師任課：完成鎖定後將自動釋放為導師自編">🧩</span>' : '';
+        html += `<td class="cell ${editable ? 'placeable' : ''} ${canSelect ? 'lock-target' : ''} ${cellSel ? 'lock-sel' : ''} ${selfPreview ? 'self-preview' : ''}" ${dataAct} title="${selfPreview ? '級任導師任課→完成鎖定後自動釋放為導師自編（單格鎖定時不可鎖）' : (conf ? esc(conf.join('；')) : '')}">
           <div class="cell-lesson ${conf ? 'conflict' : ''} ${isLocked ? 'locked' : ''}" style="background:${color};color:${textOn(color)}">
-            ${lockMark}${selMark}${co ? '🔗' : ''}${s && s.allowGrouping ? '👥' : ''}${s && s.splitTeachers ? '✂️' : ''}${esc(subjectName(sid))}
+            ${lockMark}${selMark}${selfBadge}${co ? '🔗' : ''}${s && s.allowGrouping ? '👥' : ''}${s && s.splitTeachers ? '✂️' : ''}${esc(subjectName(sid))}
             <small>${esc(slotTeachersLabel(key))}${!(s && s.splitTeachers) && roomsLabelCS(classId, sid) ? '·' + esc(roomsLabelCS(classId, sid)) : ''}</small>
             ${conf ? `<span class="conf-mark">⚠ ${conf.some(x => x.includes('衝堂') || x.includes('不排課')) ? '衝堂' : conf.some(x => x.startsWith('協同')) ? '協同未同步' : '連堂未相鄰'}</span>` : ''}
           </div></td>`;
       } else if (open) {
-        html += `<td class="cell ${editable ? 'placeable' : ''} ${selecting ? 'lock-target' : ''} ${cellSel ? 'lock-sel' : ''} ${isLocked ? 'blocked-lock' : ''}" ${dataAct}>${lockMark}${selMark}</td>`;
+        html += `<td class="cell ${editable ? 'placeable' : ''} ${canSelect ? 'lock-target' : ''} ${cellSel ? 'lock-sel' : ''} ${isLocked ? 'blocked-lock' : ''}" ${dataAct}>${lockMark}${selMark}</td>`;
       } else {
         html += `<td class="cell blocked" title="此節本日不上課"></td>`;
       }
@@ -2174,7 +2177,8 @@ const clickHandlers = {
   },
   'cell-click': el => {
     const key = el.dataset.key; const [classId, day, period] = key.split('|'); const dNum = parseInt(day, 10);
-    if (lockMode) {   // 單格鎖定選取中：點格切換鎖定
+    if (lockMode) {   // 單格鎖定選取中：點格切換鎖定（級任導師任課的自編格不可鎖）
+      if (isSelfSlot(key)) { toast('此格為級任導師任課，將自動判為導師自編，免鎖定'); return; }
       const arr = state.lockedCells || (state.lockedCells = []);
       const i = arr.indexOf(key); if (i >= 0) arr.splice(i, 1); else arr.push(key);
       save(); render(); return;
