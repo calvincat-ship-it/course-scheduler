@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v09.09';
+const APP_VERSION = 'v09.10';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -706,7 +706,7 @@ function viewSubjects() {
     <td><span class="pill" style="background:${s.color};color:${textOn(s.color)}">${esc(s.name)}</span></td>
     <td>${domainCell(s)}</td>
     <td>${modePill(s)}</td>
-    <td>${s.consecutive ? '<span class="pill blue">⏱ 需連堂</span>' : '<span style="color:var(--muted)">—</span>'}</td>
+    <td>${s.consecutive ? `<span class="pill blue">⏱ 連堂${s.consecutivePairs != null ? '×' + s.consecutivePairs : ''}</span>` : '<span style="color:var(--muted)">—</span>'}</td>
     <td>${lockText(s)}</td>
     <td class="row-actions">
       <button class="icon-btn" data-action="edit-subject" data-id="${s.id}">✏️</button>
@@ -739,7 +739,11 @@ function subjectModal(existing) {
           <option value="group" ${mode === 'group' ? 'selected' : ''}>👥 分組教學（同班多師「同一節」平行上，不計衝堂）</option>
           <option value="split" ${mode === 'split' ? 'selected' : ''}>✂️ 分節上課（多師分攤節數、各上「不同節」，如生活 A上4＋B上2）</option>
         </select></label>
-      <label class="checkbox" style="margin-bottom:12px"><input type="checkbox" id="sConsec" ${s.consecutive ? 'checked' : ''}> ⏱ 需連堂（排課時兩節相鄰接續上）</label>
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">
+        <label class="checkbox" style="margin:0"><input type="checkbox" id="sConsec" ${s.consecutive ? 'checked' : ''}> ⏱ 需連堂（兩節相鄰接續上）</label>
+        <label class="field" style="margin:0;flex-direction:row;align-items:center;gap:6px"><span style="white-space:nowrap">連堂次數（對）</span><input type="number" id="sConsecPairs" min="0" max="10" value="${s.consecutivePairs != null ? s.consecutivePairs : ''}" placeholder="自動" style="width:70px"></label>
+        <span class="hint" style="color:var(--muted);font-size:12px">留空＝盡量成對；如自然 3 節填 <b>1</b>＝排 1 次連堂＋1 節單獨（不算錯）</span>
+      </div>
       <div class="field" style="margin-bottom:8px"><span>排課限制（給自動排課用；不勾＝不限。手動排課不受限）</span></div>
       <div class="lock-group"><div class="lock-label">只排在這些<b>上課日</b>：</div><div class="chk-row">${dayChecks || '<span style="color:var(--muted)">尚無上課日</span>'}</div></div>
       <div class="lock-group"><div class="lock-label">只排在這些<b>節次</b>：</div><div class="chk-row">${perChecks}</div></div>
@@ -761,7 +765,10 @@ function subjectModal(existing) {
       const m = $('#sMode').value;
       const ld = Array.from(document.querySelectorAll('.s-lockday:checked')).map(el => parseInt(el.value, 10));
       const lp = Array.from(document.querySelectorAll('.s-lockper:checked')).map(el => el.value);
-      const data = { name, color: $('#sColor').value, domainId: $('#sDomain').value, allowGrouping: m === 'group', splitTeachers: m === 'split', consecutive: $('#sConsec').checked, lockDays: ld, lockPeriods: lp, distinctDays: $('#sDistinct').checked, gapDays: $('#sGap').checked, preferBand: $('#sBand').value, excludeDailyCap: $('#sExCap').checked };
+      const consec = $('#sConsec').checked;
+      const pairsRaw = ($('#sConsecPairs').value || '').trim();
+      const consecutivePairs = consec && pairsRaw !== '' ? Math.max(0, parseInt(pairsRaw, 10) || 0) : null;
+      const data = { name, color: $('#sColor').value, domainId: $('#sDomain').value, allowGrouping: m === 'group', splitTeachers: m === 'split', consecutive: consec, consecutivePairs, lockDays: ld, lockPeriods: lp, distinctDays: $('#sDistinct').checked, gapDays: $('#sGap').checked, preferBand: $('#sBand').value, excludeDailyCap: $('#sExCap').checked };
       if (existing) Object.assign(existing, data); else state.subjects.push({ id: uid(), ...data });
       save(); render(); toast('已儲存科目');
       return true;
@@ -1318,6 +1325,13 @@ function teacherScheduled(t) {
   }, 0);
 }
 
+// v09.10 連堂：某(科)在 N 節時要安排幾「對」連堂。有設 consecutivePairs 就取它(夾在 0..floor(N/2))，否則預設盡量成對(floor(N/2))；奇數剩下的 1 節可單獨排、不算錯
+function consecutiveTarget(sid, N) {
+  const s = subjectById(sid); if (!s || !s.consecutive) return 0;
+  const maxPairs = Math.floor(N / 2);
+  const P = (s.consecutivePairs != null && s.consecutivePairs !== '') ? parseInt(s.consecutivePairs, 10) : maxPairs;
+  return Math.max(0, Math.min(isNaN(P) ? maxPairs : P, maxPairs));
+}
 function computeConflicts() {
   const conflicts = {};
   const add = (k, r) => { (conflicts[k] = conflicts[k] || []); if (!conflicts[k].includes(r)) conflicts[k].push(r); };
@@ -1348,13 +1362,23 @@ function computeConflicts() {
     const partners = state.classes.filter(x => x.id !== classId && x.coteach && x.coteach[sid] === gid);
     for (const p of partners) { if (state.slots[slotKey(p.id, day, period)] !== sid) { add(key, '協同未同步：' + p.name + ' 同節未排'); break; } }
   }
+  // 連堂：依「連堂次數(對數)」判定。允許 N−2×對數 個節單獨排（不算錯）；只有未成對數超過此額度才標記
+  const consecGroups = {};
   for (const key in state.slots) {
     const sid = state.slots[key]; const s = subjectById(sid); if (!s || !s.consecutive) continue;
-    const [classId, dayStr, period] = key.split('|'); const day = parseInt(dayStr, 10);
+    const [classId, dayStr, period] = key.split('|');
+    (consecGroups[classId + '|' + sid] = consecGroups[classId + '|' + sid] || []).push({ key, classId, day: parseInt(dayStr, 10), period });
+  }
+  for (const gk in consecGroups) {
+    const cells = consecGroups[gk]; const sid = gk.slice(gk.indexOf('|') + 1); const classId = cells[0].classId;
     const g = classGrade(classById(classId)); if (!g) continue;
-    const prev = adjacentOpenPeriod(g, period, day, -1), next = adjacentOpenPeriod(g, period, day, +1);
-    const paired = (prev && state.slots[slotKey(classId, day, prev)] === sid) || (next && state.slots[slotKey(classId, day, next)] === sid);
-    if (!paired) add(key, '連堂未相鄰');
+    const allowedSingles = Math.max(0, cells.length - 2 * consecutiveTarget(sid, cells.length));
+    const unpaired = cells.filter(cell => {
+      const prev = adjacentOpenPeriod(g, cell.period, cell.day, -1), next = adjacentOpenPeriod(g, cell.period, cell.day, +1);
+      const paired = (prev && state.slots[slotKey(classId, cell.day, prev)] === sid) || (next && state.slots[slotKey(classId, cell.day, next)] === sid);
+      return !paired;
+    });
+    unpaired.slice(allowedSingles).forEach(cell => add(cell.key, '連堂未相鄰'));   // 前 allowedSingles 個視為預定的單堂、不標記
   }
   return conflicts;
 }
@@ -1667,7 +1691,8 @@ function placeWithExtras(classId, day, period, sid, tid) {
   const s = subjectById(sid); const dNum = parseInt(day, 10); const notes = [];
   const linked = placeSubject(classId, day, period, sid, tid);
   if (linked) notes.push(`協同同步 ${linked} 班`);
-  if (s && s.consecutive && state.settings.autoPairConsecutive !== false && subjectPlaced(classId, sid) < classSubjectRequired(classId, sid)) {
+  if (s && s.consecutive && state.settings.autoPairConsecutive !== false && subjectPlaced(classId, sid) < classSubjectRequired(classId, sid)
+      && subjectPlaced(classId, sid) <= 2 * consecutiveTarget(sid, classSubjectRequired(classId, sid))) {   // 只在「連堂對數」額度內自動成對，超出的節數單獨排
     const g = classGrade(classById(classId));
     const next = adjacentOpenPeriod(g, period, dNum, +1), prev = adjacentOpenPeriod(g, period, dNum, -1);
     const partner = (next && !state.slots[slotKey(classId, day, next)]) ? next : (prev && !state.slots[slotKey(classId, day, prev)]) ? prev : null;
@@ -2123,7 +2148,7 @@ function helpModal() {
     <h4>① 科目</h4>
     <ul><li>建立全校科目、選顏色，並可指定<b>所屬領域</b>（供「領域節數」頁對照，可留未分類）。</li>
       <li><b>教學型態</b>三選一：<b>單一教師</b>整科一位老師上；<b>👥 分組教學</b>（如英語）同班多師「同一節」平行分組上、不算衝堂；<b>✂️ 分節上課</b>多師分攤節數、各上「不同節」（如生活 6 節＝A 上 4＋B 上 2）。</li>
-      <li>⏱ <b>需連堂</b>：勾了的科目排課時自動把兩節排在相鄰位置。</li>
+      <li>⏱ <b>需連堂</b>：兩節相鄰接續上。可另填「<b>連堂次數（對）</b>」：留空＝盡量成對；奇數節（如自然/社會 3 節）填 <b>1</b> ＝ 排 1 次連堂（2 節）＋剩 1 節單獨排，<b>那 1 節單獨不算錯</b>。</li>
       <li>🔒 <b>排課限制</b>（給自動排課用）：可勾「只排在某些上課日／某些節次」。例：母語只勾週四、彈性在地勾週五＋第1節、體育只勾第2/3/6/7節。不勾＝不限；手動排課不受此限。</li>
       <li><b>進階排課</b>：可設「每天最多1節（分散不同天）」「兩節不排相鄰兩天（隔天，如體育）」「偏好時段（上午/下午）」「不列入教師單日上限（如母語）」，供自動排課參考。教師單日節數上限在「設定」設全域、「④教師」可個別覆寫。</li></ul>
     <h4>② 年級（一~六年級各一張）</h4>
