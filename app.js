@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v09.01';
+const APP_VERSION = 'v09.02';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -314,6 +314,65 @@ function selfCoursePool(classId) {
 }
 function selfCourseRequired(classId, sid) { const hr = homeroomTeacher(classId); const L = hr && (hr.load || []).find(x => x.classId === classId && x.subjectId === sid); return L ? L.hours : 0; }
 function selfCoursePlaced(classId, sid) { return (state.selfCells || []).filter(k => k.split('|')[0] === classId && state.slots[k] === sid).length; }
+
+/* ---------- F③ 導師線上填課：檔案契約（排課者↔導師共用的「填課包」格式） ----------
+   排課者鎖定後為每班產生 course-fill-1 包（自編格＋候選科目池＋唯讀課表快照＋目前內容），
+   分享給該班導師；導師填完回存；排課者收回時 mergeFillFile 合併回課表（協同同步＋衝堂偵測）。 */
+const FILL_FMT = 'course-fill-1';
+function buildFillFile(classId) {
+  const c = classById(classId); const hr = homeroomTeacher(classId);
+  const cells = classSelfCells(classId);
+  const pool = selfCoursePool(classId).map(s => ({ sid: s.id, name: s.name, color: s.color, required: selfCourseRequired(classId, s.id) }));
+  const snapshot = {};   // 唯讀參考：本班鎖定後的非自編課（導師排課時參考）
+  activeDays().forEach(d => lessonPeriods().forEach(p => {
+    const k = slotKey(classId, d, p.id); const sid = state.slots[k];
+    if (sid && !isSelfCell(k)) snapshot[d + '|' + p.id] = subjectName(sid) + '／' + slotTeachersLabel(k);
+  }));
+  return {
+    fmt: FILL_FMT, ver: 1,
+    classId, className: c ? c.name : '', gradeId: c ? c.gradeId : '', homeroom: hr ? hr.name : '',
+    year: (state.settings || {}).reportYear || '',
+    cells: cells.map(k => { const a = k.split('|'); return { key: k, day: +a[1], period: a[2], label: DAY_LABELS[+a[1]] + periodLabel(a[2]) }; }),
+    pool, snapshot,
+    periods: lessonPeriods().map(p => ({ id: p.id, label: p.label })),
+    content: Object.fromEntries(cells.filter(k => state.slots[k]).map(k => [k, state.slots[k]])),   // 目前已填（排課者代填或先前）
+    generatedAt: new Date().toISOString(),
+  };
+}
+// 收回：把導師填課包合併回課表；回傳 {className, set, cleared, conflicts[], error?}
+function mergeFillFile(obj) {
+  if (!obj || obj.fmt !== FILL_FMT) return { error: '檔案格式不符（需 ' + FILL_FMT + '）' };
+  const classId = obj.classId; const c = classById(classId);
+  if (!c) return { error: '找不到對應班級：' + (obj.className || classId) };
+  if (!state.lockFinalized) return { error: '課表未在鎖定狀態，無法收回填課（請先鎖定）' };
+  const res = { className: obj.className || c.name, set: 0, cleared: 0, conflicts: [] };
+  const content = obj.content || {};
+  const poolIds = new Set(selfCoursePool(classId).map(s => s.id));
+  const cells = new Set(classSelfCells(classId));
+  const lbl = key => { const a = key.split('|'); return DAY_LABELS[+a[1]] + periodLabel(a[2]); };
+  // 只「設定」content 列出的格（缺席不代表清空，避免舊填課包誤清協同連動格）
+  Object.keys(content).forEach(key => {
+    if (!cells.has(key) || selfCellTeacherLocked(key)) return;   // 非本班自編格／已完成鎖定→不動
+    const chosen = content[key]; if (!chosen || state.slots[key] === chosen) return;
+    if (!poolIds.has(chosen)) { res.conflicts.push(`${lbl(key)}：科目不在導師候選，略過`); return; }
+    state.slots[key] = chosen; res.set++;
+    const a = key.split('|'); const gid = c.coteach && c.coteach[chosen];   // 協同連動：夥伴班同格（自編、未鎖、空）一併填
+    if (gid) state.classes.filter(x => x.id !== classId && x.coteach && x.coteach[chosen] === gid).forEach(p => {
+      const mk = slotKey(p.id, a[1], a[2]);
+      if (isSelfCell(mk) && !selfCellTeacherLocked(mk) && !state.slots[mk]) state.slots[mk] = chosen;
+    });
+  });
+  // 只「清空」明確列在 cleared 的格（導師 UI 主動清除時填入）
+  (obj.cleared || []).forEach(key => {
+    if (!cells.has(key) || selfCellTeacherLocked(key)) return;
+    if (state.slots[key]) { delete state.slots[key]; delete state.slotTeachers[key]; res.cleared++; }
+  });
+  // 超額提示（導師端已擋，收回再核一次）
+  selfCoursePool(classId).forEach(s => { const req = selfCourseRequired(classId, s.id), pl = selfCoursePlaced(classId, s.id); if (pl > req) res.conflicts.push(`${s.name} 已排 ${pl} 節，超過應排 ${req} 節`); });
+  const conf = computeConflicts();                          // 合併後衝堂提示
+  cells.forEach(key => { if (state.slots[key] && conf[key]) res.conflicts.push(`${lbl(key)}：${conf[key].join('；')}`); });
+  return res;
+}
 
 function render() {
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === currentTab));
@@ -797,7 +856,10 @@ function teacherModal(existing) {
         <label class="field"><span>每周授課時數</span><input type="number" id="tWeekly" data-change="weekly-hours" min="0" max="40" value="${t.weeklyHours || 0}"></label>
         <label class="field"><span>單日上限（0＝用全域）</span><input type="number" id="tMaxDay" min="0" max="20" value="${t.maxPerDay || 0}"></label>
       </div>
-      <label class="field" id="homeroomField" style="max-width:320px;margin-bottom:6px;display:${t.type === '級任' ? '' : 'none'}"><span>擔任導師的班級（級任）</span><select id="tHomeroom">${hrClsOpts}</select></label>
+      <div class="field-row" id="homeroomField" style="margin-bottom:6px;gap:12px;display:${t.type === '級任' ? 'flex' : 'none'}">
+        <label class="field" style="max-width:320px"><span>擔任導師的班級（級任）</span><select id="tHomeroom">${hrClsOpts}</select></label>
+        <label class="field" style="max-width:320px"><span>導師 Google Email（線上填課分享用）</span><input type="email" id="tEmail" value="${esc(t.email || '')}" placeholder="name@ttct.edu.tw"></label>
+      </div>
       <label class="field" style="margin-bottom:4px"><span>教師配課（班級 → 科目 → 節數）</span></label>
       <div id="loadEditor">${loadEditorHTML()}</div>
       <div id="loadSum" class="total-badge"></div>
@@ -820,7 +882,8 @@ function teacherModal(existing) {
       const unavailable = Array.from(document.querySelectorAll('#availGrid td.off')).map(td => td.dataset.slot);
       const type = $('#tType').value;
       const homeroomClassId = (type === '級任' && $('#tHomeroom')) ? $('#tHomeroom').value : '';
-      const data = { name, type, weeklyHours: weekly, maxPerDay: parseInt($('#tMaxDay').value, 10) || 0, homeroomClassId, unavailable, load };
+      const email = (type === '級任' && $('#tEmail')) ? $('#tEmail').value.trim() : '';
+      const data = { name, type, weeklyHours: weekly, maxPerDay: parseInt($('#tMaxDay').value, 10) || 0, homeroomClassId, email, unavailable, load };
       if (existing) Object.assign(existing, data); else state.teachers.push({ id: uid(), ...data });
       save(); render(); toast('已儲存教師');
       return true;
@@ -2407,7 +2470,7 @@ const changeHandlers = {
     if ((modalLoad[idx].hours || 0) > rem) modalLoad[idx].hours = rem;
     refreshLoadEditor(); updateLoadSum();
   },
-  'teacher-type': el => { const f = $('#homeroomField'); if (f) f.style.display = el.value === '級任' ? '' : 'none'; },
+  'teacher-type': el => { const f = $('#homeroomField'); if (f) f.style.display = el.value === '級任' ? 'flex' : 'none'; },
   'load-hours': el => {
     syncLoadFromDOM();
     const idx = parseInt(el.dataset.idx, 10);
