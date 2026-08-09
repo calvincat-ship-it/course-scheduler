@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v09.10';
+const APP_VERSION = 'v09.11';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -225,6 +225,14 @@ let lockMode = false;   // v08.02 單格鎖定選取模式進行中（runtime，
 let kioskFill = false;  // v09.05 導師填課 kiosk：隱藏其他分頁、只顯示填課介面（?fill 或導師入口）
 let fillLinkMode = false; // v09.07 由填課連結(?fill)進入：離開＝關閉分頁/結束畫面，永不進入系統（防導師誤觸竄改資料）
 let fillEnded = false;    // v09.07 填課結束畫面旗標
+/* v09.11 排課復原 Undo/Redo：只快照 slots/slotTeachers/slotContent（不跨鎖定/自編結構邊界，故 lock/unlock/finalize 時清空堆疊）*/
+let undoStack = [], redoStack = [];
+const snapSlots = () => ({ slots: { ...state.slots }, slotTeachers: { ...state.slotTeachers }, slotContent: { ...state.slotContent } });
+const restoreSnap = s => { state.slots = { ...s.slots }; state.slotTeachers = { ...s.slotTeachers }; state.slotContent = { ...s.slotContent }; };
+function pushUndo() { undoStack.push(snapSlots()); if (undoStack.length > 40) undoStack.shift(); redoStack = []; }
+function clearUndo() { undoStack = []; redoStack = []; }
+function doUndo() { if (!undoStack.length) { toast('沒有可復原的步驟'); return; } redoStack.push(snapSlots()); restoreSnap(undoStack.pop()); save(); render(); toast('已復原'); }
+function doRedo() { if (!redoStack.length) { toast('沒有可重做的步驟'); return; } undoStack.push(snapSlots()); restoreSnap(redoStack.pop()); save(); render(); toast('已重做'); }
 
 /* 鎖定/自編偵測 helpers（v08.03：自編改由系統於鎖定時自動判定）
    自編格＝該格所有授課老師皆為「同年級的級任導師」；單師時該師須為本班導師。 */
@@ -275,6 +283,7 @@ function finalizeLock() {
   const keptPrev = (state.selfCells || []).filter(k => detectedSet.has(k) || !state.slots[k]);
   state.selfCells = [...new Set([...keptPrev, ...detected])];
   state.selfReleased = true;
+  clearUndo();   // 鎖定是結構性邊界，復原不跨越
 }
 // v09.00 解除鎖定時把釋放的自編格還原成鎖定前的原排課，並清掉自編/完成狀態
 function restoreSelfCells() {
@@ -287,6 +296,7 @@ function restoreSelfCells() {
   state.selfCells = [];
   state.selfDone = {};
   state.selfReleased = false;
+  clearUndo();   // 解除鎖定是結構性邊界，復原不跨越
 }
 // v09.00 協同：某自編格（含 sid）在其他班同日同節、共用同一協同群組的夥伴格 key
 function coteachPartnerCells(key) {
@@ -1596,6 +1606,7 @@ function autoScheduleModal() {
     saveLabel: '開始排課',
     onSave: () => {
       const clear = $('#autoClear').checked;
+      pushUndo();
       const r = runAutoSchedule(clear);
       render();
       setTimeout(() => autoResultModal(r.unplaced, r), 0); // 等 modal-save 關掉設定 modal 後再開結果 modal
@@ -1688,6 +1699,7 @@ function findEvictionChain(classId, sid, teacherId, maxDepth) {
 }
 // 放課共用邏輯（協同同步 + 連堂成對），回傳提示；供手動點格與建議放入共用
 function placeWithExtras(classId, day, period, sid, tid) {
+  pushUndo();
   const s = subjectById(sid); const dNum = parseInt(day, 10); const notes = [];
   const linked = placeSubject(classId, day, period, sid, tid);
   if (linked) notes.push(`協同同步 ${linked} 班`);
@@ -1748,6 +1760,7 @@ function swapSuggestModal(classId, sid, teacherId) {
     <ol style="line-height:1.9">${stepHtml}${finalHtml}</ol>
     <p style="color:var(--muted);font-size:12px">套用後不會產生任何衝堂；若不滿意可手動移除再重排。</p>`;
   openModal({ title: '調課建議', wide: true, body, saveLabel: '套用建議', onSave: () => {
+    pushUndo();
     chain.moves.forEach(m => { delete state.slots[m.from]; delete state.slotTeachers[m.from]; state.slots[m.to] = m.sid; });
     placeSubject(classId, t[1], t[2], sid, teacherId);
     save(); render(); toast('已套用調課建議');
@@ -1801,6 +1814,7 @@ function viewSchedule() {
     ${banner}
     ${totalConf ? `<div class="conflict-banner no-print">⚠ 全校目前有 ${totalConf} 個需注意的格子（教師衝堂／不排課／協同未同步／連堂未相鄰）。</div>` : ''}
     <div class="board-toolbar no-print"><label>班級：</label><select id="scheduleClass" data-change="schedule-class">${classOpts}</select>
+      ${selecting ? '' : `<button class="ghost" data-action="undo-schedule" title="復原 (Ctrl+Z)">↶ 復原</button><button class="ghost" data-action="redo-schedule" title="重做 (Ctrl+Y／Ctrl+Shift+Z)">↷ 重做</button>`}
       <span style="margin-left:auto"></span>${toolbarBtns}</div>
     <div class="schedule-layout ${boardBusy ? 'locked' : ''}">
       ${boardBusy ? '' : `<div class="palette card no-print"><div class="card-body"><h4>科目調色盤</h4>${paletteHTML(selectedClassId)}</div></div>`}
@@ -2048,6 +2062,9 @@ function viewSettings() {
       }).join('')}</tbody></table>
       <p class="hint" style="color:var(--muted);margin-top:8px">母語可用「/」分列（如 阿美語/閩南語）。固定版面（整潔活動、導師時間、午餐、午休、第八節、週三下午教學研究、學生人數欄）已比照範本內建。</p>
     </div></div>
+    <div class="card"><div class="card-body"><h4 style="margin-top:0">🗓️ 學年度轉換</h4>
+      <p style="color:var(--muted);margin:4px 0 10px">新學年時一鍵沿用本學年的所有設定（科目／年級／班級／教師配課／教室／協同／領域），只把排課清空重排，免重建。套用前會自動下載備份。</p>
+      <button class="btn" data-action="new-school-year">另存為新學年（沿用設定）</button></div></div>
     ${cloudSettingsCard()}
     <div class="card"><div class="card-body"><h4 style="margin-top:0">🧑‍🏫 導師線上填課</h4>
       <p style="color:var(--muted);margin:4px 0 10px">導師專用：用學校 Google 帳號登入，開啟排課老師分享給你的「班級填課檔」，為自編格選課後存回雲端。（排課老師的「開放/收回」在 ⑤ 排課鎖定後的「☁️ 線上填課」）</p>
@@ -2170,6 +2187,7 @@ function helpModal() {
       <li>🪄 <b>自動排課</b>（選用）：右上按鈕一鍵把各班每科排滿，會遵守科目的排課限制、進階限制（分散不同天/隔天）、教師配課、不排課時段、教師單日上限、並避開所有衝堂；還會多次嘗試取較佳解（教師每日節數較平均、偏好時段盡量滿足）。可選「清空重排」或「只補空格（保留已排）」。排不下的課會列出讓你手動處理；排完仍可自由手動微調。</li>
       <li>✂️ <b>分節上課</b>科目：左側每位老師各一個色塊，先點「要放哪位老師」再點格，該格就記下由誰上（各上不同節）。</li>
       <li>分組科目自動多師同格；協同科目放一班自動同步其他班；連堂自動成對。</li>
+      <li>↶ <b>復原／重做</b>：手動放課、移除、喬課、自動排課都可用工具列「復原／重做」或 <b>Ctrl+Z／Ctrl+Y</b> 回上一步（鎖定/解鎖為分界、不跨越）。</li>
       <li>🔴 紅框代表需注意：教師衝堂／教室衝堂／不排課時段／協同未同步／連堂未相鄰（移到格上看原因）。</li></ul>
     <h4>🔒 鎖定課表與導師自編（⑤ 排課定稿後）</h4>
     <ul><li><b>鎖定兩種</b>：<b>🔒 一鍵鎖定</b>整表一次鎖；<b>🎯 單格鎖定</b>逐格點選要鎖的格再按「完成鎖定」（未鎖的格仍可調）。</li>
@@ -2674,6 +2692,30 @@ const clickHandlers = {
   'move-period-down': el => movePeriod(el.dataset.pid, 1),
 
   'auto-schedule': () => autoScheduleModal(),
+  'undo-schedule': () => doUndo(),
+  'redo-schedule': () => doRedo(),
+  'new-school-year': () => {
+    const cur = (state.settings || {}).reportYear || '';
+    const nextYr = String((parseInt(cur, 10) || 0) + 1);
+    openModal({
+      title: '另存為新學年（沿用設定）',
+      body: `<p style="margin-top:0">保留<b>科目／年級／班級（含代號、協同）／教師（含配課、導師、Email）／教室／領域／設定</b>，開始新學年排課。</p>
+        <label class="field" style="max-width:200px"><span>新學年度</span><input type="text" id="nyYear" value="${esc(nextYr)}" style="width:120px"></label>
+        <label class="checkbox" style="margin:10px 0"><input type="checkbox" id="nyKeep"> 保留現有排課當新學年<b>底稿</b>（不勾＝清空排課重排）</label>
+        <p class="hint" style="color:var(--muted)">套用前會<b>自動下載一份目前資料備份</b>以防萬一。鎖定／導師自編／線上填課狀態都會重置。</p>`,
+      saveLabel: '下載備份並套用', onSave: () => {
+        const ny = ($('#nyYear').value || '').trim(); const keep = $('#nyKeep').checked;
+        try { exportJSON(); } catch (e) {}                       // 先自動備份目前資料
+        state.settings.reportYear = ny;
+        if (!keep) { state.slots = {}; state.slotTeachers = {}; state.slotContent = {}; }
+        state.locked = false; state.lockedCells = []; state.lockFinalized = false; state.selfReleased = false;
+        state.selfCells = []; state.selfBackup = {}; state.selfDone = {}; state.fillShare = null;
+        clearUndo(); save(); render();
+        toast('已建立新學年（' + ny + '）' + (keep ? '，保留排課底稿' : '，排課已清空'));
+        return true;
+      },
+    });
+  },
   'select-subject': el => {
     const sid = el.dataset.id; const tid = el.dataset.teacher || null;
     if (selectedSubjectId === sid && selectedTeacherId === tid) { selectedSubjectId = null; selectedTeacherId = null; }
@@ -2697,6 +2739,7 @@ const clickHandlers = {
       // 單格模式未鎖的格：排課人員仍可自由編輯 → 往下正常流程
     }
     if (state.slots[key]) {
+      pushUndo();
       const sid = state.slots[key];
       delete state.slots[key]; delete state.slotTeachers[key]; delete state.slotContent[key];
       const c = classById(classId); const gid = c && c.coteach && c.coteach[sid];
@@ -2755,6 +2798,7 @@ const clickHandlers = {
     const key = el.dataset.key, sid = el.dataset.sid; const [classId, day, period] = key.split('|');
     if (selfCellTeacherLocked(key)) { toast('此格已鎖定'); return; }
     if (state.slots[key] !== sid && selfCoursePlaced(classId, sid) >= selfCourseTarget(classId, sid)) { toast('該科已達可自編節數'); return; }
+    pushUndo();
     state.slots[key] = sid;
     // v09.00 協同連動：夥伴班同格（同為自編格、未鎖、空）一併填入
     const c = classById(classId); const gid = c && c.coteach && c.coteach[sid];
@@ -2767,6 +2811,7 @@ const clickHandlers = {
   'clear-selfcell': el => {
     const key = el.dataset.key; const [classId, day, period] = key.split('|');
     if (selfCellTeacherLocked(key)) { toast('此格已鎖定'); return; }
+    pushUndo();
     const sid = state.slots[key];
     delete state.slots[key]; delete state.slotTeachers[key];
     // v09.00 協同連動：夥伴班同格（同為自編格、未鎖、同科）一併清空
@@ -2879,6 +2924,14 @@ function bindGlobal() {
   const help = $('#helpBtn'); if (help) help.addEventListener('click', helpModal);
   document.addEventListener('click', e => { const el = e.target.closest('[data-action]'); if (!el) return; const fn = clickHandlers[el.dataset.action]; if (fn) fn(el, e); });
   document.addEventListener('change', e => { const el = e.target.closest('[data-change]'); if (!el) return; const fn = changeHandlers[el.dataset.change]; if (fn) fn(el, e); });
+  document.addEventListener('keydown', e => {   // v09.11 排課復原：Ctrl+Z 復原、Ctrl+Y/Ctrl+Shift+Z 重做（僅⑤排課、非輸入中、非 kiosk）
+    if (kioskFill || currentTab !== 'schedule' || lockMode) return;
+    if (/^(INPUT|TEXTAREA|SELECT)$/.test((e.target.tagName || '')) || e.target.isContentEditable) return;
+    if (!(e.ctrlKey || e.metaKey)) return;
+    const k = e.key.toLowerCase();
+    if (k === 'z' && !e.shiftKey) { e.preventDefault(); doUndo(); }
+    else if (k === 'y' || (k === 'z' && e.shiftKey)) { e.preventDefault(); doRedo(); }
+  });
   $('#versionTag').textContent = APP_VERSION;
 }
 
