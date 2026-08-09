@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v09.02';
+const APP_VERSION = 'v09.03';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -25,6 +25,15 @@ const CLOUD_FILE_NAME = 'course-backup.json';
 const CLOUD_PREV_NAME = 'course-backup.prev.json';
 const CLOUD_HISTORY_PREFIX = 'course-history-';
 const CLOUD_DEBOUNCE_MS = 8000;
+
+/* ---------- F③ 導師線上填課（Google Drive drive.file + Picker）常數 ----------
+   排課者用 drive.file 建共享資料夾＋每班檔、逐位導師 email 分享；導師用 Picker 開自己班的檔填課。
+   GOOGLE_API_KEY 為 Picker 專用（前端公開、已用「網站來源＋只限 Picker API」限制）；
+   GOOGLE_PROJECT_NUMBER 為 Picker 的 appId（即 client_id 開頭那串）。 */
+const GOOGLE_API_KEY = 'AIzaSyCobl3vcBm8sgeieam7TWMf_LtC4ld3esM';
+const GOOGLE_PROJECT_NUMBER = '682239566772';
+const FILL_SCOPE = 'https://www.googleapis.com/auth/drive.file';
+const FILL_FOLDER_PREFIX = '課務-自編填課-';
 
 const DAY_LABELS = ['', '週一', '週二', '週三', '週四', '週五', '週六', '週日'];
 const GRADE_NAMES = ['一年級', '二年級', '三年級', '四年級', '五年級', '六年級'];
@@ -123,6 +132,7 @@ function defaultState() {
     selfBackup: {},       // v09.00 釋放自編格前的原排課備份（key→{sid,tid}），解除鎖定時還原
     selfDone: {},         // v09.00 導師自編完成：classId→true（該班自編格鎖定唯讀）
     staffingOkSig: '',    // v09.01 「檢查全校配課」通過時的資料簽章（含導師設定）；資料一變即需重新檢查
+    fillShare: null,      // v09.03 F③ 線上填課分享：{ folderId, folderLink, year, files:{classId:{fileId,link,email}}, openedAt }
     helpSeen: false,
   };
 }
@@ -372,6 +382,214 @@ function mergeFillFile(obj) {
   const conf = computeConflicts();                          // 合併後衝堂提示
   cells.forEach(key => { if (state.slots[key] && conf[key]) res.conflicts.push(`${lbl(key)}：${conf[key].join('；')}`); });
   return res;
+}
+
+/* ---------- F③ 傳輸層：drive.file token + Drive REST + Picker ---------- */
+let fillToken = null, fillTokenClient = null, _fillResolve = null, _fillReject = null, _pickerLoaded = false;
+let teacherPacket = null, teacherFileId = null, teacherOrigKeys = null;
+function initFillTokenClient() {
+  fillTokenClient = google.accounts.oauth2.initTokenClient({
+    client_id: GOOGLE_CLIENT_ID, scope: FILL_SCOPE,
+    callback: (resp) => {
+      const ok = _fillResolve, fail = _fillReject; _fillResolve = _fillReject = null;
+      if (resp && resp.access_token) { fillToken = { access_token: resp.access_token, expiresAt: Date.now() + ((Number(resp.expires_in) || 3600) * 1000) }; ok && ok(resp.access_token); }
+      else fail && fail(new Error((resp && resp.error) || 'auth_failed'));
+    },
+    error_callback: (err) => { const fail = _fillReject; _fillResolve = _fillReject = null; fail && fail(new Error((err && err.type) || 'popup_closed')); },
+  });
+}
+async function getFillToken(promptMode = '') {
+  await ensureGis();
+  if (fillToken && fillToken.expiresAt - 60000 > Date.now()) return fillToken.access_token;
+  if (!fillTokenClient) initFillTokenClient();
+  return new Promise((resolve, reject) => {
+    _fillResolve = resolve; _fillReject = reject;
+    try { fillTokenClient.requestAccessToken({ prompt: promptMode }); }
+    catch (e) { _fillResolve = _fillReject = null; reject(e); }
+  });
+}
+async function fillFetch(url, opts) {
+  let token = await getFillToken('');
+  const build = (t) => ({ ...opts, headers: { ...(opts && opts.headers), Authorization: 'Bearer ' + t } });
+  let res = await fetch(url, build(token));
+  if (res.status === 401) { fillToken = null; token = await getFillToken(''); res = await fetch(url, build(token)); }
+  return res;
+}
+async function driveCreateFolder(name) {
+  const res = await fillFetch('https://www.googleapis.com/drive/v3/files?fields=id,webViewLink', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, mimeType: 'application/vnd.google-apps.folder' }),
+  });
+  if (!res.ok) throw new Error('建立資料夾失敗');
+  return res.json();
+}
+async function drivePutJson(name, parentId, contentStr, fileId) {
+  const boundary = 'csf' + Math.random().toString(16).slice(2);
+  const metadata = fileId ? {} : { name, parents: [parentId] };
+  const body = `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n` + JSON.stringify(metadata) +
+    `\r\n--${boundary}\r\nContent-Type: application/json\r\n\r\n` + contentStr + `\r\n--${boundary}--`;
+  const base = 'https://www.googleapis.com/upload/drive/v3/files';
+  const url = fileId ? `${base}/${fileId}?uploadType=multipart&fields=id,webViewLink` : `${base}?uploadType=multipart&fields=id,webViewLink`;
+  const res = await fillFetch(url, { method: fileId ? 'PATCH' : 'POST', headers: { 'Content-Type': `multipart/related; boundary=${boundary}` }, body });
+  if (!res.ok) throw new Error('寫入檔案失敗');
+  return res.json();
+}
+async function driveShare(fileId, email) {
+  const res = await fillFetch(`https://www.googleapis.com/drive/v3/files/${fileId}/permissions?sendNotificationEmail=true&fields=id`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ role: 'writer', type: 'user', emailAddress: email }),
+  });
+  if (!res.ok) { const t = await res.text(); throw new Error('分享給 ' + email + ' 失敗：' + t.slice(0, 100)); }
+  return res.json();
+}
+async function fillDownloadText(fileId) {
+  const res = await fillFetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, { method: 'GET' });
+  if (!res.ok) throw new Error('下載檔案失敗');
+  return res.text();
+}
+function loadPicker() {
+  return new Promise((resolve, reject) => {
+    if (_pickerLoaded && window.google && google.picker) return resolve();
+    const done = () => gapi.load('picker', { callback: () => { _pickerLoaded = true; resolve(); } });
+    if (window.gapi) return done();
+    const s = document.createElement('script');
+    s.src = 'https://apis.google.com/js/api.js'; s.async = true; s.defer = true;
+    s.onload = done; s.onerror = () => reject(new Error('載入 Picker 失敗（網路）'));
+    document.head.appendChild(s);
+  });
+}
+async function pickFillFile(token) {
+  await loadPicker();
+  return new Promise((resolve) => {
+    const view = new google.picker.DocsView(google.picker.ViewId.DOCS)
+      .setMimeTypes('application/json').setMode(google.picker.DocsViewMode.LIST);
+    const picker = new google.picker.PickerBuilder()
+      .setAppId(GOOGLE_PROJECT_NUMBER).setOAuthToken(token).setDeveloperKey(GOOGLE_API_KEY)
+      .addView(view).setTitle('選擇你的班級填課檔（class-….json）')
+      .setCallback((data) => {
+        if (data.action === google.picker.Action.PICKED) resolve(data.docs[0].id);
+        else if (data.action === google.picker.Action.CANCEL) resolve(null);
+      }).build();
+    picker.setVisible(true);
+  });
+}
+
+/* ---------- F③ 排課者：開放 / 收回 ---------- */
+async function openFillShare(reopen) {
+  const targets = state.classes.filter(c => classSelfCells(c.id).length > 0);
+  if (!targets.length) { toast('沒有可填課的自編格（請先鎖定課表釋放自編格）'); return; }
+  const missing = targets.filter(c => { const hr = homeroomTeacher(c.id); return !hr || !hr.email; });
+  if (missing.length) { toast('這些班級導師未填 Email：' + missing.map(c => c.name).join('、') + '（到④教師補上）'); return; }
+  try {
+    toast('連線 Google…'); await getFillToken('');
+    const year = String((state.settings || {}).reportYear || new Date().getFullYear());
+    const folder = await driveCreateFolder(FILL_FOLDER_PREFIX + year);
+    const files = {};
+    for (const c of targets) {
+      const f = await drivePutJson(`class-${c.id}.json`, folder.id, JSON.stringify(buildFillFile(c.id)));
+      const hr = homeroomTeacher(c.id);
+      await driveShare(f.id, hr.email);
+      files[c.id] = { fileId: f.id, link: f.webViewLink || '', email: hr.email };
+    }
+    state.fillShare = { folderId: folder.id, folderLink: folder.webViewLink || '', year, files, openedAt: new Date().toISOString() };
+    save(); render(); toast('已開放線上填課，' + targets.length + ' 班已分享');
+    fillManageModal();
+  } catch (e) { toast('開放失敗：' + e.message); }
+}
+async function collectFill() {
+  if (!state.fillShare || !state.fillShare.files) { toast('尚未開放線上填課'); return; }
+  if (!state.lockFinalized) { toast('請先鎖定課表再收回'); return; }
+  try {
+    toast('讀取各班填課…'); await getFillToken('');
+    const summaries = [];
+    for (const classId of Object.keys(state.fillShare.files)) {
+      const nm = (classById(classId) || {}).name || classId;
+      let obj; try { obj = JSON.parse(await fillDownloadText(state.fillShare.files[classId].fileId)); }
+      catch (e) { summaries.push({ error: nm + '：讀取/解析失敗' }); continue; }
+      summaries.push(mergeFillFile(obj));
+    }
+    save(); render(); fillCollectResultModal(summaries);
+  } catch (e) { toast('收回失敗：' + e.message); }
+}
+function fillManageModal() {
+  const fs = state.fillShare;
+  const targets = state.classes.filter(c => classSelfCells(c.id).length > 0);
+  const rowsOpen = fs && fs.files ? Object.keys(fs.files).map(cid => {
+    const f = fs.files[cid]; const nm = (classById(cid) || {}).name || cid;
+    return `<tr><td>${esc(nm)}</td><td>${esc(f.email)}</td><td>${f.link ? `<a href="${esc(f.link)}" target="_blank" rel="noopener">開啟</a>` : '—'}</td></tr>`;
+  }).join('') : '';
+  const body = fs && fs.files
+    ? `<div class="total-badge ok">已開放（${esc(fs.year)}）· ${Object.keys(fs.files).length} 班已分享</div>
+       <p style="color:var(--muted);margin:8px 0">導師會收到 Drive 分享通知；也可把下方連結或「App 網址 ?fill=1」給導師，用 Google 登入＋Picker 選自己班的檔填課。</p>
+       <table class="data"><thead><tr><th>班級</th><th>導師 Email</th><th>檔案</th></tr></thead><tbody>${rowsOpen}</tbody></table>
+       <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+         <button class="btn" data-action="collect-fill">📥 收回填課（合併進課表）</button>
+         <button class="ghost" data-action="reopen-fill">♻️ 重新開放（重建檔案）</button>
+       </div>`
+    : `<p style="margin-top:0">將為每個有自編格的班級建立一份雲端「填課檔」，分享給該班導師的 Email；導師線上填完，你再「收回填課」合併回課表。</p>
+       <p style="color:var(--muted)">需求：課表已鎖定、各班導師已在「④ 教師」填 Google Email。將分享的班級：<b>${esc(targets.map(c => c.name).join('、') || '（無）')}</b></p>
+       <button class="btn" data-action="open-fill">☁️ 開放線上填課</button>`;
+  openModal({ title: '導師線上填課（分享）', wide: true, body });
+}
+function fillCollectResultModal(summaries) {
+  const rows = summaries.map(s => s.error
+    ? `<tr><td colspan="2" style="color:var(--danger)">${esc(s.error)}</td></tr>`
+    : `<tr><td><b>${esc(s.className)}</b></td><td>填入 ${s.set}、清空 ${s.cleared}${s.conflicts && s.conflicts.length ? `<div style="color:var(--danger);font-size:12px;margin-top:2px">⚠ ${s.conflicts.map(esc).join('；')}</div>` : ''}</td></tr>`
+  ).join('');
+  openModal({ title: '收回填課結果', wide: true, body: `<p style="margin-top:0">已把各班導師的選課合併進課表：</p><table class="data"><thead><tr><th>班級</th><th>結果</th></tr></thead><tbody>${rows}</tbody></table>` });
+}
+
+/* ---------- F③ 導師端：登入 → Picker → 填課 → 存回 ---------- */
+async function teacherFillStart() {
+  try {
+    toast('登入 Google…'); const token = await getFillToken('');
+    const fileId = await pickFillFile(token);
+    if (!fileId) return;
+    const obj = JSON.parse(await fillDownloadText(fileId));
+    if (obj.fmt !== FILL_FMT) { toast('這不是填課檔（course-fill）'); return; }
+    teacherPacket = obj; teacherFileId = fileId; teacherPacket.content = teacherPacket.content || {};
+    teacherOrigKeys = new Set(Object.keys(teacherPacket.content));
+    renderTeacherFill();
+  } catch (e) { toast('開啟失敗：' + e.message); }
+}
+function tfillPlaced(sid) { return Object.values(teacherPacket.content || {}).filter(v => v === sid).length; }
+function renderTeacherFill() {
+  const p = teacherPacket;
+  const pills = p.pool.map(s => { const pl = tfillPlaced(s.sid); const over = pl > s.required; return `<span class="pill" style="background:${s.color};color:#fff;opacity:${pl ? 1 : .6}">${esc(s.name)} ${pl}/${s.required}${over ? '⚠' : ''}</span>`; }).join(' ');
+  const rows = p.cells.map(cell => {
+    const cur = p.content[cell.key] || '';
+    const opts = `<option value="">（未選）</option>` + p.pool.map(s => {
+      const pl = tfillPlaced(s.sid); const full = pl >= s.required && cur !== s.sid;
+      return `<option value="${s.sid}" ${cur === s.sid ? 'selected' : ''} ${full ? 'disabled' : ''}>${esc(s.name)}（${pl}/${s.required}${full ? ' 已滿' : ''}）</option>`;
+    }).join('');
+    return `<tr><td>${esc(cell.label)}</td><td><select data-change="tfill-pick" data-key="${esc(cell.key)}">${opts}</select></td></tr>`;
+  }).join('');
+  const snap = Object.keys(p.snapshot || {}).sort((a, b) => a.localeCompare(b)).map(k => {
+    const a = k.split('|'); const pl = (p.periods.find(x => x.id === a[1]) || {}).label || a[1];
+    return `<tr><td>${DAY_LABELS[+a[0]]}${esc(pl)}</td><td>${esc(p.snapshot[k])}</td></tr>`;
+  }).join('');
+  const allFilled = p.cells.every(c => p.content[c.key]);
+  openModal({
+    title: `導師填課 · ${esc(p.className)}（${esc(p.homeroom || '')}）`,
+    wide: true,
+    body: `<p style="margin-top:0;color:var(--muted)">為每個自編格從你的配課科目選課；各科顯示 已選／應選，達應選即不可再加。填完按「儲存到雲端」，再通知排課老師收回。</p>
+      <div style="margin-bottom:8px">${pills}</div>
+      <table class="data"><thead><tr><th>時段</th><th>選課</th></tr></thead><tbody>${rows}</tbody></table>
+      ${snap ? `<details style="margin-top:10px"><summary style="cursor:pointer">參考：本班已固定的課表</summary><table class="data"><tbody>${snap}</tbody></table></details>` : ''}
+      <div style="margin-top:8px;color:${allFilled ? 'var(--ok)' : 'var(--muted)'}">${allFilled ? '✓ 全部已選' : '尚有未選的時段（可先存、之後再補）'}</div>`,
+    saveLabel: '儲存到雲端', onSave: () => { teacherSaveFill(); return false; },
+  });
+}
+async function teacherSaveFill() {
+  try {
+    const p = teacherPacket;
+    const cleared = [...teacherOrigKeys].filter(k => !p.content[k]);   // 只把「原本有、現在清掉」記為明確清空
+    const out = { ...p, content: p.content, cleared, submittedAt: new Date().toISOString() };
+    toast('儲存中…');
+    await drivePutJson('', null, JSON.stringify(out), teacherFileId);
+    teacherOrigKeys = new Set(Object.keys(p.content));
+    closeModal(); toast('已儲存到雲端，請通知排課老師「收回填課」');
+  } catch (e) { toast('儲存失敗：' + e.message); }
 }
 
 function render() {
@@ -1469,7 +1687,7 @@ function viewSchedule() {
   const banner = selecting
     ? `<div class="lock-banner no-print"><span>🎯 單格鎖定中——點要鎖的格（再點取消）。目前已鎖 <b>${(state.lockedCells || []).length}</b> 格。</span><button class="btn" data-action="lockcell-done">✔ 完成鎖定</button><button class="ghost" data-action="lockcell-cancel">取消</button></div>`
     : finalized
-      ? `<div class="lock-banner no-print"><span>🔒 課表已鎖定（${state.locked ? '一鍵全鎖' : '單格鎖定 ' + (state.lockedCells || []).length + ' 格'}）。自編格已釋放供導師選課${selfCellCount ? `；本班（${esc((classById(selCls) || {}).name || '')}）自編 ${selfDoneCls ? '已完成🔒' : selfCellCount + ' 格'}` : ''}；其餘鎖定格唯讀。</span>${selfBtn}<button class="btn" data-action="unlock-schedule">🔓 解除鎖定</button></div>`
+      ? `<div class="lock-banner no-print"><span>🔒 課表已鎖定（${state.locked ? '一鍵全鎖' : '單格鎖定 ' + (state.lockedCells || []).length + ' 格'}）。自編格已釋放供導師選課${selfCellCount ? `；本班（${esc((classById(selCls) || {}).name || '')}）自編 ${selfDoneCls ? '已完成🔒' : selfCellCount + ' 格'}` : ''}；其餘鎖定格唯讀。</span>${selfBtn}<button class="ghost" data-action="fill-manage" title="開放/收回導師線上填課">☁️ 線上填課${state.fillShare ? '（已開放）' : ''}</button><button class="btn" data-action="unlock-schedule">🔓 解除鎖定</button></div>`
       : '';
   const toolbarBtns = selecting ? '' : finalized ? '' :
     `<button class="ghost" data-action="lock-schedule" style="margin-left:auto" title="整表一次鎖定">🔒 一鍵鎖定</button><button class="ghost" data-action="lockcell-mode" title="逐格點選要鎖的格">🎯 單格鎖定</button><button class="btn" data-action="auto-schedule">🪄 自動排課</button>`;
@@ -1724,6 +1942,9 @@ function viewSettings() {
       <p class="hint" style="color:var(--muted);margin-top:8px">母語可用「/」分列（如 阿美語/閩南語）。固定版面（整潔活動、導師時間、午餐、午休、第八節、週三下午教學研究、學生人數欄）已比照範本內建。</p>
     </div></div>
     ${cloudSettingsCard()}
+    <div class="card"><div class="card-body"><h4 style="margin-top:0">🧑‍🏫 導師線上填課</h4>
+      <p style="color:var(--muted);margin:4px 0 10px">導師專用：用學校 Google 帳號登入，開啟排課老師分享給你的「班級填課檔」，為自編格選課後存回雲端。（排課老師的「開放/收回」在 ⑤ 排課鎖定後的「☁️ 線上填課」）</p>
+      <button class="btn" data-action="teacher-fill">用 Google 登入並填課</button></div></div>
     <div class="card"><div class="card-body"><h4 style="margin-top:0">關於</h4>
       <p style="color:var(--muted)">課務編排 ${APP_VERSION} · 資料存本機瀏覽器。備份請用右上「備份」或下方雲端同步。</p>
     </div></div>`;
@@ -2391,6 +2612,11 @@ const clickHandlers = {
     const cls = el.dataset.cls; const name = (classById(cls) || {}).name || '本班';
     openModal({ title: '解鎖導師自編', saveLabel: '解鎖', body: `<p style="margin-top:0">解除「<b>${esc(name)}</b>」的導師自編鎖定，導師可重新選課。若含協同教學的自編格，會<b>一併解鎖連動的夥伴班該格</b>。</p>`, onSave: () => { delete state.selfDone[cls]; save(); render(); toast('已解鎖導師自編'); return true; } });
   },
+  'fill-manage': () => fillManageModal(),
+  'open-fill': () => openFillShare(false),
+  'reopen-fill': () => confirmDelete('重新開放會為各班建立新的填課檔（舊檔仍留在你的雲端硬碟，可自行刪除）。確定？', () => openFillShare(true)),
+  'collect-fill': () => collectFill(),
+  'teacher-fill': () => teacherFillStart(),
   'pick-selfcourse': el => {
     const key = el.dataset.key, sid = el.dataset.sid; const [classId, day, period] = key.split('|');
     if (selfCellTeacherLocked(key)) { toast('此格已鎖定'); return; }
@@ -2482,6 +2708,7 @@ const changeHandlers = {
   },
   'weekly-hours': () => updateLoadSum(),
   'schedule-class': el => { selectedClassId = el.value; selectedSubjectId = null; selectedTeacherId = null; render(); },
+  'tfill-pick': el => { const key = el.dataset.key, v = el.value; if (v) teacherPacket.content[key] = v; else delete teacherPacket.content[key]; renderTeacherFill(); },
   'out-mode': el => { outputMode = el.value; render(); },
   'out-class': el => { outputClassId = el.value; render(); },
   'out-teacher': el => { outputTeacherId = el.value; render(); },
@@ -2547,7 +2774,9 @@ async function init() {
   if (!Array.isArray(state.domains)) state.domains = defaultDomains();                 // v06.00 領域節數參考表
   bindGlobal();
   render();
-  if (hadOldData) upgradeNoticeModal();                                   // 舊版同仁：改版通知
+  const fillMode = new URLSearchParams(location.search).has('fill');       // v09.03 導師填課入口（排課老師發的連結）
+  if (fillMode) openModal({ title: '🧑‍🏫 導師線上填課', body: `<p style="margin-top:0">用學校 Google 帳號登入，開啟排課老師分享給你的「班級填課檔」，為自編格選課後存回雲端。</p><button class="btn" data-action="teacher-fill">用 Google 登入並填課</button>` });
+  else if (hadOldData) upgradeNoticeModal();                              // 舊版同仁：改版通知
   else if (!state.helpSeen) { helpModal(); state.helpSeen = true; save(); } // 新同仁：使用說明
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => { });
   // v07.00 雲端同步：開 App 若雲端較新則詢問還原；回前景再檢查一次
