@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v09.08';
+const APP_VERSION = 'v09.09';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -114,7 +114,7 @@ function defaultState() {
   return {
     schema: SCHEMA,
     version: APP_VERSION,
-    settings: { days, periods, autoPairConsecutive: true, reportSchool: '臺東縣成功鎮三民國民小學', reportYear: '113', subjectMap: {} },
+    settings: { days, periods, autoPairConsecutive: true, reportSchool: '臺東縣成功鎮三民國民小學', reportYear: '113', schoolCode: 'msd9', subjectMap: {} },
     domains: defaultDomains(),
     subjects: [],
     rooms: [],
@@ -338,9 +338,9 @@ function selfCourseLocked(classId, sid) {
   return n;
 }
 function selfCourseTarget(classId, sid) { return Math.max(0, selfCourseRequired(classId, sid) - selfCourseLocked(classId, sid)); }
-// v09.05 線上填課檔名：class-msd9 + 學年度 + 年級數 + 班級數字代號（學年度取自設定/課表輸出格式）
+// v09.05/09 線上填課檔名：class- + 學校代號 + 學年度 + 年級數 + 班級數字代號（學校代號/學年度取自設定/課表輸出格式）
 function classGradeNum(c) { const i = state.grades.findIndex(g => g.id === c.gradeId); return i >= 0 ? i + 1 : ''; }
-function fillFileName(c) { return `class-msd9${(state.settings || {}).reportYear || ''}${classGradeNum(c)}${c.code || ''}`; }
+function fillFileName(c) { const s = state.settings || {}; return `class-${s.schoolCode || 'msd9'}${s.reportYear || ''}${classGradeNum(c)}${c.code || ''}`; }
 
 /* ---------- F③ 導師線上填課：檔案契約（排課者↔導師共用的「填課包」格式） ----------
    排課者鎖定後為每班產生 course-fill-1 包（自編格＋候選科目池＋唯讀課表快照＋目前內容），
@@ -491,7 +491,7 @@ async function pickFillFile(token) {
       .setMimeTypes('application/json').setMode(google.picker.DocsViewMode.LIST);
     const picker = new google.picker.PickerBuilder()
       .setAppId(GOOGLE_PROJECT_NUMBER).setOAuthToken(token).setDeveloperKey(GOOGLE_API_KEY)
-      .addView(view).setTitle('選擇你的班級填課檔（class-msd9…）')
+      .addView(view).setTitle('選擇你的班級填課檔（class-…）')
       .setCallback((data) => {
         if (data.action === google.picker.Action.PICKED) resolve(data.docs[0].id);
         else if (data.action === google.picker.Action.CANCEL) resolve(null);
@@ -2012,7 +2012,9 @@ function viewSettings() {
       <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px">
         <label class="field"><span>校名</span><input type="text" data-change="report-field" data-field="reportSchool" value="${esc(state.settings.reportSchool || '')}" style="min-width:260px"></label>
         <label class="field"><span>學年度</span><input type="text" data-change="report-field" data-field="reportYear" value="${esc(state.settings.reportYear || '')}" style="width:90px"></label>
+        <label class="field"><span>學校代號</span><input type="text" data-change="report-field" data-field="schoolCode" value="${esc(state.settings.schoolCode || '')}" placeholder="msd9" style="width:110px" title="導師線上填課的檔名前綴（class-<代號><學年><年級><班代號>），多校共用時各校自填以區隔"></label>
       </div>
+      <p class="hint" style="color:var(--muted);margin:0 0 12px;font-size:12px">「學校代號」用於「導師線上填課」的檔名前綴（<code>class-代號學年年級班代號</code>）；不同學校共用本系統時，各校填不同代號即可區隔、檔名不撞。</p>
       <h5 style="margin:0 0 6px">科目顯示名稱對照（輸出用；留空＝用原名）</h5>
       <table class="data"><tbody>${state.subjects.map(s => {
         const eff = (state.settings.subjectMap && state.settings.subjectMap[s.name] != null) ? state.settings.subjectMap[s.name]
@@ -2152,7 +2154,7 @@ function helpModal() {
       <li><b>🔓 解除鎖定</b>（整表）：回到自由編輯，已釋放的自編格會<b>還原成鎖定前的原排課</b>（導師這一輪的自選將捨棄）。</li></ul>
     <h4>🧑‍🏫 導師線上填課（各班導師自己線上填自編格）</h4>
     <ul><li><b>用途</b>：課表鎖定後，把每班「自編格選課」開放給該班導師線上填，排課者再收回合併。免後端，走 Google Drive（需登入）。</li>
-      <li><b>排課者（你）</b>：先在 ④教師 填好各班<b>導師 Email</b>、③班級 填好<b>數字代號</b> → ⑤排課<b>鎖定課表</b> → 橫幅「<b>☁️ 線上填課</b>」→「<b>開放線上填課</b>」：系統在你的雲端硬碟建資料夾＋每班一個填課檔（檔名 <code>class-msd9學年度年級代號</code>），逐位分享給導師 Email，並給你一條<b>填課連結</b>可寄給導師。</li>
+      <li><b>排課者（你）</b>：先在 ④教師 填好各班<b>導師 Email</b>、③班級 填好<b>數字代號</b> → ⑤排課<b>鎖定課表</b> → 橫幅「<b>☁️ 線上填課</b>」→「<b>開放線上填課</b>」：系統在你的雲端硬碟建資料夾＋每班一個填課檔（檔名 <code>class-學校代號學年年級班代號</code>，學校代號在「設定」填），逐位分享給導師 Email，並給你一條<b>填課連結</b>可寄給導師。</li>
       <li><b>導師</b>：開排課者寄來的<b>填課連結（?fill=1）</b>→ 用學校 Google 帳號登入 → <b>Picker 選自己班的檔</b>（依檔名辨識）→ 進入<b>整張課表</b>，直接點 🧩 自編格選課（🔒 為已固定課、可看上下節）→ <b>儲存到雲端</b>，再通知排課者。<b>系統會核對登入帳號，只能開自己班的檔</b>；此畫面為導師專用、看不到其他設定頁與其他班級。</li>
       <li><b>排課者收回</b>：⑤排課 →「☁️ 線上填課」→「<b>收回填課</b>」：讀回各班導師選課、合併進課表，並顯示每班「填入／清空／衝堂」摘要。</li>
       <li><b>重新開放</b>：改了自編格想重來可「重新開放」重建填課檔（舊檔仍留在你雲端硬碟，可自行刪除）。</li></ul>
@@ -2876,6 +2878,7 @@ async function init() {
   // v03.00 課表輸出格式欄位 guard（舊資料補預設）
   if (!state.settings.reportSchool) state.settings.reportSchool = '臺東縣成功鎮三民國民小學';
   if (!state.settings.reportYear) state.settings.reportYear = '113';
+  if (!state.settings.schoolCode) state.settings.schoolCode = 'msd9';                        // v09.09 學校代號（填課檔名前綴）
   if (!state.settings.subjectMap || typeof state.settings.subjectMap !== 'object') state.settings.subjectMap = {};
   if (!Array.isArray(state.domains)) state.domains = defaultDomains();                 // v06.00 領域節數參考表
   bindGlobal();
