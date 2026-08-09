@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v09.05';
+const APP_VERSION = 'v09.06';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -325,8 +325,16 @@ function selfCoursePool(classId) {
 }
 function selfCourseRequired(classId, sid) { const hr = homeroomTeacher(classId); const L = hr && (hr.load || []).find(x => x.classId === classId && x.subjectId === sid); return L ? L.hours : 0; }
 function selfCoursePlaced(classId, sid) { return (state.selfCells || []).filter(k => k.split('|')[0] === classId && state.slots[k] === sid).length; }
-// v09.05 該(班,科)已排在「非自編格」的節數（如與科任協同、已鎖定不開放）；導師可自編的目標＝應排 − 已鎖
-function selfCourseLocked(classId, sid) { let n = 0; for (const k in state.slots) { if (k.split('|')[0] === classId && state.slots[k] === sid && !isSelfCell(k)) n++; } return n; }
+// v09.06 該(班,科)已排在「非自編格」、且「本班導師實際任教」的節數（分節科目只算導師教的那幾節，不含科任/其他老師分攤的節數）
+function selfCourseLocked(classId, sid) {
+  const hr = homeroomTeacher(classId); if (!hr) return 0;
+  let n = 0;
+  for (const k in state.slots) {
+    if (k.split('|')[0] !== classId || state.slots[k] !== sid || isSelfCell(k)) continue;
+    if (slotAssignments(k).some(a => a.teacherId === hr.id)) n++;   // 只計導師本人任教的鎖定格
+  }
+  return n;
+}
 function selfCourseTarget(classId, sid) { return Math.max(0, selfCourseRequired(classId, sid) - selfCourseLocked(classId, sid)); }
 // v09.05 線上填課檔名：class-msd9 + 學年度 + 年級數 + 班級數字代號（學年度取自設定/課表輸出格式）
 function classGradeNum(c) { const i = state.grades.findIndex(g => g.id === c.gradeId); return i >= 0 ? i + 1 : ''; }
