@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v09.06';
+const APP_VERSION = 'v09.07';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -223,6 +223,8 @@ let currentTab = 'subjects';
 let selectedGradeId = null;
 let lockMode = false;   // v08.02 單格鎖定選取模式進行中（runtime，不持久化）
 let kioskFill = false;  // v09.05 導師填課 kiosk：隱藏其他分頁、只顯示填課介面（?fill 或導師入口）
+let fillLinkMode = false; // v09.07 由填課連結(?fill)進入：離開＝關閉分頁/結束畫面，永不進入系統（防導師誤觸竄改資料）
+let fillEnded = false;    // v09.07 填課結束畫面旗標
 
 /* 鎖定/自編偵測 helpers（v08.03：自編改由系統於鎖定時自動判定）
    自編格＝該格所有授課老師皆為「同年級的級任導師」；單師時該師須為本班導師。 */
@@ -406,7 +408,7 @@ function mergeFillFile(obj) {
 
 /* ---------- F③ 傳輸層：drive.file token + Drive REST + Picker ---------- */
 let fillToken = null, fillTokenClient = null, _fillResolve = null, _fillReject = null, _pickerLoaded = false;
-let teacherPacket = null, teacherFileId = null, teacherOrigKeys = null;
+let teacherPacket = null, teacherFileId = null, teacherOrigKeys = null, teacherSavedJson = '';
 function initFillTokenClient() {
   fillTokenClient = google.accounts.oauth2.initTokenClient({
     client_id: GOOGLE_CLIENT_ID, scope: FILL_SCOPE,
@@ -575,12 +577,17 @@ async function teacherFillStart() {
     if (obj.fmt !== FILL_FMT) { toast('這不是填課檔（course-fill）'); return; }
     teacherPacket = obj; teacherFileId = fileId; teacherPacket.content = teacherPacket.content || {};
     teacherOrigKeys = new Set(Object.keys(teacherPacket.content));
+    teacherSavedJson = JSON.stringify(teacherPacket.content); fillEnded = false;
     render();
   } catch (e) { toast('開啟失敗：' + e.message); }
 }
 const tfillPlaced = sid => Object.values((teacherPacket || {}).content || {}).filter(v => v === sid).length;
 // 導師填課主畫面（kiosk）：整張課表，🧩 自編格可點選課、🔒 為已固定課、參考上下節
 function viewTeacherFill() {
+  if (fillEnded) return `<div class="card"><div class="card-body" style="text-align:center;padding:48px 20px">
+      <h2 style="margin-top:0">✅ 填課已結束</h2>
+      <p style="color:var(--muted)">你的選課已處理完畢，<b>可以直接關閉此分頁</b>。</p>
+      <button class="btn" data-action="teacher-relogin">重新開啟填課</button></div></div>`;
   const p = teacherPacket;
   if (!p) return `<div class="page-head"><h2>🧑‍🏫 導師線上填課</h2></div>
     <div class="card"><div class="card-body">
@@ -615,7 +622,7 @@ function viewTeacherFill() {
     <div class="lock-banner no-print"><span>導師：${esc(p.homeroom || '')}｜檔案：${esc(p.fileName || '')}｜剩 <b>${remaining}</b> 格待選</span>
       <button class="btn" data-action="tfill-save">💾 儲存到雲端</button>
       <button class="ghost" data-action="teacher-fill">選其他班級檔</button>
-      <button class="ghost" data-action="tfill-exit">離開</button></div>
+      <button class="ghost" data-action="tfill-exit">完成／關閉</button></div>
     <div class="card"><div class="card-body"><div style="margin-bottom:10px">${pills}</div><div class="grid-wrap">${table}</div></div></div>`;
 }
 function teacherPickModal(key) {
@@ -641,6 +648,7 @@ async function teacherSaveFill() {
     toast('儲存中…');
     await drivePutJson('', null, JSON.stringify(out), teacherFileId);
     teacherOrigKeys = new Set(Object.keys(p.content));
+    teacherSavedJson = JSON.stringify(p.content);
     toast('已儲存到雲端，請通知排課老師「收回填課」');
   } catch (e) { toast('儲存失敗：' + e.message); }
 }
@@ -2696,7 +2704,17 @@ const clickHandlers = {
   'tfill-pick': el => { teacherPacket.content[el.dataset.key] = el.dataset.sid; closeModal(); render(); },
   'tfill-clear': el => { delete teacherPacket.content[el.dataset.key]; closeModal(); render(); },
   'tfill-save': () => teacherSaveFill(),
-  'tfill-exit': () => { teacherPacket = null; teacherFileId = null; currentTab = 'settings'; setKiosk(false); },
+  'tfill-exit': () => {
+    const unsaved = teacherPacket && JSON.stringify(teacherPacket.content) !== teacherSavedJson;
+    const go = () => {
+      teacherPacket = null; teacherFileId = null;
+      if (fillLinkMode) { fillEnded = true; render(); try { window.close(); } catch (e) {} }   // 連結進入者：結束畫面＋嘗試關閉分頁，永不進入系統
+      else { currentTab = 'settings'; setKiosk(false); }                                        // 排課者本機測試：回設定頁
+    };
+    if (unsaved) openModal({ title: '尚未儲存', body: '<p style="margin-top:0">你有<b>未儲存</b>的選課變更，離開將<b>不會上傳雲端</b>。</p>', saveLabel: '仍要離開', onSave: () => { go(); return true; } });
+    else go();
+  },
+  'teacher-relogin': () => { fillEnded = false; teacherFillStart(); },
   'pick-selfcourse': el => {
     const key = el.dataset.key, sid = el.dataset.sid; const [classId, day, period] = key.split('|');
     if (selfCellTeacherLocked(key)) { toast('此格已鎖定'); return; }
@@ -2854,7 +2872,7 @@ async function init() {
   bindGlobal();
   render();
   const fillMode = new URLSearchParams(location.search).has('fill');       // v09.03 導師填課入口（排課老師發的連結）
-  if (fillMode) setKiosk(true);                                            // v09.05 導師 kiosk：只顯示填課介面（landing 有登入鈕）
+  if (fillMode) { fillLinkMode = true; setKiosk(true); }                    // v09.05/07 導師 kiosk：只顯示填課介面；連結進入者離開＝結束、不進系統
   else if (hadOldData) upgradeNoticeModal();                              // 舊版同仁：改版通知
   else if (!state.helpSeen) { helpModal(); state.helpSeen = true; save(); } // 新同仁：使用說明
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => { });
