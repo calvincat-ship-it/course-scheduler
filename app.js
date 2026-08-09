@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v09.07';
+const APP_VERSION = 'v09.08';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -363,6 +363,7 @@ function buildFillFile(classId) {
   return {
     fmt: FILL_FMT, ver: 2,
     classId, className: c ? c.name : '', gradeId: c ? c.gradeId : '', homeroom: hr ? hr.name : '',
+    homeroomEmail: hr ? (hr.email || '') : '',   // v09.08 綁定用：只有此 email 的 Google 帳號可開啟
     year: (state.settings || {}).reportYear || '', fileName: fillFileName(c),
     days, periodsFull, openKeys,
     cells: cells.map(k => { const a = k.split('|'); return { key: k, day: +a[1], period: a[2], label: DAY_LABELS[+a[1]] + periodLabel(a[2]) }; }),
@@ -469,6 +470,9 @@ async function fillDownloadText(fileId) {
   if (!res.ok) throw new Error('下載檔案失敗');
   return res.text();
 }
+async function fillUserEmail() {   // v09.08 取登入帳號 email（綁定驗證用）
+  try { const res = await fillFetch('https://www.googleapis.com/drive/v3/about?fields=user', { method: 'GET' }); if (!res.ok) return ''; const d = await res.json(); return (d.user && d.user.emailAddress) || ''; } catch (e) { return ''; }
+}
 function loadPicker() {
   return new Promise((resolve, reject) => {
     if (_pickerLoaded && window.google && google.picker) return resolve();
@@ -571,10 +575,16 @@ async function teacherFillStart() {
   try {
     if (!kioskFill) setKiosk(true);
     toast('登入 Google…'); const token = await getFillToken('');
+    const myEmail = (await fillUserEmail()).trim().toLowerCase();
     const fileId = await pickFillFile(token);
     if (!fileId) return;
     const obj = JSON.parse(await fillDownloadText(fileId));
     if (obj.fmt !== FILL_FMT) { toast('這不是填課檔（course-fill）'); return; }
+    const owner = (obj.homeroomEmail || '').trim().toLowerCase();   // v09.08 嚴格綁定：只有對應導師帳號可開啟
+    if (owner) {
+      if (!myEmail) { toast('無法確認你的 Google 帳號，請重試'); return; }
+      if (owner !== myEmail) { toast(`此檔為「${obj.className || ''}」導師（${obj.homeroomEmail}）專用，與你的帳號（${myEmail}）不符，無法開啟。`); return; }
+    }
     teacherPacket = obj; teacherFileId = fileId; teacherPacket.content = teacherPacket.content || {};
     teacherOrigKeys = new Set(Object.keys(teacherPacket.content));
     teacherSavedJson = JSON.stringify(teacherPacket.content); fillEnded = false;
@@ -621,7 +631,6 @@ function viewTeacherFill() {
   return `<div class="page-head no-print"><h2>🧑‍🏫 ${esc(p.className)} 導師填課</h2><div class="hint">點 <b>🧩</b> 自編格選課；<b>🔒</b> 為已固定的課（不可改）。填完按「儲存到雲端」，再通知排課老師收回。</div></div>
     <div class="lock-banner no-print"><span>導師：${esc(p.homeroom || '')}｜檔案：${esc(p.fileName || '')}｜剩 <b>${remaining}</b> 格待選</span>
       <button class="btn" data-action="tfill-save">💾 儲存到雲端</button>
-      <button class="ghost" data-action="teacher-fill">選其他班級檔</button>
       <button class="ghost" data-action="tfill-exit">完成／關閉</button></div>
     <div class="card"><div class="card-body"><div style="margin-bottom:10px">${pills}</div><div class="grid-wrap">${table}</div></div></div>`;
 }
@@ -2144,7 +2153,7 @@ function helpModal() {
     <h4>🧑‍🏫 導師線上填課（各班導師自己線上填自編格）</h4>
     <ul><li><b>用途</b>：課表鎖定後，把每班「自編格選課」開放給該班導師線上填，排課者再收回合併。免後端，走 Google Drive（需登入）。</li>
       <li><b>排課者（你）</b>：先在 ④教師 填好各班<b>導師 Email</b>、③班級 填好<b>數字代號</b> → ⑤排課<b>鎖定課表</b> → 橫幅「<b>☁️ 線上填課</b>」→「<b>開放線上填課</b>」：系統在你的雲端硬碟建資料夾＋每班一個填課檔（檔名 <code>class-msd9學年度年級代號</code>），逐位分享給導師 Email，並給你一條<b>填課連結</b>可寄給導師。</li>
-      <li><b>導師</b>：開排課者寄來的<b>填課連結（?fill=1）</b>→ 用學校 Google 帳號登入 → <b>Picker 選自己班的檔</b>（依檔名辨識）→ 進入<b>整張課表</b>，直接點 🧩 自編格選課（🔒 為已固定課、可看上下節）→ <b>儲存到雲端</b>，再通知排課者。此畫面為導師專用、看不到其他設定頁。</li>
+      <li><b>導師</b>：開排課者寄來的<b>填課連結（?fill=1）</b>→ 用學校 Google 帳號登入 → <b>Picker 選自己班的檔</b>（依檔名辨識）→ 進入<b>整張課表</b>，直接點 🧩 自編格選課（🔒 為已固定課、可看上下節）→ <b>儲存到雲端</b>，再通知排課者。<b>系統會核對登入帳號，只能開自己班的檔</b>；此畫面為導師專用、看不到其他設定頁與其他班級。</li>
       <li><b>排課者收回</b>：⑤排課 →「☁️ 線上填課」→「<b>收回填課</b>」：讀回各班導師選課、合併進課表，並顯示每班「填入／清空／衝堂」摘要。</li>
       <li><b>重新開放</b>：改了自編格想重來可「重新開放」重建填課檔（舊檔仍留在你雲端硬碟，可自行刪除）。</li></ul>
     <h4>領域節數</h4>
