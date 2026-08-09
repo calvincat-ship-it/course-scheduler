@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v09.04';
+const APP_VERSION = 'v09.05';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -222,6 +222,7 @@ function closeModal() { $('#modalRoot').innerHTML = ''; modalOnSave = null; }
 let currentTab = 'subjects';
 let selectedGradeId = null;
 let lockMode = false;   // v08.02 單格鎖定選取模式進行中（runtime，不持久化）
+let kioskFill = false;  // v09.05 導師填課 kiosk：隱藏其他分頁、只顯示填課介面（?fill 或導師入口）
 
 /* 鎖定/自編偵測 helpers（v08.03：自編改由系統於鎖定時自動判定）
    自編格＝該格所有授課老師皆為「同年級的級任導師」；單師時該師須為本班導師。 */
@@ -324,27 +325,38 @@ function selfCoursePool(classId) {
 }
 function selfCourseRequired(classId, sid) { const hr = homeroomTeacher(classId); const L = hr && (hr.load || []).find(x => x.classId === classId && x.subjectId === sid); return L ? L.hours : 0; }
 function selfCoursePlaced(classId, sid) { return (state.selfCells || []).filter(k => k.split('|')[0] === classId && state.slots[k] === sid).length; }
+// v09.05 該(班,科)已排在「非自編格」的節數（如與科任協同、已鎖定不開放）；導師可自編的目標＝應排 − 已鎖
+function selfCourseLocked(classId, sid) { let n = 0; for (const k in state.slots) { if (k.split('|')[0] === classId && state.slots[k] === sid && !isSelfCell(k)) n++; } return n; }
+function selfCourseTarget(classId, sid) { return Math.max(0, selfCourseRequired(classId, sid) - selfCourseLocked(classId, sid)); }
+// v09.05 線上填課檔名：class-msd9 + 學年度 + 年級數 + 班級數字代號（學年度取自設定/課表輸出格式）
+function classGradeNum(c) { const i = state.grades.findIndex(g => g.id === c.gradeId); return i >= 0 ? i + 1 : ''; }
+function fillFileName(c) { return `class-msd9${(state.settings || {}).reportYear || ''}${classGradeNum(c)}${c.code || ''}`; }
 
 /* ---------- F③ 導師線上填課：檔案契約（排課者↔導師共用的「填課包」格式） ----------
    排課者鎖定後為每班產生 course-fill-1 包（自編格＋候選科目池＋唯讀課表快照＋目前內容），
    分享給該班導師；導師填完回存；排課者收回時 mergeFillFile 合併回課表（協同同步＋衝堂偵測）。 */
 const FILL_FMT = 'course-fill-1';
 function buildFillFile(classId) {
-  const c = classById(classId); const hr = homeroomTeacher(classId);
+  const c = classById(classId); const hr = homeroomTeacher(classId); const g = classGrade(c);
   const cells = classSelfCells(classId);
-  const pool = selfCoursePool(classId).map(s => ({ sid: s.id, name: s.name, color: s.color, required: selfCourseRequired(classId, s.id) }));
-  const snapshot = {};   // 唯讀參考：本班鎖定後的非自編課（導師排課時參考）
-  activeDays().forEach(d => lessonPeriods().forEach(p => {
+  // 候選科目池：目標＝應排 − 已鎖（扣除與科任協同等已鎖定不開放的節數）；目標為 0 者不列
+  const pool = selfCoursePool(classId).map(s => ({ sid: s.id, name: s.name, color: s.color, required: selfCourseTarget(classId, s.id) })).filter(x => x.required > 0);
+  const days = activeDays();
+  const periodsFull = state.settings.periods.map(p => ({ id: p.id, label: p.label, start: p.start || '', end: p.end || '', isBreak: !!p.isBreak }));
+  const openKeys = []; const snapshot = {};   // openKeys＝該班有課的格；snapshot＝已固定(非自編)的課供參考
+  days.forEach(d => state.settings.periods.filter(p => !p.isBreak).forEach(p => {
+    if (!(g && gradePeriodHasDay(g, p.id, d))) return;
+    openKeys.push(d + '|' + p.id);
     const k = slotKey(classId, d, p.id); const sid = state.slots[k];
-    if (sid && !isSelfCell(k)) snapshot[d + '|' + p.id] = subjectName(sid) + '／' + slotTeachersLabel(k);
+    if (sid && !isSelfCell(k)) snapshot[d + '|' + p.id] = { name: subjectName(sid), teacher: slotTeachersLabel(k), color: (subjectById(sid) || {}).color || '#94a3b8' };
   }));
   return {
-    fmt: FILL_FMT, ver: 1,
+    fmt: FILL_FMT, ver: 2,
     classId, className: c ? c.name : '', gradeId: c ? c.gradeId : '', homeroom: hr ? hr.name : '',
-    year: (state.settings || {}).reportYear || '',
+    year: (state.settings || {}).reportYear || '', fileName: fillFileName(c),
+    days, periodsFull, openKeys,
     cells: cells.map(k => { const a = k.split('|'); return { key: k, day: +a[1], period: a[2], label: DAY_LABELS[+a[1]] + periodLabel(a[2]) }; }),
     pool, snapshot,
-    periods: lessonPeriods().map(p => ({ id: p.id, label: p.label })),
     content: Object.fromEntries(cells.filter(k => state.slots[k]).map(k => [k, state.slots[k]])),   // 目前已填（排課者代填或先前）
     generatedAt: new Date().toISOString(),
   };
@@ -378,7 +390,7 @@ function mergeFillFile(obj) {
     if (state.slots[key]) { delete state.slots[key]; delete state.slotTeachers[key]; res.cleared++; }
   });
   // 超額提示（導師端已擋，收回再核一次）
-  selfCoursePool(classId).forEach(s => { const req = selfCourseRequired(classId, s.id), pl = selfCoursePlaced(classId, s.id); if (pl > req) res.conflicts.push(`${s.name} 已排 ${pl} 節，超過應排 ${req} 節`); });
+  selfCoursePool(classId).forEach(s => { const req = selfCourseTarget(classId, s.id), pl = selfCoursePlaced(classId, s.id); if (pl > req) res.conflicts.push(`${s.name} 已排 ${pl} 節，超過應排 ${req} 節`); });
   const conf = computeConflicts();                          // 合併後衝堂提示
   cells.forEach(key => { if (state.slots[key] && conf[key]) res.conflicts.push(`${lbl(key)}：${conf[key].join('；')}`); });
   return res;
@@ -465,7 +477,7 @@ async function pickFillFile(token) {
       .setMimeTypes('application/json').setMode(google.picker.DocsViewMode.LIST);
     const picker = new google.picker.PickerBuilder()
       .setAppId(GOOGLE_PROJECT_NUMBER).setOAuthToken(token).setDeveloperKey(GOOGLE_API_KEY)
-      .addView(view).setTitle('選擇你的班級填課檔（class-….json）')
+      .addView(view).setTitle('選擇你的班級填課檔（class-msd9…）')
       .setCallback((data) => {
         if (data.action === google.picker.Action.PICKED) resolve(data.docs[0].id);
         else if (data.action === google.picker.Action.CANCEL) resolve(null);
@@ -480,16 +492,19 @@ async function openFillShare(reopen) {
   if (!targets.length) { toast('沒有可填課的自編格（請先鎖定課表釋放自編格）'); return; }
   const missing = targets.filter(c => { const hr = homeroomTeacher(c.id); return !hr || !hr.email; });
   if (missing.length) { toast('這些班級導師未填 Email：' + missing.map(c => c.name).join('、') + '（到④教師補上）'); return; }
+  const noCode = targets.filter(c => !c.code); // 檔名需要數字代號
+  if (noCode.length) { toast('這些班級未填數字代號：' + noCode.map(c => c.name).join('、') + '（到③班級補上，供檔名用）'); return; }
   try {
     toast('連線 Google…'); await getFillToken('');
     const year = String((state.settings || {}).reportYear || new Date().getFullYear());
     const folder = await driveCreateFolder(FILL_FOLDER_PREFIX + year);
     const files = {};
     for (const c of targets) {
-      const f = await drivePutJson(`class-${c.id}.json`, folder.id, JSON.stringify(buildFillFile(c.id)));
+      const name = fillFileName(c);
+      const f = await drivePutJson(name, folder.id, JSON.stringify(buildFillFile(c.id)));
       const hr = homeroomTeacher(c.id);
       await driveShare(f.id, hr.email);
-      files[c.id] = { fileId: f.id, link: f.webViewLink || '', email: hr.email };
+      files[c.id] = { fileId: f.id, link: f.webViewLink || '', email: hr.email, name };
     }
     state.fillShare = { folderId: folder.id, folderLink: folder.webViewLink || '', year, files, openedAt: new Date().toISOString() };
     save(); render(); toast('已開放線上填課，' + targets.length + ' 班已分享');
@@ -514,20 +529,22 @@ async function collectFill() {
 function fillManageModal() {
   const fs = state.fillShare;
   const targets = state.classes.filter(c => classSelfCells(c.id).length > 0);
+  const fillUrl = location.origin + location.pathname + '?fill=1';
   const rowsOpen = fs && fs.files ? Object.keys(fs.files).map(cid => {
     const f = fs.files[cid]; const nm = (classById(cid) || {}).name || cid;
-    return `<tr><td>${esc(nm)}</td><td>${esc(f.email)}</td><td>${f.link ? `<a href="${esc(f.link)}" target="_blank" rel="noopener">開啟</a>` : '—'}</td></tr>`;
+    return `<tr><td>${esc(nm)}</td><td>${esc(f.email)}</td><td><code>${esc(f.name || '')}</code></td></tr>`;
   }).join('') : '';
   const body = fs && fs.files
     ? `<div class="total-badge ok">已開放（${esc(fs.year)}）· ${Object.keys(fs.files).length} 班已分享</div>
-       <p style="color:var(--muted);margin:8px 0">導師會收到 Drive 分享通知；也可把下方連結或「App 網址 ?fill=1」給導師，用 Google 登入＋Picker 選自己班的檔填課。</p>
-       <table class="data"><thead><tr><th>班級</th><th>導師 Email</th><th>檔案</th></tr></thead><tbody>${rowsOpen}</tbody></table>
+       <p style="margin:8px 0"><b>把這個填課連結寄給各班導師：</b><br><code style="user-select:all;word-break:break-all">${esc(fillUrl)}</code></p>
+       <p style="color:var(--muted);margin:8px 0">導師開連結 → 用學校 Google 帳號登入 → Picker 選<b>自己班的檔案</b>（依下表檔名辨識）→ 填課存回。檔案也已直接分享到導師 Email。</p>
+       <table class="data"><thead><tr><th>班級</th><th>導師 Email</th><th>檔名（Picker 中辨識）</th></tr></thead><tbody>${rowsOpen}</tbody></table>
        <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
          <button class="btn" data-action="collect-fill">📥 收回填課（合併進課表）</button>
          <button class="ghost" data-action="reopen-fill">♻️ 重新開放（重建檔案）</button>
        </div>`
     : `<p style="margin-top:0">將為每個有自編格的班級建立一份雲端「填課檔」，分享給該班導師的 Email；導師線上填完，你再「收回填課」合併回課表。</p>
-       <p style="color:var(--muted)">需求：課表已鎖定、各班導師已在「④ 教師」填 Google Email。將分享的班級：<b>${esc(targets.map(c => c.name).join('、') || '（無）')}</b></p>
+       <p style="color:var(--muted)">需求：課表已鎖定、各班導師已在「④ 教師」填 <b>Google Email</b>、各班已在「③ 班級」填 <b>數字代號</b>（供檔名用）。將分享的班級：<b>${esc(targets.map(c => c.name).join('、') || '（無）')}</b></p>
        <button class="btn" data-action="open-fill">☁️ 開放線上填課</button>`;
   openModal({ title: '導師線上填課（分享）', wide: true, body });
 }
@@ -542,6 +559,7 @@ function fillCollectResultModal(summaries) {
 /* ---------- F③ 導師端：登入 → Picker → 填課 → 存回 ---------- */
 async function teacherFillStart() {
   try {
+    if (!kioskFill) setKiosk(true);
     toast('登入 Google…'); const token = await getFillToken('');
     const fileId = await pickFillFile(token);
     if (!fileId) return;
@@ -549,50 +567,84 @@ async function teacherFillStart() {
     if (obj.fmt !== FILL_FMT) { toast('這不是填課檔（course-fill）'); return; }
     teacherPacket = obj; teacherFileId = fileId; teacherPacket.content = teacherPacket.content || {};
     teacherOrigKeys = new Set(Object.keys(teacherPacket.content));
-    renderTeacherFill();
+    render();
   } catch (e) { toast('開啟失敗：' + e.message); }
 }
-function tfillPlaced(sid) { return Object.values(teacherPacket.content || {}).filter(v => v === sid).length; }
-function renderTeacherFill() {
+const tfillPlaced = sid => Object.values((teacherPacket || {}).content || {}).filter(v => v === sid).length;
+// 導師填課主畫面（kiosk）：整張課表，🧩 自編格可點選課、🔒 為已固定課、參考上下節
+function viewTeacherFill() {
   const p = teacherPacket;
-  const pills = p.pool.map(s => { const pl = tfillPlaced(s.sid); const over = pl > s.required; return `<span class="pill" style="background:${s.color};color:#fff;opacity:${pl ? 1 : .6}">${esc(s.name)} ${pl}/${s.required}${over ? '⚠' : ''}</span>`; }).join(' ');
-  const rows = p.cells.map(cell => {
-    const cur = p.content[cell.key] || '';
-    const opts = `<option value="">（未選）</option>` + p.pool.map(s => {
-      const pl = tfillPlaced(s.sid); const full = pl >= s.required && cur !== s.sid;
-      return `<option value="${s.sid}" ${cur === s.sid ? 'selected' : ''} ${full ? 'disabled' : ''}>${esc(s.name)}（${pl}/${s.required}${full ? ' 已滿' : ''}）</option>`;
-    }).join('');
-    return `<tr><td>${esc(cell.label)}</td><td><select data-change="tfill-pick" data-key="${esc(cell.key)}">${opts}</select></td></tr>`;
+  if (!p) return `<div class="page-head"><h2>🧑‍🏫 導師線上填課</h2></div>
+    <div class="card"><div class="card-body">
+      <p>用學校 Google 帳號登入，開啟排課老師分享給你的「班級填課檔」，為 🧩 自編格（空白待選的格）選課。</p>
+      <button class="btn" data-action="teacher-fill">用 Google 登入並選擇班級檔</button></div></div>`;
+  const smap = {}; p.pool.forEach(s => smap[s.sid] = s);
+  const openSet = new Set(p.openKeys || []); const cellSet = new Set((p.cells || []).map(c => c.key));
+  const pills = p.pool.map(s => { const pl = tfillPlaced(s.sid); const over = pl > s.required; return `<span class="pill" style="background:${s.color};color:#fff;opacity:${pl ? 1 : .55}">${esc(s.name)} ${pl}/${s.required}${over ? '⚠' : ''}</span>`; }).join(' ') || '<span style="color:var(--muted)">（無可選科目）</span>';
+  const remaining = (p.cells || []).filter(c => !p.content[c.key]).length;
+  let table = `<table class="timetable"><thead><tr><th class="period-th">節次</th>${p.days.map(d => `<th>${DAY_LABELS[d]}</th>`).join('')}</tr></thead><tbody>`;
+  for (const pr of p.periodsFull) {
+    if (pr.isBreak) { table += `<tr class="break-row"><td colspan="${p.days.length + 1}">${esc(pr.label)}${pr.start ? '　' + esc(pr.start) + '–' + esc(pr.end) : ''}</td></tr>`; continue; }
+    table += `<tr><td class="period-th">${esc(pr.label)}<small>${esc(pr.start)}${pr.end ? '–' + esc(pr.end) : ''}</small></td>`;
+    for (const d of p.days) {
+      const key = d + '|' + pr.id; const cellKey = p.classId + '|' + d + '|' + pr.id;
+      if (!openSet.has(key)) { table += `<td class="cell blocked" title="此節不上課"></td>`; continue; }
+      if (cellSet.has(cellKey)) {
+        const sid = p.content[cellKey]; const s = sid ? smap[sid] : null; const color = s ? s.color : '#10b981';
+        table += `<td class="cell placeable" data-action="tfill-cell" data-key="${esc(cellKey)}" title="自編格：點我選課">
+          <div class="cell-lesson self-designed ${s ? '' : 'released'}" style="background:${color};color:${textOn(color)}">🧩${s ? esc(s.name) : '點我選課'}</div></td>`;
+      } else {
+        const snap = p.snapshot[key];
+        table += snap
+          ? `<td class="cell" title="已固定，不可改"><div class="cell-lesson locked" style="background:${snap.color || '#94a3b8'};color:${textOn(snap.color || '#94a3b8')};opacity:.9"><span class="lock-mark">🔒</span>${esc(snap.name)}<small>${esc(snap.teacher || '')}</small></div></td>`
+          : `<td class="cell"></td>`;
+      }
+    }
+    table += `</tr>`;
+  }
+  table += `</tbody></table>`;
+  return `<div class="page-head no-print"><h2>🧑‍🏫 ${esc(p.className)} 導師填課</h2><div class="hint">點 <b>🧩</b> 自編格選課；<b>🔒</b> 為已固定的課（不可改）。填完按「儲存到雲端」，再通知排課老師收回。</div></div>
+    <div class="lock-banner no-print"><span>導師：${esc(p.homeroom || '')}｜檔案：${esc(p.fileName || '')}｜剩 <b>${remaining}</b> 格待選</span>
+      <button class="btn" data-action="tfill-save">💾 儲存到雲端</button>
+      <button class="ghost" data-action="teacher-fill">選其他班級檔</button>
+      <button class="ghost" data-action="tfill-exit">離開</button></div>
+    <div class="card"><div class="card-body"><div style="margin-bottom:10px">${pills}</div><div class="grid-wrap">${table}</div></div></div>`;
+}
+function teacherPickModal(key) {
+  const p = teacherPacket; const cur = p.content[key] || '';
+  const chips = p.pool.map(s => {
+    const pl = tfillPlaced(s.sid); const full = pl >= s.required && cur !== s.sid; const isCur = cur === s.sid;
+    return `<button class="suggest-row ${isCur ? 'selected' : ''}" data-action="tfill-pick" data-key="${esc(key)}" data-sid="${s.sid}" ${full ? 'disabled' : ''}>
+      <span class="sug-dot" style="background:${s.color}"></span>
+      <span><b>${esc(s.name)}</b> <span style="color:${full ? 'var(--ok)' : 'var(--muted)'}">${pl}/${s.required}${full ? '（已滿）' : ''}</span></span></button>`;
   }).join('');
-  const snap = Object.keys(p.snapshot || {}).sort((a, b) => a.localeCompare(b)).map(k => {
-    const a = k.split('|'); const pl = (p.periods.find(x => x.id === a[1]) || {}).label || a[1];
-    return `<tr><td>${DAY_LABELS[+a[0]]}${esc(pl)}</td><td>${esc(p.snapshot[k])}</td></tr>`;
-  }).join('');
-  const allFilled = p.cells.every(c => p.content[c.key]);
+  const a = key.split('|'); const plabel = (p.periodsFull.find(x => x.id === a[2]) || {}).label || a[2];
   openModal({
-    title: `導師填課 · ${esc(p.className)}（${esc(p.homeroom || '')}）`,
-    wide: true,
-    body: `<p style="margin-top:0;color:var(--muted)">為每個自編格從你的配課科目選課；各科顯示 已選／應選，達應選即不可再加。填完按「儲存到雲端」，再通知排課老師收回。</p>
-      <div style="margin-bottom:8px">${pills}</div>
-      <table class="data"><thead><tr><th>時段</th><th>選課</th></tr></thead><tbody>${rows}</tbody></table>
-      ${snap ? `<details style="margin-top:10px"><summary style="cursor:pointer">參考：本班已固定的課表</summary><table class="data"><tbody>${snap}</tbody></table></details>` : ''}
-      <div style="margin-top:8px;color:${allFilled ? 'var(--ok)' : 'var(--muted)'}">${allFilled ? '✓ 全部已選' : '尚有未選的時段（可先存、之後再補）'}</div>`,
-    saveLabel: '儲存到雲端', onSave: () => { teacherSaveFill(); return false; },
+    title: `選課 · ${esc(p.className)} ${DAY_LABELS[+a[1]]}${esc(plabel)}`,
+    body: (p.pool.length ? `<div class="suggest-list">${chips}</div>` : `<p style="color:var(--muted)">目前沒有可選科目（可能都已排滿）。</p>`)
+      + (cur ? `<div style="margin-top:10px"><button class="ghost" data-action="tfill-clear" data-key="${esc(key)}">清空此格</button></div>` : ''),
   });
 }
 async function teacherSaveFill() {
   try {
-    const p = teacherPacket;
+    const p = teacherPacket; if (!p) return;
     const cleared = [...teacherOrigKeys].filter(k => !p.content[k]);   // 只把「原本有、現在清掉」記為明確清空
     const out = { ...p, content: p.content, cleared, submittedAt: new Date().toISOString() };
     toast('儲存中…');
     await drivePutJson('', null, JSON.stringify(out), teacherFileId);
     teacherOrigKeys = new Set(Object.keys(p.content));
-    closeModal(); toast('已儲存到雲端，請通知排課老師「收回填課」');
+    toast('已儲存到雲端，請通知排課老師「收回填課」');
   } catch (e) { toast('儲存失敗：' + e.message); }
 }
 
+function setKiosk(on) {   // v09.05 進/出導師填課 kiosk：隱藏分頁與右上動作鈕
+  kioskFill = on;
+  const tabs = document.getElementById('tabs'); if (tabs) tabs.style.display = on ? 'none' : '';
+  document.querySelectorAll('.topbar-actions').forEach(e => e.style.display = on ? 'none' : '');
+  render();
+}
 function render() {
+  if (kioskFill) { $('#view').innerHTML = viewTeacherFill(); return; }   // 導師填課模式：只出填課介面
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === currentTab));
   const view = $('#view');
   switch (currentTab) {
@@ -801,6 +853,7 @@ function viewClasses() {
     return `<tr>
       <td><b>${esc(c.name)}</b></td>
       <td>${esc(gradeName(c.gradeId))}${incomplete ? ' <span class="pill red" title="該年級科目節數尚未相符">年級未完成</span>' : ''}</td>
+      <td>${c.code ? esc(c.code) : '<span style="color:var(--muted)">—</span>'}</td>
       <td>${classSubjectHours(c).length} 科 / ${classWeeklyHours(c)} 節</td>
       <td>${coCount ? `<span class="pill blue">🔗 ${coCount} 科協同</span>` : '<span style="color:var(--muted)">—</span>'}</td>
       <td class="row-actions">
@@ -810,7 +863,7 @@ function viewClasses() {
       </td></tr>`;
   }).join('');
   return head + `<div class="card"><table class="data">
-    <thead><tr><th>班級</th><th>年級</th><th>課程</th><th>協同</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
+    <thead><tr><th>班級</th><th>年級</th><th>代號</th><th>課程</th><th>協同</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 function classModal(existing) {
   if (state.grades.length === 0) { openModal({ title: '無法新增', body: '<p>系統應有六個年級，請重整。</p>' }); return; }
@@ -820,15 +873,17 @@ function classModal(existing) {
     title: existing ? '編輯班級' : '新增班級',
     body: `<label class="field"><span>班級名稱</span><input type="text" id="cName" value="${esc(c.name)}" placeholder="例：一年忠班"></label>
       <label class="field"><span>年級</span><select id="cGrade">${gradeOpts}</select></label>
-      <p class="hint" style="color:var(--muted)">課程（科目＋節數）將沿用所選年級於「② 年級」的設定。</p>`,
+      <label class="field" style="max-width:280px"><span>數字代號（導師線上填課檔名用，如 01）</span><input type="text" id="cCode" value="${esc(c.code || '')}" placeholder="例：01" inputmode="numeric"></label>
+      <p class="hint" style="color:var(--muted)">課程（科目＋節數）將沿用所選年級於「② 年級」的設定。數字代號由排課者編排，用來組成線上填課檔名。</p>`,
     onSave: () => {
       const name = $('#cName').value.trim();
       if (!name) { toast('請輸入班級名稱'); return false; }
       const gradeId = $('#cGrade').value;
+      const code = ($('#cCode').value || '').trim();
       if (existing) {
         if (existing.gradeId !== gradeId) removeClassFromAllCoteach(existing.id); // 換年級 → 協同失效
-        existing.name = name; existing.gradeId = gradeId;
-      } else state.classes.push({ id: uid(), name, gradeId, coteach: {} });
+        existing.name = name; existing.gradeId = gradeId; existing.code = code;
+      } else state.classes.push({ id: uid(), name, gradeId, code, coteach: {} });
       save(); render(); toast('已儲存班級');
       return true;
     },
@@ -1604,7 +1659,7 @@ function selfCellPickModal(key) {
   const pool = selfCoursePool(classId);
   const current = state.slots[key] || '';
   const chips = pool.map(s => {
-    const req = selfCourseRequired(classId, s.id), pl = selfCoursePlaced(classId, s.id);
+    const req = selfCourseTarget(classId, s.id), pl = selfCoursePlaced(classId, s.id);
     const full = pl >= req, isCur = current === s.id;
     return `<button class="suggest-row ${isCur ? 'selected' : ''}" data-action="pick-selfcourse" data-key="${esc(key)}" data-sid="${s.id}" ${full && !isCur ? 'disabled' : ''}>
       <span class="sug-dot" style="background:${s.color}"></span>
@@ -2049,6 +2104,7 @@ function helpModal() {
       <li><b>2.2 科目節數</b>：勾該年級開的科目、填一周節數。<b>科目節數總和＝節次表可用節數</b>時，年級才算完成（分頁顯示 ✓）。</li></ul>
     <h4>③ 班級</h4>
     <ul><li>新增班級並選年級；課程（科目＋節數）<b>自動沿用該年級</b>設定、不需重填。</li>
+      <li>可填<b>數字代號</b>（如 01）：供「導師線上填課」組成檔名用，由你編排。</li>
       <li>點「科目 / 協同」可為每一科勾選<b>協同教學</b>的同年級其他班（同時段一起上）。</li></ul>
     <h4>④ 教師</h4>
     <ul><li>填姓名、身分、<b>每周授課時數</b>、不排課時段。身分選<b>級任</b>時，需設定其<b>擔任導師的班級</b>，並可填<b>導師 Google Email</b>（供後述「導師線上填課」逐位分享用）。</li>
@@ -2071,8 +2127,8 @@ function helpModal() {
       <li><b>🔓 解除鎖定</b>（整表）：回到自由編輯，已釋放的自編格會<b>還原成鎖定前的原排課</b>（導師這一輪的自選將捨棄）。</li></ul>
     <h4>🧑‍🏫 導師線上填課（各班導師自己線上填自編格）</h4>
     <ul><li><b>用途</b>：課表鎖定後，把每班「自編格選課」開放給該班導師線上填，排課者再收回合併。免後端，走 Google Drive（需登入）。</li>
-      <li><b>排課者（你）</b>：先在 ④教師 填好各班<b>導師 Email</b> → ⑤排課<b>鎖定課表</b> → 橫幅「<b>☁️ 線上填課</b>」→「<b>開放線上填課</b>」：系統在你的雲端硬碟建資料夾＋每班一個填課檔，<b>逐位分享給該班導師 Email</b>（導師會收到通知）。</li>
-      <li><b>導師</b>：用學校 Google 帳號，開排課者提供的網址（結尾加 <b>?fill=1</b>）或「設定 → 導師線上填課」→ 登入 → 用 <b>Picker 選自己班的填課檔</b> → 為每個自編格選課 → <b>儲存到雲端</b>，再通知排課者。</li>
+      <li><b>排課者（你）</b>：先在 ④教師 填好各班<b>導師 Email</b>、③班級 填好<b>數字代號</b> → ⑤排課<b>鎖定課表</b> → 橫幅「<b>☁️ 線上填課</b>」→「<b>開放線上填課</b>」：系統在你的雲端硬碟建資料夾＋每班一個填課檔（檔名 <code>class-msd9學年度年級代號</code>），逐位分享給導師 Email，並給你一條<b>填課連結</b>可寄給導師。</li>
+      <li><b>導師</b>：開排課者寄來的<b>填課連結（?fill=1）</b>→ 用學校 Google 帳號登入 → <b>Picker 選自己班的檔</b>（依檔名辨識）→ 進入<b>整張課表</b>，直接點 🧩 自編格選課（🔒 為已固定課、可看上下節）→ <b>儲存到雲端</b>，再通知排課者。此畫面為導師專用、看不到其他設定頁。</li>
       <li><b>排課者收回</b>：⑤排課 →「☁️ 線上填課」→「<b>收回填課</b>」：讀回各班導師選課、合併進課表，並顯示每班「填入／清空／衝堂」摘要。</li>
       <li><b>重新開放</b>：改了自編格想重來可「重新開放」重建填課檔（舊檔仍留在你雲端硬碟，可自行刪除）。</li></ul>
     <h4>領域節數</h4>
@@ -2628,10 +2684,15 @@ const clickHandlers = {
   'reopen-fill': () => confirmDelete('重新開放會為各班建立新的填課檔（舊檔仍留在你的雲端硬碟，可自行刪除）。確定？', () => openFillShare(true)),
   'collect-fill': () => collectFill(),
   'teacher-fill': () => teacherFillStart(),
+  'tfill-cell': el => teacherPickModal(el.dataset.key),
+  'tfill-pick': el => { teacherPacket.content[el.dataset.key] = el.dataset.sid; closeModal(); render(); },
+  'tfill-clear': el => { delete teacherPacket.content[el.dataset.key]; closeModal(); render(); },
+  'tfill-save': () => teacherSaveFill(),
+  'tfill-exit': () => { teacherPacket = null; teacherFileId = null; currentTab = 'settings'; setKiosk(false); },
   'pick-selfcourse': el => {
     const key = el.dataset.key, sid = el.dataset.sid; const [classId, day, period] = key.split('|');
     if (selfCellTeacherLocked(key)) { toast('此格已鎖定'); return; }
-    if (state.slots[key] !== sid && selfCoursePlaced(classId, sid) >= selfCourseRequired(classId, sid)) { toast('該科已達配課節數'); return; }
+    if (state.slots[key] !== sid && selfCoursePlaced(classId, sid) >= selfCourseTarget(classId, sid)) { toast('該科已達可自編節數'); return; }
     state.slots[key] = sid;
     // v09.00 協同連動：夥伴班同格（同為自編格、未鎖、空）一併填入
     const c = classById(classId); const gid = c && c.coteach && c.coteach[sid];
@@ -2719,7 +2780,6 @@ const changeHandlers = {
   },
   'weekly-hours': () => updateLoadSum(),
   'schedule-class': el => { selectedClassId = el.value; selectedSubjectId = null; selectedTeacherId = null; render(); },
-  'tfill-pick': el => { const key = el.dataset.key, v = el.value; if (v) teacherPacket.content[key] = v; else delete teacherPacket.content[key]; renderTeacherFill(); },
   'out-mode': el => { outputMode = el.value; render(); },
   'out-class': el => { outputClassId = el.value; render(); },
   'out-teacher': el => { outputTeacherId = el.value; render(); },
@@ -2786,7 +2846,7 @@ async function init() {
   bindGlobal();
   render();
   const fillMode = new URLSearchParams(location.search).has('fill');       // v09.03 導師填課入口（排課老師發的連結）
-  if (fillMode) openModal({ title: '🧑‍🏫 導師線上填課', body: `<p style="margin-top:0">用學校 Google 帳號登入，開啟排課老師分享給你的「班級填課檔」，為自編格選課後存回雲端。</p><button class="btn" data-action="teacher-fill">用 Google 登入並填課</button>` });
+  if (fillMode) setKiosk(true);                                            // v09.05 導師 kiosk：只顯示填課介面（landing 有登入鈕）
   else if (hadOldData) upgradeNoticeModal();                              // 舊版同仁：改版通知
   else if (!state.helpSeen) { helpModal(); state.helpSeen = true; save(); } // 新同仁：使用說明
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => { });
