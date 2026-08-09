@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v09.00';
+const APP_VERSION = 'v09.01';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -122,6 +122,7 @@ function defaultState() {
     selfCells: [],        // v08.03 完成鎖定時系統偵測出的自編格 key（級任導師任課）
     selfBackup: {},       // v09.00 釋放自編格前的原排課備份（key→{sid,tid}），解除鎖定時還原
     selfDone: {},         // v09.00 導師自編完成：classId→true（該班自編格鎖定唯讀）
+    staffingOkSig: '',    // v09.01 「檢查全校配課」通過時的資料簽章（含導師設定）；資料一變即需重新檢查
     helpSeen: false,
   };
 }
@@ -639,16 +640,36 @@ function checkStaffing() {
   });
   return problems;
 }
+// v09.01 沒有級任導師的班級名稱清單（自編/鎖定要用導師身分，故納入全校檢查）
+function unsetHomerooms() {
+  return state.classes.filter(c => !state.teachers.some(t => t.type === '級任' && t.homeroomClassId === c.id)).map(c => c.name);
+}
+// v09.01 影響「全校配課＋導師」結果的資料簽章；任一相關欄位變動即改變 → 需重新檢查
+function staffingSignature() {
+  return JSON.stringify({
+    c: state.classes.map(c => ({ i: c.id, g: c.gradeId, o: c.coteach || {} })),
+    t: state.teachers.map(t => ({ i: t.id, y: t.type, h: t.homeroomClassId || '', l: (t.load || []).map(L => [L.classId, L.subjectId, L.hours]) })),
+    g: state.grades.map(g => ({ i: g.id, s: g.subjectHours || [] })),
+    s: state.subjects.map(s => ({ i: s.id, a: !!s.allowGrouping, p: !!s.splitTeachers })),
+  });
+}
+function staffingClear() { return checkStaffing().length === 0 && unsetHomerooms().length === 0; }
+// v09.01 是否已通過「檢查全校配課」：資料無誤 且 已在目前資料狀態下按過檢查（簽章相符）
+function staffingConfirmed() { return staffingClear() && state.staffingOkSig === staffingSignature(); }
 
 function viewTeachers() {
   const problems = checkStaffing();
+  const noHr = unsetHomerooms();
+  const confirmed = staffingConfirmed();
   const statusCard = state.classes.length === 0
     ? `<div class="card"><div class="card-body"><span style="color:var(--muted)">尚無班級，請先完成「③ 班級」。</span></div></div>`
     : `<div class="card"><div class="card-body" style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
-        <div>${problems.length === 0
-          ? '<b style="color:var(--ok)">✓ 全校配課相符</b>　各班每科節數皆由教師配課填滿，可進入 ⑤ 排課。'
-          : `<b style="color:var(--danger)">⚠ 有 ${problems.length} 項配課問題</b>　各班每科節數尚未由教師配課正確填滿。`}</div>
-        <button class="ghost" data-action="check-staffing">檢查全校配課</button>
+        <div>${confirmed
+          ? '<b style="color:var(--ok)">✓ 全校配課與導師設定已檢查通過</b>　已解鎖 ⑤ 排課。'
+          : `<b style="color:var(--danger)">⚠ 尚未通過全校檢查</b>　${problems.length ? `配課問題 ${problems.length} 項；` : ''}${noHr.length ? `未設導師班級 ${noHr.length} 個（${esc(noHr.join('、'))}）；` : ''}${(!problems.length && !noHr.length) ? '資料已齊，請按右側「檢查全校配課」完成確認。' : '修正後請按「檢查全校配課」。'}`}
+          <div style="color:var(--muted);font-size:12px;margin-top:4px">⑤ 排課需先在此通過「檢查全校配課」（含每班均已設定級任導師）。</div>
+        </div>
+        <button class="${confirmed ? 'ghost' : 'btn'}" data-action="check-staffing">檢查全校配課</button>
       </div></div>`;
   const head = `<div class="page-head"><h2>④ 教師</h2><button class="btn" data-action="add-teacher">＋ 新增教師</button></div>
     <div class="hint" style="margin-bottom:12px;color:var(--muted)">填入教師基本資料與不排課時段，並設定其配課（教哪個班的哪一科幾節）。每位教師配課合計須等於其每周授課時數才可儲存。</div>`;
@@ -817,15 +838,25 @@ function delTeacher(id) {
 }
 function staffingReportModal() {
   const problems = checkStaffing();
-  const body = problems.length === 0
-    ? `<div class="total-badge ok">✓ 全校各班每科節數皆已由教師配課正確填滿，可進入 ⑤ 排課。</div>`
-    : `<p style="color:var(--danger);font-weight:700;margin-top:0">有 ${problems.length} 項問題，請修正後再排課：</p>
+  const noHr = unsetHomerooms();
+  const allClear = problems.length === 0 && noHr.length === 0;
+  if (allClear) { state.staffingOkSig = staffingSignature(); save(); render(); }   // 通過→記下簽章、解鎖 ⑤ 排課
+  const hrBlock = noHr.length
+    ? `<div class="conflict-banner" style="margin-top:0">⚠ 有 <b>${noHr.length}</b> 個班級<b>尚未設定級任導師</b>：${esc(noHr.join('、'))}
+         <div style="color:var(--muted);font-size:12px;margin-top:4px">導師身分是「鎖定→導師自編選課」的依據，每班都需在教師的「級任＋導師班」指定。</div></div>`
+    : '';
+  const loadBlock = problems.length === 0
+    ? `<div class="total-badge ok">✓ 全校各班每科節數皆已由教師配課正確填滿。</div>`
+    : `<p style="color:var(--danger);font-weight:700;margin:0 0 6px">有 ${problems.length} 項配課問題，請修正後再排課：</p>
        <table class="data"><thead><tr><th>班級</th><th>科目</th><th>應配</th><th>狀況</th><th>目前老師</th></tr></thead>
        <tbody>${problems.map(p => `<tr>
          <td>${esc(p.className)}</td><td>${esc(p.subjectName)}</td><td>${p.required} 節</td>
          <td style="color:var(--danger);font-weight:600">${esc(p.status)}</td><td>${esc(p.teacherNames)}</td>
        </tr>`).join('')}</tbody></table>`;
-  openModal({ title: '全校配課檢查', wide: true, body });
+  const head = allClear
+    ? `<div class="total-badge ok" style="margin-bottom:10px">✓ 全校配課與導師設定皆完成，已解鎖 ⑤ 排課。</div>`
+    : `<p style="color:var(--danger);font-weight:700;margin-top:0">尚有問題需修正，修正後請再按一次「檢查全校配課」。</p>`;
+  openModal({ title: '全校配課檢查', wide: true, body: head + hrBlock + loadBlock });
 }
 
 /* ==========================================================================
@@ -1340,12 +1371,18 @@ function swapSuggestModal(classId, sid, teacherId) {
 
 function viewSchedule() {
   if (state.classes.length === 0) return emptyState('尚未建立班級', '請先完成 ①科目 ②年級 ③班級 ④教師，再來排課。');
-  const problems = checkStaffing();
-  if (problems.length) return `<div class="page-head"><h2>⑤ 排課</h2></div>
+  if (!staffingConfirmed()) {
+    const problems = checkStaffing();
+    const noHr = unsetHomerooms();
+    const detail = staffingClear()
+      ? '資料已齊，但尚未在「④ 教師」按過「檢查全校配課」完成確認。'
+      : `${problems.length ? `配課問題 ${problems.length} 項；` : ''}${noHr.length ? `未設導師班級 ${noHr.length} 個（${esc(noHr.join('、'))}）；` : ''}請修正後在「④ 教師」按「檢查全校配課」。`;
+    return `<div class="page-head"><h2>⑤ 排課</h2></div>
     <div class="card"><div class="card-body">
-      <div class="conflict-banner">⚠ 尚有 ${problems.length} 項配課問題，需先在「④ 教師」把各班每科節數配齊，才能開始排課。</div>
-      <button class="btn" data-action="goto-teachers">前往 ④ 教師 檢查配課</button>
+      <div class="conflict-banner">⚠ 尚未通過全校檢查，無法開始排課。<div style="font-weight:400;margin-top:4px">${detail}</div></div>
+      <button class="btn" data-action="goto-teachers">前往 ④ 教師 檢查全校配課</button>
     </div></div>`;
+  }
   if (!selectedClassId || !classById(selectedClassId)) selectedClassId = state.classes[0].id;
   const conflicts = computeConflicts();
   const totalConf = Object.keys(conflicts).length;
@@ -1684,7 +1721,7 @@ function importJSON() {
       try {
         const data = JSON.parse(reader.result);
         if (!data || data.schema !== SCHEMA) throw new Error('版本不符（需 schema ' + SCHEMA + '）');
-        state = data; if (!state.slotTeachers || typeof state.slotTeachers !== 'object') state.slotTeachers = {}; if (!state.slotContent || typeof state.slotContent !== 'object') state.slotContent = {}; if (!Array.isArray(state.lockedCells)) state.lockedCells = []; if (!Array.isArray(state.selfCells)) state.selfCells = []; if (!state.selfBackup || typeof state.selfBackup !== 'object') state.selfBackup = {}; if (!state.selfDone || typeof state.selfDone !== 'object') state.selfDone = {}; save(); closeModal(); selectedGradeId = null; render(); toast('已匯入備份');
+        state = data; if (!state.slotTeachers || typeof state.slotTeachers !== 'object') state.slotTeachers = {}; if (!state.slotContent || typeof state.slotContent !== 'object') state.slotContent = {}; if (!Array.isArray(state.lockedCells)) state.lockedCells = []; if (!Array.isArray(state.selfCells)) state.selfCells = []; if (!state.selfBackup || typeof state.selfBackup !== 'object') state.selfBackup = {}; if (!state.selfDone || typeof state.selfDone !== 'object') state.selfDone = {}; if (typeof state.staffingOkSig !== 'string') state.staffingOkSig = ''; save(); closeModal(); selectedGradeId = null; render(); toast('已匯入備份');
       } catch (e) { toast('匯入失敗：' + e.message); }
     };
     reader.readAsText(file);
@@ -1952,6 +1989,7 @@ async function applyBackupObject(data) {
     if (!Array.isArray(state.selfCells)) state.selfCells = [];
     if (!state.selfBackup || typeof state.selfBackup !== 'object') state.selfBackup = {};
     if (!state.selfDone || typeof state.selfDone !== 'object') state.selfDone = {};
+    if (typeof state.staffingOkSig !== 'string') state.staffingOkSig = '';
     if (!Array.isArray(state.domains)) state.domains = defaultDomains();
     if (!state.settings.subjectMap || typeof state.settings.subjectMap !== 'object') state.settings.subjectMap = {};
     await idbSet(STATE_KEY, state);   // 直接寫 IDB，繞過 save() 的雲端 hook
@@ -2437,6 +2475,7 @@ async function init() {
   if (!Array.isArray(state.selfCells)) state.selfCells = [];                                  // v08.03 自編偵測
   if (!state.selfBackup || typeof state.selfBackup !== 'object') state.selfBackup = {};       // v09.00 釋放前備份
   if (!state.selfDone || typeof state.selfDone !== 'object') state.selfDone = {};             // v09.00 導師自編完成
+  if (typeof state.staffingOkSig !== 'string') state.staffingOkSig = '';                      // v09.01 配課檢查簽章
   state.subjects.forEach(s => { if (s.selfDesigned) delete s.selfDesigned; });                // v08.03 移除舊手動自編旗標
   // v03.00 課表輸出格式欄位 guard（舊資料補預設）
   if (!state.settings.reportSchool) state.settings.reportSchool = '臺東縣成功鎮三民國民小學';
