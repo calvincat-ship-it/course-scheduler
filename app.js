@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v09.15';
+const APP_VERSION = 'v09.16';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -114,7 +114,7 @@ function defaultState() {
   return {
     schema: SCHEMA,
     version: APP_VERSION,
-    settings: { days, periods, autoPairConsecutive: true, reportSchool: '臺東縣成功鎮三民國民小學', reportYear: '113', schoolCode: 'msd9', subjectMap: {} },
+    settings: { days, periods, reportSchool: '臺東縣成功鎮三民國民小學', reportYear: '113', schoolCode: 'msd9', subjectMap: {} },
     domains: defaultDomains(),
     subjects: [],
     rooms: [],
@@ -1874,8 +1874,9 @@ function placeWithExtras(classId, day, period, sid, tid) {
   const s = subjectById(sid); const dNum = parseInt(day, 10); const notes = [];
   const linked = placeSubject(classId, day, period, sid, tid);
   if (linked) notes.push(`協同同步 ${linked} 班`);
-  if (s && s.consecutive && state.settings.autoPairConsecutive !== false && subjectPlaced(classId, sid) < classSubjectRequired(classId, sid)
-      && subjectPlaced(classId, sid) <= 2 * consecutiveTarget(sid, classSubjectRequired(classId, sid))) {   // 只在「連堂對數」額度內自動成對，超出的節數單獨排
+  // 手動放連堂科目時自動補上相鄰那節（依科目「連堂次數」為額度，超出的節數單獨排）；v09.16 併掉原全域「自動成對」開關
+  if (s && s.consecutive && subjectPlaced(classId, sid) < classSubjectRequired(classId, sid)
+      && subjectPlaced(classId, sid) <= 2 * consecutiveTarget(sid, classSubjectRequired(classId, sid))) {
     const g = classGrade(classById(classId));
     const next = adjacentOpenPeriod(g, period, dNum, +1), prev = adjacentOpenPeriod(g, period, dNum, -1);
     const partner = (next && !state.slots[slotKey(classId, day, next)]) ? next : (prev && !state.slots[slotKey(classId, day, prev)]) ? prev : null;
@@ -2359,8 +2360,7 @@ function viewSettings() {
         </tr>`).join('')}</tbody></table>`}
     </div></div>
     <div class="card"><div class="card-body"><h4 style="margin-top:0">排課選項</h4>
-      <label class="checkbox"><input type="checkbox" data-change="toggle-autopair" ${state.settings.autoPairConsecutive !== false ? 'checked' : ''}> 需連堂排課時，自動成對放課（一組 2 節相鄰）</label>
-      <label class="field" style="max-width:320px;margin-top:12px"><span>教師單日節數上限（自動排課用；0＝不限）</span>
+      <label class="field" style="max-width:320px"><span>教師單日節數上限（自動排課用；0＝不限）</span>
         <input type="number" min="0" max="20" data-change="set-maxperday" value="${state.settings.maxLessonsPerDay || 0}"></label>
       <p class="hint" style="color:var(--muted);margin:6px 0 0">自動排課會避免任一教師單日超過此上限。個別教師可在「④ 教師」設不同上限；勾「不列入上限」的科目（如母語）不計。</p>
     </div></div>
@@ -3190,7 +3190,6 @@ const changeHandlers = {
   },
   'period-field': el => { const p = byId(state.settings.periods, el.dataset.pid); if (p) { p[el.dataset.field] = el.value; save(); } },
   'period-break': el => { const p = byId(state.settings.periods, el.dataset.pid); if (p) { p.isBreak = el.checked; save(); render(); } },
-  'toggle-autopair': el => { state.settings.autoPairConsecutive = el.checked; save(); },
   'set-maxperday': el => { state.settings.maxLessonsPerDay = parseInt(el.value, 10) || 0; save(); },
   'report-field': el => { state.settings[el.dataset.field] = el.value; save(); },
   'subjmap-field': el => { if (!state.settings.subjectMap) state.settings.subjectMap = {}; const v = el.value.trim(); if (v === '') delete state.settings.subjectMap[el.dataset.subj]; else state.settings.subjectMap[el.dataset.subj] = v; save(); },
