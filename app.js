@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v09.14';
+const APP_VERSION = 'v09.15';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -800,10 +800,15 @@ function subjectModal(existing) {
     state.domains.map(d => `<option value="${d.id}" ${s.domainId === d.id ? 'selected' : ''}>${esc(d.name)}</option>`).join('');
   const lockDays = new Set(s.lockDays || []);
   const lockPeriods = new Set(s.lockPeriods || []);
-  const preferPeriods = new Set(s.preferPeriods || []);
+  // 偏好節次：優先用 preferPeriods；舊資料只有偏好時段(preferBand)時，換算成對應的上午/下午各節（整併「偏好時段」與「偏好節次」為單一控制）
+  const prefSet = (s.preferPeriods && s.preferPeriods.length) ? new Set(s.preferPeriods)
+    : s.preferBand === 'am' ? new Set(lessonPeriods().filter(p => isMorningPeriod(p.id)).map(p => p.id))
+    : s.preferBand === 'pm' ? new Set(lessonPeriods().filter(p => !isMorningPeriod(p.id)).map(p => p.id))
+    : new Set();
+  const spread = s.gapDays ? 'gap' : s.distinctDays ? 'distinct' : 'none';   // 整併「每天最多1節」+「隔天以上」為單一下拉
   const dayChecks = activeDays().map(d => `<label class="checkbox chk-inline"><input type="checkbox" class="s-lockday" value="${d}" ${lockDays.has(d) ? 'checked' : ''}> ${DAY_LABELS[d]}</label>`).join('');
   const perChecks = lessonPeriods().map(p => `<label class="checkbox chk-inline"><input type="checkbox" class="s-lockper" value="${p.id}" ${lockPeriods.has(p.id) ? 'checked' : ''}> ${esc(p.label)}</label>`).join('');
-  const prefPerChecks = lessonPeriods().map(p => `<label class="checkbox chk-inline"><input type="checkbox" class="s-prefper" value="${p.id}" ${preferPeriods.has(p.id) ? 'checked' : ''}> ${esc(p.label)}</label>`).join('');
+  const prefPerChecks = lessonPeriods().map(p => `<label class="checkbox chk-inline"><input type="checkbox" class="s-prefper" value="${p.id}" ${prefSet.has(p.id) ? 'checked' : ''}> ${esc(p.label)}</label>`).join('');
   openModal({
     title: existing ? '編輯科目' : '新增科目',
     body: `
@@ -811,37 +816,42 @@ function subjectModal(existing) {
         <label class="field" style="flex:2"><span>科目名稱</span><input type="text" id="sName" value="${esc(s.name)}"></label>
         <label class="field" style="flex:1"><span>顏色</span><input type="color" id="sColor" value="${s.color}" style="height:40px;padding:2px"></label>
       </div>
-      <label class="field" style="margin-bottom:6px"><span>所屬領域（供「領域節數」對照；可留未分類）</span>
-        <select id="sDomain">${domainOpts}</select></label>
-      <label class="field" style="margin-bottom:6px"><span>教學型態</span>
-        <select id="sMode">
-          <option value="single" ${mode === 'single' ? 'selected' : ''}>單一教師（整科由一位老師上）</option>
-          <option value="group" ${mode === 'group' ? 'selected' : ''}>👥 分組教學（同班多師「同一節」平行上，不計衝堂）</option>
-          <option value="split" ${mode === 'split' ? 'selected' : ''}>✂️ 分節上課（多師分攤節數、各上「不同節」，如生活 A上4＋B上2）</option>
-        </select></label>
-      <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">
+      <div class="field-row">
+        <label class="field" style="flex:1"><span>所屬領域</span><select id="sDomain">${domainOpts}</select></label>
+        <label class="field" style="flex:2"><span>教學型態</span>
+          <select id="sMode">
+            <option value="single" ${mode === 'single' ? 'selected' : ''}>單一教師（整科由一位老師上）</option>
+            <option value="group" ${mode === 'group' ? 'selected' : ''}>👥 分組教學（多師「同一節」平行上，不計衝堂）</option>
+            <option value="split" ${mode === 'split' ? 'selected' : ''}>✂️ 分節上課（多師分攤、各上「不同節」，如生活 A上4＋B上2）</option>
+          </select></label>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px;margin:6px 0 2px;flex-wrap:wrap">
         <label class="checkbox" style="margin:0"><input type="checkbox" id="sConsec" ${s.consecutive ? 'checked' : ''}> ⏱ 需連堂（兩節相鄰接續上）</label>
         <label class="field" style="margin:0;flex-direction:row;align-items:center;gap:6px"><span style="white-space:nowrap">連堂次數（對）</span><input type="number" id="sConsecPairs" min="0" max="10" value="${s.consecutivePairs != null ? s.consecutivePairs : ''}" placeholder="自動" style="width:70px"></label>
-        <span class="hint" style="color:var(--muted);font-size:12px">留空＝盡量成對；如自然 3 節填 <b>1</b>＝排 1 次連堂＋1 節單獨（不算錯）</span>
+        <span class="hint" style="color:var(--muted);font-size:12px">留空＝盡量成對；如自然 3 節填 <b>1</b>＝1 連堂＋1 節單獨</span>
       </div>
-      <div class="field" style="margin-bottom:8px"><span>排課限制（給自動排課用；不勾＝不限。手動排課不受限）</span></div>
-      <div class="lock-group"><div class="lock-label">只排在這些<b>上課日</b>：</div><div class="chk-row">${dayChecks || '<span style="color:var(--muted)">尚無上課日</span>'}</div></div>
-      <div class="lock-group"><div class="lock-label">只排在這些<b>節次</b>：</div><div class="chk-row">${perChecks}</div></div>
-      <div class="hint" style="color:var(--muted);font-size:12px;margin-bottom:12px">例：母語只勾「週四」；彈性在地勾「週五」＋「第1節」；體育只勾「第2/3/6/7節」。</div>
-      <div class="field" style="margin-bottom:8px"><span>進階排課（給自動排課用）</span></div>
-      <label class="checkbox chk-inline" style="margin-right:16px"><input type="checkbox" id="sDistinct" ${s.distinctDays ? 'checked' : ''}> 每天最多 1 節（多節分散不同天）</label>
-      <label class="checkbox chk-inline"><input type="checkbox" id="sGap" ${s.gapDays ? 'checked' : ''}> 兩節不排相鄰兩天（隔天以上，如體育）</label>
-      <label class="field" style="margin-top:10px"><span>偏好時段（軟性，盡量滿足）</span>
-        <select id="sBand">
-          <option value="any" ${(s.preferBand || 'any') === 'any' ? 'selected' : ''}>不限</option>
-          <option value="am" ${s.preferBand === 'am' ? 'selected' : ''}>偏好上午（如主科）</option>
-          <option value="pm" ${s.preferBand === 'pm' ? 'selected' : ''}>偏好下午</option>
-        </select></label>
-      <div class="lock-group" style="margin-top:8px"><div class="lock-label">偏好<b>節次</b>（軟性，盡量排在勾選的節，比「偏好時段」更精細，如國語偏好第1節）：</div><div class="chk-row">${prefPerChecks}</div></div>
-      <label class="checkbox chk-inline" style="margin-top:6px"><input type="checkbox" id="sAvoidLast" ${s.avoidLastPeriod ? 'checked' : ''}> 主科：盡量<b>不排在每天最後一節</b>（讓最後一節優先給輕科）</label>
-      <label class="checkbox chk-inline" style="margin-top:6px"><input type="checkbox" id="sSingleApart" ${s.singleApartFromPair ? 'checked' : ''}> 連堂剩餘的<b>單堂與連堂不同天</b>（如社會/自然 2連堂+1獨立）</label>
-      <label class="checkbox" style="margin-top:6px"><input type="checkbox" id="sExCap" ${s.excludeDailyCap ? 'checked' : ''}> 不列入教師單日節數上限（如母語課）</label>
-      <div class="hint" style="color:var(--muted);font-size:12px">「每天最多1節/隔天」與「需連堂」互斥（連堂本就同日兩節），設連堂時此兩項自動忽略。「偏好節次／不排末節／單堂不同天」皆為軟性，僅供自動排課參考。</div>`,
+
+      <details class="subj-adv"><summary>🔒 排課限制（硬性：勾了就<b>只</b>排在這裡；不勾＝不限，手動不受限）</summary>
+        <div class="lock-group"><div class="lock-label">只排在這些<b>上課日</b>：</div><div class="chk-row">${dayChecks || '<span style="color:var(--muted)">尚無上課日</span>'}</div></div>
+        <div class="lock-group"><div class="lock-label">只排在這些<b>節次</b>：</div><div class="chk-row">${perChecks}</div></div>
+        <div class="hint" style="color:var(--muted);font-size:12px">例：母語只勾「週四」；彈性在地勾「週五」＋「第1節」；體育只勾「第2/3/6/7節」。</div>
+      </details>
+
+      <details class="subj-adv"><summary>🪄 自動排課偏好（軟性：只影響「自動排課」的取捨，手動排課不受限）</summary>
+        <div class="lock-group"><div class="lock-label">偏好<b>節次</b>（盡量排在勾選的節，如國語偏好第1節）
+          <span class="pref-quick"><button type="button" class="ghost xs" data-action="pref-am">上午</button><button type="button" class="ghost xs" data-action="pref-pm">下午</button><button type="button" class="ghost xs" data-action="pref-clear">清除</button></span></div>
+          <div class="chk-row">${prefPerChecks}</div></div>
+        <label class="field" style="max-width:300px;margin-top:8px"><span>多節分散（同科多節如何散開）</span>
+          <select id="sSpread">
+            <option value="none" ${spread === 'none' ? 'selected' : ''}>不限</option>
+            <option value="distinct" ${spread === 'distinct' ? 'selected' : ''}>每天最多 1 節（分散不同天）</option>
+            <option value="gap" ${spread === 'gap' ? 'selected' : ''}>隔天以上（兩節不排相鄰兩天，如體育）</option>
+          </select></label>
+        <label class="checkbox" style="margin-top:10px"><input type="checkbox" id="sAvoidLast" ${s.avoidLastPeriod ? 'checked' : ''}> 主科：盡量<b>不排在每天最後一節</b>（末節優先給輕科）</label>
+        <label class="checkbox" style="margin-top:6px"><input type="checkbox" id="sSingleApart" ${s.singleApartFromPair ? 'checked' : ''}> 連堂剩餘的<b>單堂與連堂不同天</b>（如社會/自然 2連堂+1獨立）</label>
+        <label class="checkbox" style="margin-top:6px"><input type="checkbox" id="sExCap" ${s.excludeDailyCap ? 'checked' : ''}> 不列入教師單日節數上限（如母語課）</label>
+        <div class="hint" style="color:var(--muted);font-size:12px">「多節分散」與「需連堂」互斥（連堂本就同日兩節），設連堂時自動忽略。</div>
+      </details>`,
     onSave: () => {
       const name = $('#sName').value.trim();
       if (!name) { toast('請輸入科目名稱'); return false; }
@@ -852,7 +862,8 @@ function subjectModal(existing) {
       const consec = $('#sConsec').checked;
       const pairsRaw = ($('#sConsecPairs').value || '').trim();
       const consecutivePairs = consec && pairsRaw !== '' ? Math.max(0, parseInt(pairsRaw, 10) || 0) : null;
-      const data = { name, color: $('#sColor').value, domainId: $('#sDomain').value, allowGrouping: m === 'group', splitTeachers: m === 'split', consecutive: consec, consecutivePairs, lockDays: ld, lockPeriods: lp, distinctDays: $('#sDistinct').checked, gapDays: $('#sGap').checked, preferBand: $('#sBand').value, preferPeriods: pp, avoidLastPeriod: $('#sAvoidLast').checked, singleApartFromPair: $('#sSingleApart').checked, excludeDailyCap: $('#sExCap').checked };
+      const spreadV = $('#sSpread').value;   // none / distinct / gap（整併原兩個 checkbox）
+      const data = { name, color: $('#sColor').value, domainId: $('#sDomain').value, allowGrouping: m === 'group', splitTeachers: m === 'split', consecutive: consec, consecutivePairs, lockDays: ld, lockPeriods: lp, distinctDays: spreadV === 'distinct', gapDays: spreadV === 'gap', preferBand: 'any', preferPeriods: pp, avoidLastPeriod: $('#sAvoidLast').checked, singleApartFromPair: $('#sSingleApart').checked, excludeDailyCap: $('#sExCap').checked };
       if (existing) Object.assign(existing, data); else state.subjects.push({ id: uid(), ...data });
       save(); render(); toast('已儲存科目');
       return true;
@@ -2474,8 +2485,7 @@ function helpModal() {
       <li><b>教學型態</b>三選一：<b>單一教師</b>整科一位老師上；<b>👥 分組教學</b>（如英語）同班多師「同一節」平行分組上、不算衝堂；<b>✂️ 分節上課</b>多師分攤節數、各上「不同節」（如生活 6 節＝A 上 4＋B 上 2）。</li>
       <li>⏱ <b>需連堂</b>：兩節相鄰接續上。可另填「<b>連堂次數（對）</b>」：留空＝盡量成對；奇數節（如自然/社會 3 節）填 <b>1</b> ＝ 排 1 次連堂（2 節）＋剩 1 節單獨排，<b>那 1 節單獨不算錯</b>。</li>
       <li>🔒 <b>排課限制</b>（給自動排課用）：可勾「只排在某些上課日／某些節次」。例：母語只勾週四、彈性在地勾週五＋第1節、體育只勾第2/3/6/7節。不勾＝不限；手動排課不受此限。</li>
-      <li><b>進階排課</b>：可設「每天最多1節（分散不同天）」「兩節不排相鄰兩天（隔天，如體育）」「偏好時段（上午/下午）」「不列入教師單日上限（如母語）」，供自動排課參考。教師單日節數上限在「設定」設全域、「④教師」可個別覆寫。</li>
-      <li><b>更精細的軟性偏好</b>（皆給自動排課參考、可留空）：<b>偏好節次</b>（勾指定節，如國語偏好第1節，比上午/下午更細）；<b>主科不排末節</b>（勾了的科盡量不排在每天最後一節，等於把第七節留給輕科）；<b>連堂剩餘單堂與連堂不同天</b>（如社會/自然 3 節設「連堂×1」＝1 次連堂＋1 單堂，勾此讓那 1 單堂另擇一天、不擠在連堂當天）。</li></ul>
+      <li><b>🪄 自動排課偏好</b>（摺疊區，皆軟性、只影響自動排課、可留空）：<b>偏好節次</b>（勾指定節盡量排在那，如國語偏好第1節；可用「上午/下午」快捷鈕一鍵勾選）；<b>多節分散</b>（下拉：不限／每天最多1節／隔天以上，如體育）；<b>主科不排末節</b>（把每天最後一節留給輕科）；<b>連堂剩餘單堂與連堂不同天</b>（如社會/自然 3 節設「連堂×1」＝1 連堂＋1 單堂，讓單堂另擇一天）；<b>不列入教師單日上限</b>（如母語）。教師單日節數上限在「設定」設全域、「④教師」可個別覆寫。</li></ul>
     <h4>② 年級（一~六年級各一張）</h4>
     <ul><li><b>2.1 節次表</b>：每個年級逐格勾「哪節×哪個上課日有課」（例：週三下午不上課就取消那幾格）。</li>
       <li><b>2.2 科目節數</b>：勾該年級開的科目、填一周節數。<b>科目節數總和＝節次表可用節數</b>時，年級才算完成（分頁顯示 ✓）。</li></ul>
@@ -2959,6 +2969,9 @@ const clickHandlers = {
   'add-subject': () => subjectModal(null),
   'edit-subject': el => subjectModal(subjectById(el.dataset.id)),
   'del-subject': el => delSubject(el.dataset.id),
+  'pref-am': () => document.querySelectorAll('.s-prefper').forEach(el => { el.checked = isMorningPeriod(el.value); }),
+  'pref-pm': () => document.querySelectorAll('.s-prefper').forEach(el => { el.checked = !isMorningPeriod(el.value); }),
+  'pref-clear': () => document.querySelectorAll('.s-prefper').forEach(el => { el.checked = false; }),
 
   'add-teacher': () => teacherModal(null),
   'edit-teacher': el => teacherModal(teacherById(el.dataset.id)),

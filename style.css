@@ -180,6 +180,16 @@ table.matrix td.mx-short { background: var(--danger-bg); color: #7f1d1d; }
 table.matrix td.mx-over { background: #ffedd5; color: #7c2d12; }
 .mx-legend { margin-top: 8px; color: var(--muted); font-size: 12px; }
 
+/* v09.15 科目設定 modal 摺疊區塊 */
+details.subj-adv { border: 1px solid var(--line); border-radius: 8px; padding: 4px 12px; margin: 10px 0; background: #f8fafc; }
+details.subj-adv > summary { cursor: pointer; font-weight: 700; color: var(--ink); padding: 6px 0; user-select: none; list-style: none; }
+details.subj-adv > summary::-webkit-details-marker { display: none; }
+details.subj-adv > summary::before { content: '▸'; display: inline-block; margin-right: 6px; color: var(--muted); transition: transform .15s; }
+details.subj-adv[open] > summary::before { transform: rotate(90deg); }
+details.subj-adv[open] > summary { border-bottom: 1px solid var(--line); margin-bottom: 8px; }
+.pref-quick { margin-left: 8px; display: inline-flex; gap: 4px; vertical-align: middle; }
+button.ghost.xs { padding: 2px 8px; font-size: 12px; min-height: 0; }
+
 /* v09.12 F③ 填課進度 */
 .fill-prog { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin: 10px 0; background: #f8fafc; }
 .fp-done { color: var(--ok); font-weight: 700; }
