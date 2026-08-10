@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v09.11';
+const APP_VERSION = 'v09.12';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -225,6 +225,8 @@ let lockMode = false;   // v08.02 單格鎖定選取模式進行中（runtime，
 let kioskFill = false;  // v09.05 導師填課 kiosk：隱藏其他分頁、只顯示填課介面（?fill 或導師入口）
 let fillLinkMode = false; // v09.07 由填課連結(?fill)進入：離開＝關閉分頁/結束畫面，永不進入系統（防導師誤觸竄改資料）
 let fillEnded = false;    // v09.07 填課結束畫面旗標
+let showLoadMatrix = false; // v09.12 ④教師「班×科配課矩陣」展開狀態（runtime）
+let fillProgress = null;    // v09.12 F③ 線上填課進度快取 {classId:{total,filled,submitted,submittedAt}}（runtime，按需重讀）
 /* v09.11 排課復原 Undo/Redo：只快照 slots/slotTeachers/slotContent（不跨鎖定/自編結構邊界，故 lock/unlock/finalize 時清空堆疊）*/
 let undoStack = [], redoStack = [];
 const snapSlots = () => ({ slots: { ...state.slots }, slotTeachers: { ...state.slotTeachers }, slotContent: { ...state.slotContent } });
@@ -531,6 +533,7 @@ async function openFillShare(reopen) {
       files[c.id] = { fileId: f.id, link: f.webViewLink || '', email: hr.email, name };
     }
     state.fillShare = { folderId: folder.id, folderLink: folder.webViewLink || '', year, files, openedAt: new Date().toISOString() };
+    fillProgress = null;                                     // v09.12 重新開放→清空舊進度快取
     save(); render(); toast('已開放線上填課，' + targets.length + ' 班已分享');
     fillManageModal();
   } catch (e) { toast('開放失敗：' + e.message); }
@@ -550,6 +553,68 @@ async function collectFill() {
     save(); render(); fillCollectResultModal(summaries);
   } catch (e) { toast('收回失敗：' + e.message); }
 }
+// v09.12 F③ 填課進度總覽：讀各班雲端填課檔，統計已填格數與是否已回傳（submittedAt）
+async function refreshFillProgress() {
+  const fs = state.fillShare; if (!fs || !fs.files) { toast('尚未開放線上填課'); return; }
+  try {
+    toast('讀取各班進度…'); await getFillToken('');
+    const res = {};
+    for (const cid of Object.keys(fs.files)) {
+      const total = classSelfCells(cid).length;
+      let filled = 0, submittedAt = '', ok = true;
+      try {
+        const obj = JSON.parse(await fillDownloadText(fs.files[cid].fileId));
+        const cells = new Set(classSelfCells(cid));
+        filled = Object.keys(obj.content || {}).filter(k => cells.has(k) && obj.content[k]).length;
+        submittedAt = obj.submittedAt || '';
+      } catch (e) { ok = false; }
+      res[cid] = { total, filled, submitted: !!submittedAt, submittedAt, error: !ok };
+    }
+    fillProgress = res; fillManageModal();
+    toast('進度已更新');
+  } catch (e) { toast('讀取進度失敗：' + e.message); }
+}
+function fillProgressHTML() {
+  const fs = state.fillShare; if (!fs || !fs.files) return '';
+  const cids = Object.keys(fs.files);
+  if (!fillProgress) {
+    return `<div class="fill-prog"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+        <b>填課進度</b><button class="ghost" data-action="refresh-fillprogress">🔄 讀取進度</button></div>
+      <p style="color:var(--muted);margin:6px 0 0">按「讀取進度」向雲端查各班填了多少、是否已回傳。</p></div>`;
+  }
+  let done = 0, pend = 0;
+  const rows = cids.map(cid => {
+    const nm = (classById(cid) || {}).name || cid; const p = fillProgress[cid] || {};
+    let badge, cls;
+    if (p.error) { badge = '讀取失敗'; cls = 'err'; pend++; }
+    else if (p.submitted && p.filled >= p.total && p.total > 0) { badge = '✅ 已完成'; cls = 'done'; done++; }
+    else if (p.submitted) { badge = '⚠ 已回傳但缺'; cls = 'part'; pend++; }
+    else if (p.filled > 0) { badge = '✏️ 填寫中(未回傳)'; cls = 'part'; pend++; }
+    else { badge = '⏳ 未交'; cls = 'todo'; pend++; }
+    return `<tr><td><b>${esc(nm)}</b></td><td>${p.error ? '—' : p.filled + ' / ' + p.total + ' 格'}</td><td class="fp-${cls}">${badge}</td></tr>`;
+  }).join('');
+  return `<div class="fill-prog"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+      <b>填課進度</b>　<span style="color:var(--muted)">完成 <b style="color:var(--ok)">${done}</b> · 待催 <b style="color:var(--danger)">${pend}</b></span>
+      <span style="margin-left:auto"></span>
+      <button class="ghost" data-action="refresh-fillprogress">🔄 重新整理</button>
+      <button class="ghost" data-action="copy-unsubmitted" ${pend ? '' : 'disabled'}>📋 複製未交名單</button>
+    </div>
+    <table class="data" style="margin-top:6px"><thead><tr><th>班級</th><th>已填</th><th>狀態</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+function copyUnsubmittedList() {
+  const fs = state.fillShare; if (!fs || !fs.files || !fillProgress) return;
+  const lines = Object.keys(fs.files).filter(cid => {
+    const p = fillProgress[cid] || {}; return p.error || !(p.submitted && p.filled >= p.total && p.total > 0);
+  }).map(cid => {
+    const nm = (classById(cid) || {}).name || cid; const email = fs.files[cid].email || '';
+    const p = fillProgress[cid] || {}; const prog = p.error ? '讀取失敗' : `${p.filled}/${p.total}`;
+    return `${nm}　${email}　(${prog})`;
+  });
+  if (!lines.length) { toast('沒有未交的班級'); return; }
+  const text = '尚未完成線上填課的班級：\n' + lines.join('\n');
+  if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(() => toast('已複製 ' + lines.length + ' 筆未交名單'), () => toast('複製失敗，請手動選取'));
+  else toast('此環境不支援自動複製');
+}
 function fillManageModal() {
   const fs = state.fillShare;
   const targets = state.classes.filter(c => classSelfCells(c.id).length > 0);
@@ -562,7 +627,10 @@ function fillManageModal() {
     ? `<div class="total-badge ok">已開放（${esc(fs.year)}）· ${Object.keys(fs.files).length} 班已分享</div>
        <p style="margin:8px 0"><b>把這個填課連結寄給各班導師：</b><br><code style="user-select:all;word-break:break-all">${esc(fillUrl)}</code></p>
        <p style="color:var(--muted);margin:8px 0">導師開連結 → 用學校 Google 帳號登入 → Picker 選<b>自己班的檔案</b>（依下表檔名辨識）→ 填課存回。檔案也已直接分享到導師 Email。</p>
-       <table class="data"><thead><tr><th>班級</th><th>導師 Email</th><th>檔名（Picker 中辨識）</th></tr></thead><tbody>${rowsOpen}</tbody></table>
+       ${fillProgressHTML()}
+       <details style="margin-top:8px"><summary style="cursor:pointer;color:var(--muted)">分享明細（班級 / 導師 Email / 檔名）</summary>
+         <table class="data"><thead><tr><th>班級</th><th>導師 Email</th><th>檔名（Picker 中辨識）</th></tr></thead><tbody>${rowsOpen}</tbody></table>
+       </details>
        <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
          <button class="btn" data-action="collect-fill">📥 收回填課（合併進課表）</button>
          <button class="ghost" data-action="reopen-fill">♻️ 重新開放（重建檔案）</button>
@@ -853,6 +921,15 @@ function viewGrades() {
    ③ 班級（選年級 → 課程強制沿用年級；協同教學）
    ========================================================================== */
 const classGrade = c => gradeById(c.gradeId);
+// v09.12 依年級順序、再依班級代號/名稱排序（全校總表、配課矩陣共用）
+function sortedClasses() {
+  return state.classes.slice().sort((a, b) => {
+    const ga = state.grades.findIndex(g => g.id === a.gradeId);
+    const gb = state.grades.findIndex(g => g.id === b.gradeId);
+    if (ga !== gb) return ga - gb;
+    return String(a.code || a.name || '').localeCompare(String(b.code || b.name || ''), 'zh-Hant');
+  });
+}
 const classSubjectHours = c => { const g = classGrade(c); return g ? g.subjectHours : []; };
 const classWeeklyHours = c => classSubjectHours(c).reduce((s, x) => s + (x.hours || 0), 0);
 const sameGradeOtherClasses = c => state.classes.filter(x => x.id !== c.id && x.gradeId === c.gradeId);
@@ -1062,9 +1139,41 @@ function viewTeachers() {
         <button class="icon-btn" data-action="del-teacher" data-id="${t.id}">🗑️</button>
       </td></tr>`;
   }).join('');
+  const matrixCard = state.classes.length ? `<div class="card"><div class="card-body">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+        <h4 style="margin:0">🧮 配課矩陣（班 × 科）</h4>
+        <button class="ghost" data-action="toggle-matrix">${showLoadMatrix ? '收合 ▲' : '展開 ▼'}</button>
+      </div>
+      ${showLoadMatrix ? loadMatrixHTML() : '<p style="color:var(--muted);margin:8px 0 0">展開可一眼看出每班每科由誰配課、哪裡有缺口（未配足／超額）。</p>'}
+    </div></div>` : '';
   return head + statusCard + `<div class="card"><table class="data">
     <thead><tr><th>姓名</th><th>身分</th><th>每周授課</th><th>已配</th><th>配課筆數</th><th>不排課</th><th></th></tr></thead>
-    <tbody>${rows}</tbody></table></div>`;
+    <tbody>${rows}</tbody></table></div>` + matrixCard;
+}
+// v09.12 班×科配課矩陣：列＝班級（依年級序）、欄＝有任一年級需上的科目；格顯示配課教師與 已配/應排，缺口紅、超額橘
+function loadMatrixHTML() {
+  const classes = sortedClasses();
+  const cols = state.subjects.filter(s => classes.some(c => classSubjectRequired(c.id, s.id) > 0));
+  if (!classes.length || !cols.length) return '<div class="empty">尚無可顯示的配課資料（請先完成年級科目節數與班級）。</div>';
+  let gaps = 0;
+  const head = `<tr><th class="corner">班級＼科目</th>${cols.map(s => `<th><span class="mx-dot" style="background:${s.color || '#94a3b8'}"></span>${esc(s.name)}</th>`).join('')}</tr>`;
+  const body = classes.map(c => {
+    const tds = cols.map(s => {
+      const req = classSubjectRequired(c.id, s.id);
+      if (!req) return `<td class="mx-na"></td>`;
+      const loads = loadsForClassSubject(c.id, s.id);
+      const assigned = loads.reduce((n, x) => n + (x.hours || 0), 0);
+      const names = loads.map(x => x.teacher.name).join('、');
+      let cls = 'ok';
+      if (assigned < req) { cls = 'short'; gaps++; }
+      else if (assigned > req) cls = 'over';
+      return `<td class="mx-${cls}" title="${esc(c.name)}／${esc(s.name)}：應排 ${req} 節、已配 ${assigned} 節${names ? '（' + esc(names) + '）' : '（未指派）'}">
+        <div class="mx-t">${esc(names || '缺')}</div><div class="mx-h">${assigned}/${req}</div></td>`;
+    }).join('');
+    return `<tr><th class="mx-row">${esc(c.name)}</th>${tds}</tr>`;
+  }).join('');
+  const legend = `<div class="mx-legend no-print">🟩 已配足　🟥 未配足／缺　🟧 超額　·　空白＝該班無此科　·　${gaps ? `<b style="color:var(--danger)">尚有 ${gaps} 個缺口</b>` : '<b style="color:var(--ok)">配課無缺口 ✓</b>'}</div>`;
+  return `<div class="grid-wrap" style="margin-top:10px"><table class="matrix"><thead>${head}</thead><tbody>${body}</tbody></table></div>${legend}`;
 }
 
 let modalLoad = []; // 教師 modal 編輯中的配課 [{classId, subjectId, hours}]
@@ -1926,18 +2035,26 @@ function viewOutput() {
   const conflicts = computeConflicts();
   if (outputMode === 'class') { if (!outputClassId || !classById(outputClassId)) outputClassId = state.classes[0].id; }
   else { if (state.teachers.length === 0) { outputMode = 'class'; outputClassId = state.classes[0].id; } else if (!outputTeacherId || !teacherById(outputTeacherId)) outputTeacherId = state.teachers[0].id; }
+  const picker = outputMode === 'class'
+    ? `<select id="outClass" data-change="out-class">${state.classes.map(c => `<option value="${c.id}" ${c.id === outputClassId ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>`
+    : outputMode === 'teacher'
+      ? `<select id="outTeacher" data-change="out-teacher">${state.teachers.map(t => `<option value="${t.id}" ${t.id === outputTeacherId ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select>`
+      : '';   // 全校總表：無需下拉選單
+  const actions = outputMode === 'school'
+    ? `<button class="ghost" data-action="print-out">🖨️ 列印 / 存 PDF（橫向）</button>
+       <button class="btn" data-action="master-png">🖼️ 下載 PNG</button>`
+    : `<button class="ghost" data-action="print-out">🖨️ 列印 / 存 PDF</button>
+       <button class="ghost" data-action="csv-out">⬇️ 匯出 CSV</button>
+       <span style="width:1px;height:20px;background:var(--line);margin:0 4px"></span>
+       <button class="btn" data-action="all-class-docx">📄 所有班級課表(.docx)</button>
+       <button class="btn" data-action="all-teacher-docx">📄 所有教師課表(.docx)</button>`;
   const modeSel = `<div class="board-toolbar no-print">
       <label>類型：</label>
-      <select id="outMode" data-change="out-mode"><option value="class" ${outputMode === 'class' ? 'selected' : ''}>班級課表</option><option value="teacher" ${outputMode === 'teacher' ? 'selected' : ''}>教師課表</option></select>
-      ${outputMode === 'class'
-      ? `<select id="outClass" data-change="out-class">${state.classes.map(c => `<option value="${c.id}" ${c.id === outputClassId ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>`
-      : `<select id="outTeacher" data-change="out-teacher">${state.teachers.map(t => `<option value="${t.id}" ${t.id === outputTeacherId ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select>`}
-      <button class="ghost" data-action="print-out">🖨️ 列印 / 存 PDF</button>
-      <button class="ghost" data-action="csv-out">⬇️ 匯出 CSV</button>
-      <span style="width:1px;height:20px;background:var(--line);margin:0 4px"></span>
-      <button class="btn" data-action="all-class-docx">📄 所有班級課表(.docx)</button>
-      <button class="btn" data-action="all-teacher-docx">📄 所有教師課表(.docx)</button></div>`;
-  const grid = outputMode === 'class' ? classTimetableHTML(outputClassId, conflicts, false) : teacherTimetableHTML(outputTeacherId, conflicts);
+      <select id="outMode" data-change="out-mode"><option value="class" ${outputMode === 'class' ? 'selected' : ''}>班級課表</option><option value="teacher" ${outputMode === 'teacher' ? 'selected' : ''}>教師課表</option><option value="school" ${outputMode === 'school' ? 'selected' : ''}>全校總表</option></select>
+      ${picker}${actions}</div>`;
+  const grid = outputMode === 'class' ? classTimetableHTML(outputClassId, conflicts, false)
+    : outputMode === 'teacher' ? teacherTimetableHTML(outputTeacherId, conflicts)
+    : schoolMasterHTML();
   return `<div class="page-head no-print"><h2>課表輸出</h2></div>${modeSel}<div class="card"><div class="card-body"><div class="grid-wrap">${grid}</div></div></div>`;
 }
 function teacherTimetableHTML(teacherId, conflicts) {
@@ -1969,6 +2086,102 @@ function teacherTimetableHTML(teacherId, conflicts) {
   }
   html += `</tbody></table>`;
   return html;
+}
+// v09.12 全校總表：列＝星期×節次、欄＝各班（依年級序），格＝科目色塊。供公告張貼／校長核章。
+function schoolMasterHTML() {
+  const days = activeDays(); const classes = sortedClasses();
+  if (!classes.length) return '<div class="empty">尚無班級。</div>';
+  const lessons = state.settings.periods.filter(p => !p.isBreak);
+  if (!lessons.length) return '<div class="empty">尚未設定上課節次。</div>';
+  const title = `${esc(state.settings.reportSchool || '')}　${esc(state.settings.reportYear || '')}學年度　課表總表`;
+  let html = `<div class="master-title">${title}</div>`;
+  html += `<table class="master"><thead><tr><th class="mcorner">星期</th><th class="mcorner">節次</th>${classes.map(c => `<th>${esc(c.name)}</th>`).join('')}</tr></thead><tbody>`;
+  days.forEach(d => {
+    lessons.forEach((p, pi) => {
+      html += `<tr${pi === 0 ? ' class="mday-first"' : ''}>`;
+      if (pi === 0) html += `<td class="mday" rowspan="${lessons.length}">${DAY_LABELS[d]}</td>`;
+      html += `<td class="mperiod">${esc(p.label)}</td>`;
+      classes.forEach(c => {
+        const g = classGrade(c); const open = g && gradePeriodHasDay(g, p.id, d);
+        const key = slotKey(c.id, d, p.id); const sid = state.slots[key];
+        if (!open) { html += `<td class="mblocked"></td>`; return; }
+        if (!sid) { html += `<td></td>`; return; }
+        const s = subjectById(sid); const color = s ? s.color : '#94a3b8';
+        html += `<td class="mcell" style="background:${color};color:${textOn(color)}" title="${esc(slotTeachersLabel(key))}">${esc(subjectName(sid))}</td>`;
+      });
+      html += `</tr>`;
+    });
+  });
+  html += `</tbody></table>`;
+  return html;
+}
+// v09.12 全校總表輸出 PNG（純 Canvas 繪製，無外部相依）
+function schoolMasterPNG() {
+  const days = activeDays(); const classes = sortedClasses();
+  if (!classes.length) { toast('尚無班級'); return; }
+  const lessons = state.settings.periods.filter(p => !p.isBreak);
+  if (!lessons.length) { toast('尚未設定節次'); return; }
+  const sc = 2;                                             // hi-dpi 倍率
+  const dayW = 40, perW = 62, colW = 88, rowH = 32, headH = 38, titleH = 48, pad = 12;
+  const cols = classes.length, bodyRows = days.length * lessons.length;
+  const gridW = dayW + perW + colW * cols, gridH = headH + rowH * bodyRows;
+  const W = gridW + pad * 2, H = titleH + gridH + pad * 2;
+  const cv = document.createElement('canvas'); cv.width = W * sc; cv.height = H * sc;
+  const ctx = cv.getContext('2d'); ctx.scale(sc, sc);
+  const FONT = '"Microsoft JhengHei","PingFang TC","Noto Sans TC",sans-serif';
+  ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, W, H);
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#0f172a'; ctx.font = `bold 20px ${FONT}`;
+  ctx.fillText(`${state.settings.reportSchool || ''}　${state.settings.reportYear || ''}學年度　課表總表`, W / 2, pad + titleH / 2);
+  const ox = pad, oy = pad + titleH;                       // 表格左上
+  // 表頭
+  ctx.fillStyle = '#f1f5f9'; ctx.fillRect(ox, oy, gridW, headH);
+  ctx.fillStyle = '#334155'; ctx.font = `bold 13px ${FONT}`;
+  ctx.fillText('星期', ox + dayW / 2, oy + headH / 2);
+  ctx.fillText('節次', ox + dayW + perW / 2, oy + headH / 2);
+  classes.forEach((c, i) => ctx.fillText(c.name, ox + dayW + perW + colW * i + colW / 2, oy + headH / 2));
+  // 內容
+  let y = oy + headH;
+  days.forEach(d => {
+    const dayTop = y;
+    lessons.forEach(p => {
+      ctx.fillStyle = '#f8fafc'; ctx.fillRect(ox + dayW, y, perW, rowH);
+      ctx.fillStyle = '#334155'; ctx.font = `12px ${FONT}`;
+      ctx.fillText(p.label, ox + dayW + perW / 2, y + rowH / 2);
+      classes.forEach((c, i) => {
+        const x = ox + dayW + perW + colW * i; const g = classGrade(c);
+        const open = g && gradePeriodHasDay(g, p.id, d);
+        const key = slotKey(c.id, d, p.id); const sid = state.slots[key];
+        if (!open) { ctx.fillStyle = '#eef2f7'; ctx.fillRect(x, y, colW, rowH); }
+        else if (sid) {
+          const s = subjectById(sid); const color = s ? s.color : '#94a3b8';
+          ctx.fillStyle = color; ctx.fillRect(x, y, colW, rowH);
+          ctx.fillStyle = textOn(color); ctx.font = `12px ${FONT}`;
+          ctx.fillText(subjectName(sid), x + colW / 2, y + rowH / 2);
+        }
+      });
+      y += rowH;
+    });
+    ctx.fillStyle = '#eff6ff'; ctx.fillRect(ox, dayTop, dayW, y - dayTop);
+    ctx.fillStyle = '#1e3a8a'; ctx.font = `bold 14px ${FONT}`;
+    ctx.fillText(DAY_LABELS[d], ox + dayW / 2, (dayTop + y) / 2);
+  });
+  // 格線
+  ctx.strokeStyle = '#cbd5e1'; ctx.lineWidth = 1; ctx.beginPath();
+  const xs = [ox, ox + dayW, ox + dayW + perW]; for (let i = 0; i <= cols; i++) xs.push(ox + dayW + perW + colW * i);
+  xs.forEach(x => { ctx.moveTo(x + 0.5, oy); ctx.lineTo(x + 0.5, oy + gridH); });
+  ctx.moveTo(ox, oy + 0.5); ctx.lineTo(ox + gridW, oy + 0.5);
+  ctx.moveTo(ox, oy + headH + 0.5); ctx.lineTo(ox + gridW, oy + headH + 0.5);
+  for (let r = 1; r <= bodyRows; r++) { const yy = oy + headH + rowH * r; ctx.moveTo(ox + dayW, yy + 0.5); ctx.lineTo(ox + gridW, yy + 0.5); }
+  days.forEach((d, di) => { const yy = oy + headH + rowH * lessons.length * di; ctx.moveTo(ox, yy + 0.5); ctx.lineTo(ox + gridW, yy + 0.5); });
+  const yEnd = oy + gridH; ctx.moveTo(ox, yEnd + 0.5); ctx.lineTo(ox + gridW, yEnd + 0.5);
+  ctx.stroke();
+  cv.toBlob(blob => {
+    if (!blob) { toast('產生 PNG 失敗'); return; }
+    const url = URL.createObjectURL(blob); const a = document.createElement('a');
+    a.href = url; a.download = `全校課表總表_${state.settings.reportYear || ''}.png`; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000); toast('已下載 PNG');
+  }, 'image/png');
 }
 function exportCSV() {
   const days = activeDays(); const rows = [['節次', ...days.map(d => DAY_LABELS[d])]]; let title = '';
@@ -2179,7 +2392,8 @@ function helpModal() {
     <ul><li>填姓名、身分、<b>每周授課時數</b>、不排課時段。身分選<b>級任</b>時，需設定其<b>擔任導師的班級</b>，並可填<b>導師 Google Email</b>（供後述「導師線上填課」逐位分享用）。</li>
       <li><b>教師配課</b>：逐筆「班級 → 科目 → 節數 → 教室（可留空）」。該師配課合計<b>必須等於每周授課時數</b>才能儲存。專科教室先在「設定」建立。</li>
       <li>✂️ <b>分節上課</b>科目：直接把節數拆給不同老師（如生活給 A 4 節、B 2 節），下拉會顯示各科<b>剩餘節數</b>、填的節數不超過剩餘。</li>
-      <li>⚠ <b>檢查全校配課（進入 ⑤ 排課的關卡）</b>：頁面上方按「<b>檢查全校配課</b>」，通過條件＝<b>每班每科節數都配齊</b>（分組每師足額、分節多師加總＝需求）<b>且每個班級都已指定級任導師</b>。通過後才會<b>解鎖 ⑤ 排課</b>；之後只要改動配課、導師、科目型態或年級節數，就需<b>再按一次</b>檢查。（此關卡為防呆——排課人員不一定是你。）</li></ul>
+      <li>⚠ <b>檢查全校配課（進入 ⑤ 排課的關卡）</b>：頁面上方按「<b>檢查全校配課</b>」，通過條件＝<b>每班每科節數都配齊</b>（分組每師足額、分節多師加總＝需求）<b>且每個班級都已指定級任導師</b>。通過後才會<b>解鎖 ⑤ 排課</b>；之後只要改動配課、導師、科目型態或年級節數，就需<b>再按一次</b>檢查。（此關卡為防呆——排課人員不一定是你。）</li>
+      <li>🧮 <b>配課矩陣（班 × 科）</b>：頁面下方可展開，用一張表看每班每科由誰配課與「已配 / 應排」：<b>綠＝配足、紅＝缺／不足、橘＝超額</b>，空白＝該班無此科；一眼抓出缺口，配課更快更少漏。</li></ul>
     <h4>⑤ 排課</h4>
     <ul><li>選班級 → 左側點科目 → 點課表空格放課；點已排格移除。灰色格＝該班該節不上課。</li>
       <li>💡 <b>空格建議</b>：未選科目時直接點空格，會列出「這一格可以放哪些課」（合法、不衝堂），點一項即放入。</li>
@@ -2199,13 +2413,17 @@ function helpModal() {
     <ul><li><b>用途</b>：課表鎖定後，把每班「自編格選課」開放給該班導師線上填，排課者再收回合併。免後端，走 Google Drive（需登入）。</li>
       <li><b>排課者（你）</b>：先在 ④教師 填好各班<b>導師 Email</b>、③班級 填好<b>數字代號</b> → ⑤排課<b>鎖定課表</b> → 橫幅「<b>☁️ 線上填課</b>」→「<b>開放線上填課</b>」：系統在你的雲端硬碟建資料夾＋每班一個填課檔（檔名 <code>class-學校代號學年年級班代號</code>，學校代號在「設定」填），逐位分享給導師 Email，並給你一條<b>填課連結</b>可寄給導師。</li>
       <li><b>導師</b>：開排課者寄來的<b>填課連結（?fill=1）</b>→ 用學校 Google 帳號登入 → <b>Picker 選自己班的檔</b>（依檔名辨識）→ 進入<b>整張課表</b>，直接點 🧩 自編格選課（🔒 為已固定課、可看上下節）→ <b>儲存到雲端</b>，再通知排課者。<b>系統會核對登入帳號，只能開自己班的檔</b>；此畫面為導師專用、看不到其他設定頁與其他班級。</li>
+      <li>📊 <b>填課進度總覽</b>：分享視窗按「<b>讀取進度</b>」，逐班查看<b>已填格數與狀態</b>（⏳未交／✏️填寫中／⚠已回傳但缺／✅已完成），並統計「完成 X · 待催 Y」。按「<b>📋 複製未交名單</b>」可複製尚未完成班級的「班名＋導師 Email＋進度」，貼到信件催交。</li>
       <li><b>排課者收回</b>：⑤排課 →「☁️ 線上填課」→「<b>收回填課</b>」：讀回各班導師選課、合併進課表，並顯示每班「填入／清空／衝堂」摘要。</li>
       <li><b>重新開放</b>：改了自編格想重來可「重新開放」重建填課檔（舊檔仍留在你雲端硬碟，可自行刪除）。</li></ul>
     <h4>領域節數</h4>
     <ul><li><b>建議節數參考表</b>：各領域每年級每周建議節數，可自行改名稱／節數、新增或刪除領域。內建 108 課綱國小起始值，<b>請務必依課綱／貴校校對</b>。</li>
       <li><b>各年級實配對照</b>：把「② 年級」設定的科目節數依「① 科目」的所屬領域加總，和建議並排（實配 / 建議）；相符綠、不符紅底，方便檢查各領域節數是否到位。未指定領域的科目會列在「未分類」。</li></ul>
     <h4>課表輸出 / 備份</h4>
-    <p>可輸出班級表、教師表：列印或存 PDF、匯出 CSV，或<b>一鍵匯出 Word（.docx）</b>——「所有班級課表」「所有教師課表」。右上「備份」可匯出/匯入 JSON（換裝置用）。</p>
+    <p>類型可選<b>班級表、教師表、全校總表</b>：</p>
+    <ul><li><b>班級／教師表</b>：列印或存 PDF、匯出 CSV，或<b>一鍵匯出 Word（.docx）</b>——「所有班級課表」「所有教師課表」。</li>
+      <li>🗂️ <b>全校總表</b>：所有班級排在同一張大表（列＝星期×節次、欄＝各班），供公告張貼／校長核章。可<b>橫向列印／存 PDF</b>，或<b>下載 PNG</b> 圖檔直接貼進公告或群組。</li>
+      <li>右上「備份」可匯出/匯入 JSON（換裝置用）。</li></ul>
     <h4>☁️ 雲端同步（設定頁）</h4>
     <ul><li>連結 Google 帳號後，排課資料會自動備份到<b>你自己的雲端硬碟</b>（App 專屬隱藏資料夾、無伺服器）。</li>
       <li><b>多裝置接續</b>：在另一台開啟 App 時，若雲端有較新的備份會詢問是否還原，筆電／桌機可接續同一份資料。</li>
@@ -2650,6 +2868,7 @@ const clickHandlers = {
   'edit-teacher': el => teacherModal(teacherById(el.dataset.id)),
   'del-teacher': el => delTeacher(el.dataset.id),
   'check-staffing': () => staffingReportModal(),
+  'toggle-matrix': () => { showLoadMatrix = !showLoadMatrix; render(); },
   'goto-teachers': () => { currentTab = 'teachers'; render(); },
   'toggle-avail': el => { el.classList.toggle('off'); el.textContent = el.classList.contains('off') ? '✕' : ''; },
   'add-load-row': () => { syncLoadFromDOM(); const cid = state.classes[0] ? state.classes[0].id : ''; const idx = modalLoad.length; modalLoad.push({ classId: cid, subjectId: firstAvailableSubject(cid, idx), hours: 0 }); refreshLoadEditor(); updateLoadSum(); },
@@ -2778,6 +2997,8 @@ const clickHandlers = {
   'open-fill': () => openFillShare(false),
   'reopen-fill': () => confirmDelete('重新開放會為各班建立新的填課檔（舊檔仍留在你的雲端硬碟，可自行刪除）。確定？', () => openFillShare(true)),
   'collect-fill': () => collectFill(),
+  'refresh-fillprogress': () => refreshFillProgress(),
+  'copy-unsubmitted': () => copyUnsubmittedList(),
   'teacher-fill': () => teacherFillStart(),
   'tfill-cell': el => teacherPickModal(el.dataset.key),
   'tfill-pick': el => { teacherPacket.content[el.dataset.key] = el.dataset.sid; closeModal(); render(); },
@@ -2823,7 +3044,19 @@ const clickHandlers = {
     closeModal(); save(); render(); toast('已清空');
   },
 
-  'print-out': () => window.print(),
+  'print-out': () => {
+    let styleEl = null;
+    if (outputMode === 'school') {                                   // 全校總表：暫時切橫向紙張列印
+      styleEl = document.createElement('style');
+      styleEl.textContent = '@page{size:landscape;margin:8mm}';
+      document.head.appendChild(styleEl);
+    }
+    const cleanup = () => { if (styleEl) { styleEl.remove(); styleEl = null; } };
+    window.addEventListener('afterprint', cleanup, { once: true });
+    window.print();
+    setTimeout(cleanup, 2000);
+  },
+  'master-png': () => schoolMasterPNG(),
   'csv-out': exportCSV,
   'all-class-docx': exportAllClassDocx,
   'all-teacher-docx': exportAllTeacherDocx,

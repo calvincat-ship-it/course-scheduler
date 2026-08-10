@@ -154,6 +154,39 @@ table.timetable td.cell { height: 54px; padding: 3px; cursor: pointer; vertical-
 table.timetable td.cell.placeable:hover { background: #eff6ff; }
 table.timetable td.cell.blocked { background: repeating-linear-gradient(45deg, #f1f5f9, #f1f5f9 6px, #e9eef5 6px, #e9eef5 12px); cursor: not-allowed; }
 table.timetable tr.break-row td { background: #f8fafc; color: var(--muted); font-size: 12px; height: auto; padding: 4px; cursor: default; }
+/* v09.12 全校總表 */
+.master-title { text-align: center; font-weight: 800; font-size: 17px; margin: 4px 0 12px; color: var(--ink); }
+table.master { border-collapse: collapse; width: 100%; }
+table.master th, table.master td { border: 1px solid var(--line); text-align: center; font-size: 12px; padding: 4px 5px; white-space: nowrap; }
+table.master thead th { background: #f1f5f9; color: #334155; font-weight: 700; position: sticky; top: 0; z-index: 1; }
+table.master td.mday { background: #eff6ff; color: #1e3a8a; font-weight: 800; writing-mode: vertical-lr; letter-spacing: 3px; }
+table.master td.mperiod { background: #f8fafc; color: var(--muted); font-weight: 600; }
+table.master td.mcell { font-weight: 700; }
+table.master td.mblocked { background: repeating-linear-gradient(45deg, #f1f5f9, #f1f5f9 5px, #e9eef5 5px, #e9eef5 10px); }
+table.master tr.mday-first td { border-top: 2px solid #94a3b8; }
+
+/* v09.12 班×科配課矩陣 */
+table.matrix { border-collapse: collapse; font-size: 12px; }
+table.matrix th, table.matrix td { border: 1px solid var(--line); padding: 4px 7px; text-align: center; white-space: nowrap; }
+table.matrix thead th { background: #f1f5f9; color: #334155; font-weight: 700; position: sticky; top: 0; z-index: 2; }
+table.matrix th.corner { background: #e2e8f0; }
+table.matrix th.mx-row { background: #f8fafc; text-align: left; font-weight: 700; position: sticky; left: 0; z-index: 1; }
+.mx-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
+table.matrix td .mx-t { font-weight: 600; }
+table.matrix td .mx-h { font-size: 11px; opacity: .8; }
+table.matrix td.mx-na { background: #f8fafc; }
+table.matrix td.mx-ok { background: #dcfce7; color: #14532d; }
+table.matrix td.mx-short { background: var(--danger-bg); color: #7f1d1d; }
+table.matrix td.mx-over { background: #ffedd5; color: #7c2d12; }
+.mx-legend { margin-top: 8px; color: var(--muted); font-size: 12px; }
+
+/* v09.12 F③ 填課進度 */
+.fill-prog { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin: 10px 0; background: #f8fafc; }
+.fp-done { color: var(--ok); font-weight: 700; }
+.fp-part { color: var(--warn); font-weight: 700; }
+.fp-todo { color: var(--muted); font-weight: 700; }
+.fp-err { color: var(--danger); font-weight: 700; }
+
 .cell-lesson { border-radius: 6px; padding: 4px 2px; font-weight: 700; font-size: 13px; height: 100%; display: flex; flex-direction: column; justify-content: center; line-height: 1.25; }
 .cell-lesson small { font-weight: 400; font-size: 11px; opacity: .85; }
 .cell-lesson.conflict { outline: 2px solid var(--danger); box-shadow: inset 0 0 0 2px var(--danger); }
