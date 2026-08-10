@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v09.13';
+const APP_VERSION = 'v09.14';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -1167,14 +1167,27 @@ function loadMatrixHTML() {
     const tds = cols.map(s => {
       const req = classSubjectRequired(c.id, s.id);
       if (!req) return `<td class="mx-na"></td>`;
+      const subj = subjectById(s.id);
       const loads = loadsForClassSubject(c.id, s.id);
-      const assigned = loads.reduce((n, x) => n + (x.hours || 0), 0);
       const names = loads.map(x => x.teacher.name).join('、');
-      let cls = 'ok';
-      if (assigned < req) { cls = 'short'; gaps++; }
-      else if (assigned > req) cls = 'over';
-      return `<td class="mx-${cls}" title="${esc(c.name)}／${esc(s.name)}：應排 ${req} 節、已配 ${assigned} 節${names ? '（' + esc(names) + '）' : '（未指派）'}">
-        <div class="mx-t">${esc(names || '缺')}</div><div class="mx-h">${assigned}/${req}</div></td>`;
+      const sum = loads.reduce((n, x) => n + (x.hours || 0), 0);
+      let cls, hoursLabel, tip;
+      if (!loads.length) {
+        cls = 'short'; hoursLabel = `0/${req}`; tip = `${c.name}／${s.name}：應排 ${req} 節（未指派）`; gaps++;
+      } else if (subj && subj.allowGrouping) {
+        // 分組教學：多師「同一節」平行分組上，每組各應排 req 節，不相加
+        const allFull = loads.every(x => x.hours === req);
+        cls = allFull ? 'ok' : 'short'; if (!allFull) gaps++;
+        hoursLabel = allFull ? `${req}/${req} 👥` : '👥 節數不符';
+        tip = `${c.name}／${s.name}：👥 分組教學，每組應各 ${req} 節（同一節平行上，不相加）｜${loads.map(x => x.teacher.name + ' ' + x.hours + '節').join('、')}`;
+      } else {
+        // 分節上課 / 單一教師：加總＝req
+        cls = sum === req ? 'ok' : (sum < req ? 'short' : 'over'); if (sum < req) gaps++;
+        tip = `${c.name}／${s.name}：${subj && subj.splitTeachers ? '✂️ 分節，多師加總' : ''}應排 ${req} 節、已配 ${sum} 節（${names}）`;
+        hoursLabel = `${sum}/${req}`;
+      }
+      return `<td class="mx-${cls}" title="${esc(tip)}">
+        <div class="mx-t">${esc(names || '缺')}</div><div class="mx-h">${hoursLabel}</div></td>`;
     }).join('');
     return `<tr><th class="mx-row">${esc(c.name)}</th>${tds}</tr>`;
   }).join('');
