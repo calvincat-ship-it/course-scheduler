@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v09.17';
+const APP_VERSION = 'v09.18';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -2194,6 +2194,11 @@ function teacherTimetableHTML(teacherId, conflicts) {
   html += `</tbody></table>`;
   return html;
 }
+// v09.18 班級簡稱：去掉「年級／年／班」，如 六年忠班→六忠、一年甲班→一甲（教師總表格內用）
+function classShortName(c) {
+  const n = (c && c.name) || '';
+  return n.replace(/年級|年|班/g, '') || n;
+}
 // v09.12/17 全校總表資料模型：kind='school'（各班）｜'schoolTeacher'（各教師）。列＝星期×節次、欄＝各班/各師。
 // cellFor(day, pid, i) → {blocked:true}｜null(空)｜{text,color,title}。班級版與教師版共用 HTML/PNG 產生器。
 function masterModel(kind) {
@@ -2220,8 +2225,9 @@ function masterModel(kind) {
       cellFor(day, pid, i) {
         const hits = tmap[teachers[i].id][day + '|' + pid]; if (!hits || !hits.length) return null;
         const s = subjectById(hits[0].sid); const color = s ? s.color : '#94a3b8';
-        const label = hits.map(h => (classById(h.classId) || {}).name || '').join('、');
-        return { text: label, color, title: subjectName(hits[0].sid) + '｜' + label };
+        const classes = hits.map(h => classShortName(classById(h.classId))).join('、');   // 班級簡稱（六年忠班→六忠）
+        const subj = subjectName(hits[0].sid);
+        return { text: classes + ' ' + subj, color, title: classes + '｜' + subj };
       },
     };
   }
