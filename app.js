@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v09.16';
+const APP_VERSION = 'v09.17';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -2139,14 +2139,15 @@ function teacherLoadHTML() {
 function viewOutput() {
   if (state.classes.length === 0) return emptyState('尚無資料', '請先完成前面步驟並排課。');
   const conflicts = computeConflicts();
+  const isMaster = outputMode === 'school' || outputMode === 'schoolTeacher';
   if (outputMode === 'class') { if (!outputClassId || !classById(outputClassId)) outputClassId = state.classes[0].id; }
-  else { if (state.teachers.length === 0) { outputMode = 'class'; outputClassId = state.classes[0].id; } else if (!outputTeacherId || !teacherById(outputTeacherId)) outputTeacherId = state.teachers[0].id; }
+  else if (outputMode === 'teacher') { if (state.teachers.length === 0) { outputMode = 'class'; outputClassId = state.classes[0].id; } else if (!outputTeacherId || !teacherById(outputTeacherId)) outputTeacherId = state.teachers[0].id; }
   const picker = outputMode === 'class'
     ? `<select id="outClass" data-change="out-class">${state.classes.map(c => `<option value="${c.id}" ${c.id === outputClassId ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>`
     : outputMode === 'teacher'
       ? `<select id="outTeacher" data-change="out-teacher">${state.teachers.map(t => `<option value="${t.id}" ${t.id === outputTeacherId ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select>`
       : '';   // 全校總表：無需下拉選單
-  const actions = outputMode === 'school'
+  const actions = isMaster
     ? `<button class="ghost" data-action="print-out">🖨️ 列印 / 存 PDF（橫向）</button>
        <button class="btn" data-action="master-png">🖼️ 下載 PNG</button>`
     : `<button class="ghost" data-action="print-out">🖨️ 列印 / 存 PDF</button>
@@ -2156,11 +2157,11 @@ function viewOutput() {
        <button class="btn" data-action="all-teacher-docx">📄 所有教師課表(.docx)</button>`;
   const modeSel = `<div class="board-toolbar no-print">
       <label>類型：</label>
-      <select id="outMode" data-change="out-mode"><option value="class" ${outputMode === 'class' ? 'selected' : ''}>班級課表</option><option value="teacher" ${outputMode === 'teacher' ? 'selected' : ''}>教師課表</option><option value="school" ${outputMode === 'school' ? 'selected' : ''}>全校總表</option></select>
+      <select id="outMode" data-change="out-mode"><option value="class" ${outputMode === 'class' ? 'selected' : ''}>班級課表</option><option value="teacher" ${outputMode === 'teacher' ? 'selected' : ''}>教師課表</option><option value="school" ${outputMode === 'school' ? 'selected' : ''}>全校總表（各班）</option><option value="schoolTeacher" ${outputMode === 'schoolTeacher' ? 'selected' : ''}>全校教師總表</option></select>
       ${picker}${actions}</div>`;
   const grid = outputMode === 'class' ? classTimetableHTML(outputClassId, conflicts, false)
     : outputMode === 'teacher' ? teacherTimetableHTML(outputTeacherId, conflicts)
-    : schoolMasterHTML();
+    : masterTableHTML(outputMode);
   return `<div class="page-head no-print"><h2>課表輸出</h2></div>${modeSel}<div class="card"><div class="card-body"><div class="grid-wrap">${grid}</div></div></div>`;
 }
 function teacherTimetableHTML(teacherId, conflicts) {
@@ -2193,27 +2194,68 @@ function teacherTimetableHTML(teacherId, conflicts) {
   html += `</tbody></table>`;
   return html;
 }
-// v09.12 全校總表：列＝星期×節次、欄＝各班（依年級序），格＝科目色塊。供公告張貼／校長核章。
-function schoolMasterHTML() {
-  const days = activeDays(); const classes = sortedClasses();
-  if (!classes.length) return '<div class="empty">尚無班級。</div>';
-  const lessons = state.settings.periods.filter(p => !p.isBreak);
-  if (!lessons.length) return '<div class="empty">尚未設定上課節次。</div>';
-  const title = `${esc(state.settings.reportSchool || '')}　${esc(state.settings.reportYear || '')}學年度　課表總表`;
-  let html = `<div class="master-title">${title}</div>`;
-  html += `<table class="master"><thead><tr><th class="mcorner">星期</th><th class="mcorner">節次</th>${classes.map(c => `<th>${esc(c.name)}</th>`).join('')}</tr></thead><tbody>`;
+// v09.12/17 全校總表資料模型：kind='school'（各班）｜'schoolTeacher'（各教師）。列＝星期×節次、欄＝各班/各師。
+// cellFor(day, pid, i) → {blocked:true}｜null(空)｜{text,color,title}。班級版與教師版共用 HTML/PNG 產生器。
+function masterModel(kind) {
+  const days = activeDays(); const lessons = state.settings.periods.filter(p => !p.isBreak);
+  const school = state.settings.reportSchool || '', year = state.settings.reportYear || '';
+  if (!lessons.length) return { ok: false, msg: '尚未設定上課節次。' };
+  if (kind === 'schoolTeacher') {
+    const teachers = state.teachers;
+    if (!teachers.length) return { ok: false, msg: '尚無教師。' };
+    const teaches = {}; teachers.forEach(t => teaches[t.id] = new Set((t.load || []).map(L => L.classId + '|' + L.subjectId)));
+    const tmap = {}; teachers.forEach(t => tmap[t.id] = {});   // teacherId → {day|period → [{classId,sid}]}
+    for (const key in state.slots) {
+      const sid = state.slots[key]; const [classId, day, period] = key.split('|'); const s = subjectById(sid); const dp = day + '|' + period;
+      teachers.forEach(t => {
+        if (!teaches[t.id].has(classId + '|' + sid)) return;
+        if (s && s.splitTeachers && state.slotTeachers[key] !== t.id) return;   // 分節：只算該師實際上的節
+        (tmap[t.id][dp] = tmap[t.id][dp] || []).push({ classId, sid });
+      });
+    }
+    return {
+      ok: true, days, lessons,
+      title: `${school}　${year}學年度　教師課表總表`, fileTitle: `全校教師總表_${year}`,
+      cols: teachers.map(t => t.name),
+      cellFor(day, pid, i) {
+        const hits = tmap[teachers[i].id][day + '|' + pid]; if (!hits || !hits.length) return null;
+        const s = subjectById(hits[0].sid); const color = s ? s.color : '#94a3b8';
+        const label = hits.map(h => (classById(h.classId) || {}).name || '').join('、');
+        return { text: label, color, title: subjectName(hits[0].sid) + '｜' + label };
+      },
+    };
+  }
+  const classes = sortedClasses();
+  if (!classes.length) return { ok: false, msg: '尚無班級。' };
+  return {
+    ok: true, days, lessons,
+    title: `${school}　${year}學年度　課表總表`, fileTitle: `全校課表總表_${year}`,
+    cols: classes.map(c => c.name),
+    cellFor(day, pid, i) {
+      const c = classes[i]; const g = classGrade(c);
+      if (!(g && gradePeriodHasDay(g, pid, day))) return { blocked: true };
+      const key = slotKey(c.id, day, pid); const sid = state.slots[key]; if (!sid) return null;
+      const s = subjectById(sid); const color = s ? s.color : '#94a3b8';
+      return { text: subjectName(sid), color, title: slotTeachersLabel(key) };
+    },
+  };
+}
+function masterTableHTML(kind) {
+  const m = masterModel(kind);
+  if (!m.ok) return `<div class="empty">${esc(m.msg)}</div>`;
+  const { days, lessons, cols } = m;
+  let html = `<div class="master-title">${esc(m.title)}</div>`;
+  html += `<table class="master"><thead><tr><th class="mcorner">星期</th><th class="mcorner">節次</th>${cols.map(n => `<th>${esc(n)}</th>`).join('')}</tr></thead><tbody>`;
   days.forEach(d => {
     lessons.forEach((p, pi) => {
       html += `<tr${pi === 0 ? ' class="mday-first"' : ''}>`;
       if (pi === 0) html += `<td class="mday" rowspan="${lessons.length}">${DAY_LABELS[d]}</td>`;
       html += `<td class="mperiod">${esc(p.label)}</td>`;
-      classes.forEach(c => {
-        const g = classGrade(c); const open = g && gradePeriodHasDay(g, p.id, d);
-        const key = slotKey(c.id, d, p.id); const sid = state.slots[key];
-        if (!open) { html += `<td class="mblocked"></td>`; return; }
-        if (!sid) { html += `<td></td>`; return; }
-        const s = subjectById(sid); const color = s ? s.color : '#94a3b8';
-        html += `<td class="mcell" style="background:${color};color:${textOn(color)}" title="${esc(slotTeachersLabel(key))}">${esc(subjectName(sid))}</td>`;
+      cols.forEach((n, i) => {
+        const cell = m.cellFor(d, p.id, i);
+        if (cell && cell.blocked) { html += `<td class="mblocked"></td>`; return; }
+        if (!cell) { html += `<td></td>`; return; }
+        html += `<td class="mcell" style="background:${cell.color};color:${textOn(cell.color)}" title="${esc(cell.title || '')}">${esc(cell.text)}</td>`;
       });
       html += `</tr>`;
     });
@@ -2221,16 +2263,15 @@ function schoolMasterHTML() {
   html += `</tbody></table>`;
   return html;
 }
-// v09.12 全校總表輸出 PNG（純 Canvas 繪製，無外部相依）
-function schoolMasterPNG() {
-  const days = activeDays(); const classes = sortedClasses();
-  if (!classes.length) { toast('尚無班級'); return; }
-  const lessons = state.settings.periods.filter(p => !p.isBreak);
-  if (!lessons.length) { toast('尚未設定節次'); return; }
+// 全校總表輸出 PNG（純 Canvas 繪製，無外部相依）；班級/教師版共用
+function masterPNG(kind) {
+  const m = masterModel(kind);
+  if (!m.ok) { toast(m.msg); return; }
+  const { days, lessons, cols } = m;
   const sc = 2;                                             // hi-dpi 倍率
   const dayW = 40, perW = 62, colW = 88, rowH = 32, headH = 38, titleH = 48, pad = 12;
-  const cols = classes.length, bodyRows = days.length * lessons.length;
-  const gridW = dayW + perW + colW * cols, gridH = headH + rowH * bodyRows;
+  const nCols = cols.length, bodyRows = days.length * lessons.length;
+  const gridW = dayW + perW + colW * nCols, gridH = headH + rowH * bodyRows;
   const W = gridW + pad * 2, H = titleH + gridH + pad * 2;
   const cv = document.createElement('canvas'); cv.width = W * sc; cv.height = H * sc;
   const ctx = cv.getContext('2d'); ctx.scale(sc, sc);
@@ -2238,32 +2279,27 @@ function schoolMasterPNG() {
   ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, W, H);
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillStyle = '#0f172a'; ctx.font = `bold 20px ${FONT}`;
-  ctx.fillText(`${state.settings.reportSchool || ''}　${state.settings.reportYear || ''}學年度　課表總表`, W / 2, pad + titleH / 2);
+  ctx.fillText(m.title, W / 2, pad + titleH / 2);
   const ox = pad, oy = pad + titleH;                       // 表格左上
-  // 表頭
-  ctx.fillStyle = '#f1f5f9'; ctx.fillRect(ox, oy, gridW, headH);
+  ctx.fillStyle = '#f1f5f9'; ctx.fillRect(ox, oy, gridW, headH);   // 表頭
   ctx.fillStyle = '#334155'; ctx.font = `bold 13px ${FONT}`;
   ctx.fillText('星期', ox + dayW / 2, oy + headH / 2);
   ctx.fillText('節次', ox + dayW + perW / 2, oy + headH / 2);
-  classes.forEach((c, i) => ctx.fillText(c.name, ox + dayW + perW + colW * i + colW / 2, oy + headH / 2));
-  // 內容
-  let y = oy + headH;
+  cols.forEach((n, i) => ctx.fillText(n, ox + dayW + perW + colW * i + colW / 2, oy + headH / 2));
+  let y = oy + headH;                                       // 內容
   days.forEach(d => {
     const dayTop = y;
     lessons.forEach(p => {
       ctx.fillStyle = '#f8fafc'; ctx.fillRect(ox + dayW, y, perW, rowH);
       ctx.fillStyle = '#334155'; ctx.font = `12px ${FONT}`;
       ctx.fillText(p.label, ox + dayW + perW / 2, y + rowH / 2);
-      classes.forEach((c, i) => {
-        const x = ox + dayW + perW + colW * i; const g = classGrade(c);
-        const open = g && gradePeriodHasDay(g, p.id, d);
-        const key = slotKey(c.id, d, p.id); const sid = state.slots[key];
-        if (!open) { ctx.fillStyle = '#eef2f7'; ctx.fillRect(x, y, colW, rowH); }
-        else if (sid) {
-          const s = subjectById(sid); const color = s ? s.color : '#94a3b8';
-          ctx.fillStyle = color; ctx.fillRect(x, y, colW, rowH);
-          ctx.fillStyle = textOn(color); ctx.font = `12px ${FONT}`;
-          ctx.fillText(subjectName(sid), x + colW / 2, y + rowH / 2);
+      cols.forEach((n, i) => {
+        const x = ox + dayW + perW + colW * i; const cell = m.cellFor(d, p.id, i);
+        if (cell && cell.blocked) { ctx.fillStyle = '#eef2f7'; ctx.fillRect(x, y, colW, rowH); }
+        else if (cell) {
+          ctx.fillStyle = cell.color; ctx.fillRect(x, y, colW, rowH);
+          ctx.fillStyle = textOn(cell.color); ctx.font = `12px ${FONT}`;
+          ctx.fillText(cell.text, x + colW / 2, y + rowH / 2);
         }
       });
       y += rowH;
@@ -2272,9 +2308,8 @@ function schoolMasterPNG() {
     ctx.fillStyle = '#1e3a8a'; ctx.font = `bold 14px ${FONT}`;
     ctx.fillText(DAY_LABELS[d], ox + dayW / 2, (dayTop + y) / 2);
   });
-  // 格線
-  ctx.strokeStyle = '#cbd5e1'; ctx.lineWidth = 1; ctx.beginPath();
-  const xs = [ox, ox + dayW, ox + dayW + perW]; for (let i = 0; i <= cols; i++) xs.push(ox + dayW + perW + colW * i);
+  ctx.strokeStyle = '#cbd5e1'; ctx.lineWidth = 1; ctx.beginPath();   // 格線
+  const xs = [ox, ox + dayW, ox + dayW + perW]; for (let i = 0; i <= nCols; i++) xs.push(ox + dayW + perW + colW * i);
   xs.forEach(x => { ctx.moveTo(x + 0.5, oy); ctx.lineTo(x + 0.5, oy + gridH); });
   ctx.moveTo(ox, oy + 0.5); ctx.lineTo(ox + gridW, oy + 0.5);
   ctx.moveTo(ox, oy + headH + 0.5); ctx.lineTo(ox + gridW, oy + headH + 0.5);
@@ -2285,7 +2320,7 @@ function schoolMasterPNG() {
   cv.toBlob(blob => {
     if (!blob) { toast('產生 PNG 失敗'); return; }
     const url = URL.createObjectURL(blob); const a = document.createElement('a');
-    a.href = url; a.download = `全校課表總表_${state.settings.reportYear || ''}.png`; a.click();
+    a.href = url; a.download = `${m.fileTitle}.png`; a.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000); toast('已下載 PNG');
   }, 'image/png');
 }
@@ -2526,10 +2561,11 @@ function helpModal() {
     <ul><li><b>建議節數參考表</b>：各領域每年級每周建議節數，可自行改名稱／節數、新增或刪除領域。內建 108 課綱國小起始值，<b>請務必依課綱／貴校校對</b>。</li>
       <li><b>各年級實配對照</b>：把「② 年級」設定的科目節數依「① 科目」的所屬領域加總，和建議並排（實配 / 建議）；相符綠、不符紅底，方便檢查各領域節數是否到位。未指定領域的科目會列在「未分類」。</li></ul>
     <h4>課表輸出 / 備份</h4>
-    <p>類型可選<b>班級表、教師表、全校總表</b>：</p>
+    <p>類型可選<b>班級表、教師表、全校總表（各班）、全校教師總表</b>：</p>
     <ul><li><b>班級／教師表</b>：列印或存 PDF、匯出 CSV，或<b>一鍵匯出 Word（.docx）</b>——「所有班級課表」「所有教師課表」。</li>
-      <li>🗂️ <b>全校總表</b>：所有班級排在同一張大表（列＝星期×節次、欄＝各班），供公告張貼／校長核章。可<b>橫向列印／存 PDF</b>，或<b>下載 PNG</b> 圖檔直接貼進公告或群組。</li>
-      <li>右上「備份」可匯出/匯入 JSON（換裝置用）。</li></ul>
+      <li>🗂️ <b>全校總表（各班）</b>：所有班級排在同一張大表（列＝星期×節次、欄＝各班、格＝科目），供公告張貼／校長核章。</li>
+      <li>🧑‍🏫 <b>全校教師總表</b>：所有教師排在同一張大表（列＝星期×節次、欄＝各師、格＝該師該節在哪個班），一眼看全校老師的動向、找代課空堂。</li>
+      <li>兩種全校總表都可<b>橫向列印／存 PDF</b>，或<b>下載 PNG</b> 圖檔直接貼進公告或群組。右上「備份」可匯出/匯入 JSON（換裝置用）。</li></ul>
     <h4>☁️ 雲端同步（設定頁）</h4>
     <ul><li>連結 Google 帳號後，排課資料會自動備份到<b>你自己的雲端硬碟</b>（App 專屬隱藏資料夾、無伺服器）。</li>
       <li><b>多裝置接續</b>：在另一台開啟 App 時，若雲端有較新的備份會詢問是否還原，筆電／桌機可接續同一份資料。</li>
@@ -3156,7 +3192,7 @@ const clickHandlers = {
 
   'print-out': () => {
     let styleEl = null;
-    if (outputMode === 'school') {                                   // 全校總表：暫時切橫向紙張列印
+    if (outputMode === 'school' || outputMode === 'schoolTeacher') {  // 全校總表：暫時切橫向紙張列印
       styleEl = document.createElement('style');
       styleEl.textContent = '@page{size:landscape;margin:8mm}';
       document.head.appendChild(styleEl);
@@ -3166,7 +3202,7 @@ const clickHandlers = {
     window.print();
     setTimeout(cleanup, 2000);
   },
-  'master-png': () => schoolMasterPNG(),
+  'master-png': () => masterPNG(outputMode),
   'csv-out': exportCSV,
   'all-class-docx': exportAllClassDocx,
   'all-teacher-docx': exportAllTeacherDocx,
