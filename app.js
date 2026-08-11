@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v09.25';
+const APP_VERSION = 'v09.26';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -156,8 +156,10 @@ const activeDays = () => state.settings.days.slice().sort((a, b) => a - b);
 const lessonPeriods = () => state.settings.periods.filter(p => !p.isBreak);
 const slotKey = (c, d, p) => `${c}|${d}|${p}`;
 
+// 科目文字色：優先用自訂 textColor，否則依底色自動取黑/白（向下相容：舊科目無 textColor）
+function subjTextColor(s, fallbackBg) { return (s && s.textColor) ? s.textColor : textOn((s && s.color) || fallbackBg || '#94a3b8'); }
 function textOn(hex) {
-  const h = hex.replace('#', '');
+  const h = (hex || '#94a3b8').replace('#', '');
   const r = parseInt(h.substr(0, 2), 16), g = parseInt(h.substr(2, 2), 16), b = parseInt(h.substr(4, 2), 16);
   return (0.299 * r + 0.587 * g + 0.114 * b) > 150 ? '#1e293b' : '#ffffff';
 }
@@ -364,7 +366,7 @@ function buildFillFile(classId) {
   const c = classById(classId); const hr = homeroomTeacher(classId); const g = classGrade(c);
   const cells = classSelfCells(classId);
   // 候選科目池：目標＝應排 − 已鎖（扣除與科任協同等已鎖定不開放的節數）；目標為 0 者不列
-  const pool = selfCoursePool(classId).map(s => ({ sid: s.id, name: s.name, color: s.color, required: selfCourseTarget(classId, s.id) })).filter(x => x.required > 0);
+  const pool = selfCoursePool(classId).map(s => ({ sid: s.id, name: s.name, color: s.color, textColor: s.textColor || '', required: selfCourseTarget(classId, s.id) })).filter(x => x.required > 0);
   const days = activeDays();
   const periodsFull = state.settings.periods.map(p => ({ id: p.id, label: p.label, start: p.start || '', end: p.end || '', isBreak: !!p.isBreak }));
   const openKeys = []; const snapshot = {};   // openKeys＝該班有課的格；snapshot＝已固定(非自編)的課供參考
@@ -372,7 +374,7 @@ function buildFillFile(classId) {
     if (!(g && gradePeriodHasDay(g, p.id, d))) return;
     openKeys.push(d + '|' + p.id);
     const k = slotKey(classId, d, p.id); const sid = state.slots[k];
-    if (sid && !isSelfCell(k)) snapshot[d + '|' + p.id] = { name: subjectName(sid), teacher: slotTeachersLabel(k), color: (subjectById(sid) || {}).color || '#94a3b8' };
+    if (sid && !isSelfCell(k)) snapshot[d + '|' + p.id] = { name: subjectName(sid), teacher: slotTeachersLabel(k), color: (subjectById(sid) || {}).color || '#94a3b8', textColor: subjTextColor(subjectById(sid)) };
   }));
   return {
     fmt: FILL_FMT, ver: 2,
@@ -700,11 +702,11 @@ function viewTeacherFill() {
       if (cellSet.has(cellKey)) {
         const sid = p.content[cellKey]; const s = sid ? smap[sid] : null; const color = s ? s.color : '#10b981';
         table += `<td class="cell placeable" data-action="tfill-cell" data-key="${esc(cellKey)}" title="自編格：點我選課">
-          <div class="cell-lesson self-designed ${s ? '' : 'released'}" style="background:${color};color:${textOn(color)}">🧩${s ? esc(s.name) : '點我選課'}</div></td>`;
+          <div class="cell-lesson self-designed ${s ? '' : 'released'}" style="background:${color};color:${subjTextColor(s, color)}">🧩${s ? esc(s.name) : '點我選課'}</div></td>`;
       } else {
         const snap = p.snapshot[key];
         table += snap
-          ? `<td class="cell" title="已固定，不可改"><div class="cell-lesson locked" style="background:${snap.color || '#94a3b8'};color:${textOn(snap.color || '#94a3b8')};opacity:.9"><span class="lock-mark">🔒</span>${esc(snap.name)}<small>${esc(snap.teacher || '')}</small></div></td>`
+          ? `<td class="cell" title="已固定，不可改"><div class="cell-lesson locked" style="background:${snap.color || '#94a3b8'};color:${snap.textColor || textOn(snap.color || '#94a3b8')};opacity:.9"><span class="lock-mark">🔒</span>${esc(snap.name)}<small>${esc(snap.teacher || '')}</small></div></td>`
           : `<td class="cell"></td>`;
       }
     }
@@ -813,7 +815,7 @@ function subjBody(confirmed) {
     const lock = lockPill(s);
     const row2 = (consec || lock) ? `<div class="sc-row">${consec}${lock}</div>` : '';
     return `<div class="subj-card" data-action="edit-subject" data-id="${s.id}">
-      <div class="sc-head"><span class="sc-name" style="background:${s.color};color:${textOn(s.color)}">${esc(s.name)}</span></div>
+      <div class="sc-head"><span class="sc-name" style="background:${s.color};color:${subjTextColor(s)}">${esc(s.name)}</span></div>
       <div class="sc-meta">
         <div class="sc-row">${domainPill(s)}${modePill(s)}</div>
         ${row2}
@@ -824,7 +826,8 @@ function subjBody(confirmed) {
   return hint + `<div class="subj-cards">${cards}</div>`;
 }
 function subjectModal(existing) {
-  const s = existing || { name: '', color: COLORS[state.subjects.length % COLORS.length], domainId: '', allowGrouping: false, splitTeachers: false, consecutive: false, lockDays: [], lockPeriods: [] };
+  const s = existing || { name: '', color: COLORS[state.subjects.length % COLORS.length], textColor: '', domainId: '', allowGrouping: false, splitTeachers: false, consecutive: false, lockDays: [], lockPeriods: [] };
+  const curText = s.textColor || textOn(s.color);   // 目前文字色（未設過→依底色自動）
   const mode = s.splitTeachers ? 'split' : s.allowGrouping ? 'group' : 'single';
   const domainOpts = `<option value="">（未分類）</option>` +
     state.domains.map(d => `<option value="${d.id}" ${s.domainId === d.id ? 'selected' : ''}>${esc(d.name)}</option>`).join('');
@@ -842,10 +845,13 @@ function subjectModal(existing) {
   openModal({
     title: existing ? '編輯科目' : '新增科目',
     body: `
-      <div class="field-row">
-        <label class="field" style="flex:2"><span>科目名稱</span><input type="text" id="sName" value="${esc(s.name)}"></label>
-        <label class="field" style="flex:1"><span>顏色</span><input type="color" id="sColor" value="${s.color}" style="height:40px;padding:2px"></label>
+      <label class="field"><span>科目名稱</span><input type="text" id="sName" value="${esc(s.name)}" oninput="var p=document.getElementById('sPreview');if(p)p.textContent=this.value||'科目'"></label>
+      <div class="field-row" style="align-items:flex-end">
+        <label class="field" style="flex:1;margin-bottom:0"><span>底色</span><input type="color" id="sColor" value="${s.color}" style="height:40px;padding:2px" oninput="var p=document.getElementById('sPreview');if(p)p.style.background=this.value"></label>
+        <label class="field" style="flex:1;margin-bottom:0"><span>文字色</span><input type="color" id="sTextColor" value="${curText}" style="height:40px;padding:2px" oninput="var p=document.getElementById('sPreview');if(p)p.style.color=this.value"></label>
+        <div class="field" style="flex:1.4;margin-bottom:0"><span>預覽</span><span id="sPreview" class="pill" style="display:flex;align-items:center;justify-content:center;height:40px;font-weight:800;font-size:15px;background:${s.color};color:${curText}">${esc(s.name) || '科目'}</span></div>
       </div>
+      <p class="hint" style="color:var(--muted);margin:-4px 0 8px;font-size:12px">底色＋文字色可自由搭配，方便一眼分辨 19 科；文字色預設依底色自動取黑/白，可自行調整。</p>
       <div class="field-row">
         <label class="field" style="flex:1"><span>所屬領域</span><select id="sDomain">${domainOpts}</select></label>
         <label class="field" style="flex:2"><span>教學型態</span>
@@ -893,7 +899,7 @@ function subjectModal(existing) {
       const pairsRaw = ($('#sConsecPairs').value || '').trim();
       const consecutivePairs = consec && pairsRaw !== '' ? Math.max(0, parseInt(pairsRaw, 10) || 0) : null;
       const spreadV = $('#sSpread').value;   // none / distinct / gap（整併原兩個 checkbox）
-      const data = { name, color: $('#sColor').value, domainId: $('#sDomain').value, allowGrouping: m === 'group', splitTeachers: m === 'split', consecutive: consec, consecutivePairs, lockDays: ld, lockPeriods: lp, distinctDays: spreadV === 'distinct', gapDays: spreadV === 'gap', preferBand: 'any', preferPeriods: pp, avoidLastPeriod: $('#sAvoidLast').checked, singleApartFromPair: $('#sSingleApart').checked, excludeDailyCap: $('#sExCap').checked };
+      const data = { name, color: $('#sColor').value, textColor: $('#sTextColor').value, domainId: $('#sDomain').value, allowGrouping: m === 'group', splitTeachers: m === 'split', consecutive: consec, consecutivePairs, lockDays: ld, lockPeriods: lp, distinctDays: spreadV === 'distinct', gapDays: spreadV === 'gap', preferBand: 'any', preferPeriods: pp, avoidLastPeriod: $('#sAvoidLast').checked, singleApartFromPair: $('#sSingleApart').checked, excludeDailyCap: $('#sExCap').checked };
       if (existing) Object.assign(existing, data); else state.subjects.push({ id: uid(), ...data });
       save(); render(); toast('已儲存科目');
       return true;
@@ -943,7 +949,7 @@ function gradeFold() {
     const sh = gradeSubjHours(g, s.id); const on = !!sh;
     return `<tr>
       <td><label class="checkbox" style="font-weight:400"><input type="checkbox" data-change="grade-subj-on" data-gid="${g.id}" data-sid="${s.id}" ${on ? 'checked' : ''}>
-        <span class="pill" style="background:${s.color};color:${textOn(s.color)}">${esc(s.name)}</span>${s.allowGrouping ? ' 👥' : ''}</label></td>
+        <span class="pill" style="background:${s.color};color:${subjTextColor(s)}">${esc(s.name)}</span>${s.allowGrouping ? ' 👥' : ''}</label></td>
       <td style="width:130px"><input type="number" min="0" max="40" data-change="grade-subj-hours" data-gid="${g.id}" data-sid="${s.id}" value="${on ? sh.hours : ''}" ${on ? '' : 'disabled'} style="width:90px"> 節</td>
     </tr>`;
   }).join('');
@@ -1059,7 +1065,7 @@ function classModal(existing) {
           : others.map(o => `<label class="checkbox" style="font-weight:400;display:inline-flex;margin-right:12px">
               <input type="checkbox" data-coteach-subj data-sid="${sh.subjectId}" data-cid="${o.id}" ${partners.includes(o.id) ? 'checked' : ''}> ${esc(o.name)}</label>`).join('');
         return `<tr>
-          <td style="white-space:nowrap"><span class="pill" style="background:${s.color};color:${textOn(s.color)}">${esc(s.name)}</span>${s.allowGrouping ? ' 👥' : ''}</td>
+          <td style="white-space:nowrap"><span class="pill" style="background:${s.color};color:${subjTextColor(s)}">${esc(s.name)}</span>${s.allowGrouping ? ' 👥' : ''}</td>
           <td style="white-space:nowrap">${sh.hours} 節</td>
           <td>🔗 ${picker}</td>
         </tr>`;
@@ -1115,7 +1121,7 @@ function classDetailModal(c) {
       : others.map(o => `<label class="checkbox" style="font-weight:400;display:inline-flex;margin-right:12px">
           <input type="checkbox" data-coteach-subj data-sid="${sh.subjectId}" data-cid="${o.id}" ${partners.includes(o.id) ? 'checked' : ''}> ${esc(o.name)}</label>`).join('');
     return `<tr>
-      <td style="white-space:nowrap"><span class="pill" style="background:${s.color};color:${textOn(s.color)}">${esc(s.name)}</span>${s.allowGrouping ? ' 👥' : ''}</td>
+      <td style="white-space:nowrap"><span class="pill" style="background:${s.color};color:${subjTextColor(s)}">${esc(s.name)}</span>${s.allowGrouping ? ' 👥' : ''}</td>
       <td style="white-space:nowrap">${sh.hours} 節</td>
       <td>🔗 ${picker}</td>
     </tr>`;
@@ -2184,14 +2190,14 @@ function classTimetableHTML(classId, conflicts, editable) {
         const tlock = selfCellTeacherLocked(key);                   // v09.00 導師自編完成→唯讀
         const co = s ? classCoteachPartners(c, sid).length : 0;
         html += `<td class="cell ${editable ? 'placeable' : ''}" ${dataAct} title="${tlock ? '導師自編已鎖定（唯讀）' : '自編格（導師選課）'}">
-          <div class="cell-lesson self-designed ${s ? '' : 'released'} ${tlock ? 'locked' : ''}" style="background:${color};color:${textOn(color)}"><span class="cell-flag">${tlock ? '🔒' : '🧩'}${co ? '🔗' : ''}</span>${s ? esc(s.name) : '自編'}
+          <div class="cell-lesson self-designed ${s ? '' : 'released'} ${tlock ? 'locked' : ''}" style="background:${color};color:${subjTextColor(s, color)}"><span class="cell-flag">${tlock ? '🔒' : '🧩'}${co ? '🔗' : ''}</span>${s ? esc(s.name) : '自編'}
             <small>${s ? esc(slotTeachersLabel(key)) : '＋ 點選課程'}</small></div></td>`;
       } else if (sid) {
         const s = subjectById(sid); const color = s ? s.color : '#94a3b8';
         const co = classCoteachPartners(c, sid).length;
         const selfBadge = selfPreview ? '<span class="lock-mark self" title="級任導師任課：完成鎖定後將自動釋放為導師自編">🧩</span>' : '';
         html += `<td class="cell ${editable ? 'placeable' : ''} ${canSelect ? 'lock-target' : ''} ${cellSel ? 'lock-sel' : ''} ${selfPreview ? 'self-preview' : ''}" ${dataAct} title="${selfPreview ? '級任導師任課→完成鎖定後自動釋放為導師自編（單格鎖定時不可鎖）' : (conf ? esc(conf.join('；')) : '')}">
-          <div class="cell-lesson ${conf ? 'conflict' : ''} ${isLocked ? 'locked' : ''}" style="background:${color};color:${textOn(color)}">
+          <div class="cell-lesson ${conf ? 'conflict' : ''} ${isLocked ? 'locked' : ''}" style="background:${color};color:${subjTextColor(s, color)}">
             ${lockMark}${selMark}${selfBadge}<span class="cell-flag">${co ? '🔗' : ''}${s && s.allowGrouping ? '👥' : ''}${s && s.splitTeachers ? '✂️' : ''}</span>${esc(subjectName(sid))}
             <small>${esc(slotTeachersLabel(key))}${!(s && s.splitTeachers) && roomsLabelCS(classId, sid) ? '·' + esc(roomsLabelCS(classId, sid)) : ''}</small>
             ${conf ? `<span class="conf-mark">⚠ ${conf.some(x => x.includes('衝堂') || x.includes('不排課')) ? '衝堂' : conf.some(x => x.startsWith('協同')) ? '協同未同步' : '連堂未相鄰'}</span>` : ''}
@@ -2268,7 +2274,7 @@ function teacherTimetableHTML(teacherId, conflicts) {
         const s = subjectById(hits[0].sid); const color = s ? s.color : '#94a3b8';
         const conf = hits.some(h => conflicts[h.key]);
         const label = hits.map(h => (classById(h.classId) || {}).name || '').join('、');
-        html += `<td class="cell"><div class="cell-lesson ${conf ? 'conflict' : ''}" style="background:${color};color:${textOn(color)}">${esc(label)}<small>${esc(subjectName(hits[0].sid))}</small></div></td>`;
+        html += `<td class="cell"><div class="cell-lesson ${conf ? 'conflict' : ''}" style="background:${color};color:${subjTextColor(s, color)}">${esc(label)}<small>${esc(subjectName(hits[0].sid))}</small></div></td>`;
       } else html += `<td class="cell"></td>`;
     }
     html += `</tr>`;
@@ -2309,7 +2315,7 @@ function masterModel(kind) {
         const s = subjectById(hits[0].sid); const color = s ? s.color : '#94a3b8';
         const classes = hits.map(h => classShortName(classById(h.classId))).join('、');   // 班級簡稱（六年忠班→六忠）
         const subj = subjectName(hits[0].sid);
-        return { text: classes + ' ' + subj, color, title: classes + '｜' + subj };
+        return { text: classes + ' ' + subj, color, textColor: subjTextColor(s, color), title: classes + '｜' + subj };
       },
     };
   }
@@ -2324,7 +2330,7 @@ function masterModel(kind) {
       if (!(g && gradePeriodHasDay(g, pid, day))) return { blocked: true };
       const key = slotKey(c.id, day, pid); const sid = state.slots[key]; if (!sid) return null;
       const s = subjectById(sid); const color = s ? s.color : '#94a3b8';
-      return { text: subjectName(sid), color, title: slotTeachersLabel(key) };
+      return { text: subjectName(sid), color, textColor: subjTextColor(s, color), title: slotTeachersLabel(key) };
     },
   };
 }
@@ -2343,7 +2349,7 @@ function masterTableHTML(kind) {
         const cell = m.cellFor(d, p.id, i);
         if (cell && cell.blocked) { html += `<td class="mblocked"></td>`; return; }
         if (!cell) { html += `<td></td>`; return; }
-        html += `<td class="mcell" style="background:${cell.color};color:${textOn(cell.color)}" title="${esc(cell.title || '')}">${esc(cell.text)}</td>`;
+        html += `<td class="mcell" style="background:${cell.color};color:${cell.textColor || textOn(cell.color)}" title="${esc(cell.title || '')}">${esc(cell.text)}</td>`;
       });
       html += `</tr>`;
     });
@@ -2386,7 +2392,7 @@ function masterPNG(kind) {
         if (cell && cell.blocked) { ctx.fillStyle = '#eef2f7'; ctx.fillRect(x, y, colW, rowH); }
         else if (cell) {
           ctx.fillStyle = cell.color; ctx.fillRect(x, y, colW, rowH);
-          ctx.fillStyle = textOn(cell.color); ctx.font = `12px ${FONT}`;
+          ctx.fillStyle = cell.textColor || textOn(cell.color); ctx.font = `12px ${FONT}`;
           ctx.fillText(cell.text, x + colW / 2, y + rowH / 2);
         }
       });
