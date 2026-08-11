@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v09.19';
+const APP_VERSION = 'v09.20';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -221,6 +221,7 @@ function closeModal() { $('#modalRoot').innerHTML = ''; modalOnSave = null; }
    ========================================================================== */
 let currentTab = 'subjects';
 let selectedGradeId = null;
+let subjDomainOpen = false;   // ① 科目頁：領域節數摺疊區是否展開（runtime，不持久化）
 let lockMode = false;   // v08.02 單格鎖定選取模式進行中（runtime，不持久化）
 let kioskFill = false;  // v09.05 導師填課 kiosk：隱藏其他分頁、只顯示填課介面（?fill 或導師入口）
 let fillLinkMode = false; // v09.07 由填課連結(?fill)進入：離開＝關閉分頁/結束畫面，永不進入系統（防導師誤觸竄改資料）
@@ -766,32 +767,58 @@ function render() {
    ① 科目
    ========================================================================== */
 function viewSubjects() {
-  const head = `<div class="page-head"><h2>① 科目</h2><button class="btn" data-action="add-subject">＋ 新增科目</button></div>
-    <div class="hint" style="margin-bottom:12px;color:var(--muted)">先建立全校要開的科目，並選教學型態：<b>單一教師</b>整科一位老師；<b>👥 分組教學</b>同班多師「同一節」平行上；<b>✂️ 分節上課</b>多師分攤節數、各上「不同節」（如生活 6 節＝A 上 4＋B 上 2）。</div>`;
-  if (state.subjects.length === 0) return head + emptyCard('尚無科目', '例如：國語、數學、英語、自然、體育、藝術…');
-  const modePill = s => s.splitTeachers ? '<span class="pill teal">✂️ 分節上課</span>' : s.allowGrouping ? '<span class="pill amber">👥 分組教學</span>' : '<span style="color:var(--muted)">單一教師</span>';
-  const lockText = s => {
+  const confirmed = !!state.domainsConfirmed;
+  const head = `<div class="page-head"><h2>① 科目</h2>${confirmed ? '<button class="btn" data-action="add-subject">＋ 新增科目</button>' : ''}</div>`;
+  return head + subjDomainFold(confirmed) + subjBody(confirmed);
+}
+// ① 科目：領域節數摺疊區（需先完成才能新增科目）
+function subjDomainFold(confirmed) {
+  const open = (!confirmed || subjDomainOpen) ? 'open' : '';
+  const badge = confirmed ? '<span class="pill green">✓ 已完成</span>' : '<span class="pill amber">請先設定</span>';
+  const confirmBtn = confirmed
+    ? ''
+    : '<button class="btn" data-action="confirm-domains" style="margin-top:14px">✓ 完成領域設定，開始建立科目</button>';
+  return `<details class="domain-fold" ${open}>
+    <summary>📚 領域節數設定 ${badge}</summary>
+    <div class="domain-fold-body">
+      <div class="hint" style="margin-bottom:12px;color:var(--muted)">各領域每年級的<b>建議節數</b>（可編輯）與<b>目前實配</b>對照。<b style="color:var(--warn)">預設數字為 108 課綱起點，請務必依課綱／貴校實況校對。</b>科目會逐科指定「所屬領域」，故請先完成此表。</div>
+      <button class="btn" data-action="add-domain">＋ 新增領域</button>
+      <div style="margin-top:12px">${domainRefAndCmp()}</div>
+      ${confirmBtn}
+    </div>
+  </details>`;
+}
+// ① 科目：科目本體（未完成領域→閘門提示；完成→卡片）
+function subjBody(confirmed) {
+  if (!confirmed)
+    return `<div class="card"><div class="card-body" style="text-align:center;color:var(--muted);padding:32px 16px">
+      請先於上方完成「領域節數」設定，按 <b>✓ 完成領域設定</b> 後即可開始新增科目。</div></div>`;
+  const hint = `<div class="hint" style="margin-bottom:12px;color:var(--muted)">教學型態：<b>單一教師</b>整科一位老師；<b>👥 分組教學</b>同班多師「同一節」平行上；<b>✂️ 分節上課</b>多師分攤節數、各上「不同節」（如生活 6 節＝A 上 4＋B 上 2）。點卡片可編輯，刪除鈕在卡片右下角。</div>`;
+  if (state.subjects.length === 0) return hint + emptyCard('尚無科目', '點右上「＋ 新增科目」建立，例如：國語、數學、英語、自然、體育、藝術…');
+  const modePill = s => s.splitTeachers ? '<span class="pill teal">✂️ 分節上課</span>' : s.allowGrouping ? '<span class="pill amber">👥 分組教學</span>' : '<span class="pill gray">單一教師</span>';
+  const lockPill = s => {
     const parts = [];
     if ((s.lockDays || []).length) parts.push(s.lockDays.slice().sort((a, b) => a - b).map(d => DAY_LABELS[d]).join('/'));
     if ((s.lockPeriods || []).length) parts.push(s.lockPeriods.map(pid => (byId(state.settings.periods, pid) || {}).label || pid).join('/'));
-    return parts.length ? `<span class="pill gray">🔒 ${esc(parts.join('｜'))}</span>` : '<span style="color:var(--muted)">—</span>';
+    return parts.length ? `<span class="pill gray">🔒 ${esc(parts.join('｜'))}</span>` : '';
   };
-  const domainCell = s => {
-    if (!s.domainId || !domainById(s.domainId)) return '<span style="color:var(--warn)">未分類</span>';
-    return `<span class="pill gray">${esc(domainName(s.domainId))}</span>`;
-  };
-  const rows = state.subjects.map(s => `<tr>
-    <td><span class="pill" style="background:${s.color};color:${textOn(s.color)}">${esc(s.name)}</span></td>
-    <td>${domainCell(s)}</td>
-    <td>${modePill(s)}</td>
-    <td>${s.consecutive ? `<span class="pill blue">⏱ 連堂${s.consecutivePairs != null ? '×' + s.consecutivePairs : ''}</span>` : '<span style="color:var(--muted)">—</span>'}</td>
-    <td>${lockText(s)}</td>
-    <td class="row-actions">
-      <button class="icon-btn" data-action="edit-subject" data-id="${s.id}">✏️</button>
-      <button class="icon-btn" data-action="del-subject" data-id="${s.id}">🗑️</button>
-    </td></tr>`).join('');
-  return head + `<div class="card"><table class="data">
-    <thead><tr><th>科目</th><th>領域</th><th>教學型態</th><th>連堂</th><th>排課限制</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
+  const domainPill = s => (!s.domainId || !domainById(s.domainId))
+    ? '<span class="pill amber">未分類</span>'
+    : `<span class="pill gray">${esc(domainName(s.domainId))}</span>`;
+  const cards = state.subjects.map(s => {
+    const consec = s.consecutive ? `<span class="pill blue">⏱ 連堂${s.consecutivePairs != null ? '×' + s.consecutivePairs : ''}</span>` : '';
+    const lock = lockPill(s);
+    const row2 = (consec || lock) ? `<div class="sc-row">${consec}${lock}</div>` : '';
+    return `<div class="subj-card" data-action="edit-subject" data-id="${s.id}">
+      <div class="sc-head"><span class="sc-name" style="background:${s.color};color:${textOn(s.color)}">${esc(s.name)}</span></div>
+      <div class="sc-meta">
+        <div class="sc-row">${domainPill(s)}${modePill(s)}</div>
+        ${row2}
+      </div>
+      <button class="icon-btn sc-del" data-action="del-subject" data-id="${s.id}" title="刪除科目">🗑️</button>
+    </div>`;
+  }).join('');
+  return hint + `<div class="subj-cards">${cards}</div>`;
 }
 function subjectModal(existing) {
   const s = existing || { name: '', color: COLORS[state.subjects.length % COLORS.length], domainId: '', allowGrouping: false, splitTeachers: false, consecutive: false, lockDays: [], lockPeriods: [] };
@@ -1380,10 +1407,14 @@ function staffingReportModal() {
    領域節數參考（v06.00）：建議節數參考表（可編輯）＋ 各年級實配對照
    ========================================================================== */
 function viewDomains() {
-  const grades = state.grades; // g1..g6，順序＝一~六
-  const gh = GRADE_NAMES.map(n => `<th style="text-align:center;width:66px">${esc(n.replace('年級', ''))}</th>`).join('');
   const head = `<div class="page-head"><h2>領域節數</h2><button class="btn" data-action="add-domain">＋ 新增領域</button></div>
     <div class="hint" style="margin-bottom:12px;color:var(--muted)">各領域每年級的<b>建議節數</b>（可編輯）與<b>目前實配</b>對照。實配＝「② 年級」已設科目節數，依「① 科目」所選「所屬領域」加總。<b style="color:var(--warn)">下方預設數字為 108 課綱起點，請務必依課綱／貴校實況校對。</b></div>`;
+  return head + domainRefAndCmp();
+}
+// 領域節數的兩張卡（建議節數參考表 + 各年級實配對照）；供獨立分頁與「① 科目」摺疊區共用
+function domainRefAndCmp() {
+  const grades = state.grades; // g1..g6，順序＝一~六
+  const gh = GRADE_NAMES.map(n => `<th style="text-align:center;width:66px">${esc(n.replace('年級', ''))}</th>`).join('');
 
   // 建議節數參考表（可編輯）
   const refRows = state.domains.map(d => `<tr>
@@ -1425,7 +1456,7 @@ function viewDomains() {
       <b style="color:var(--warn)">未分類科目</b>＝該科在「① 科目」未指定所屬領域，未計入任何領域。合計列的可用格數來自「② 年級」節次表。</p>
   </div></div>`;
 
-  return head + refCard + cmpCard;
+  return refCard + cmpCard;
 }
 
 /* ==========================================================================
@@ -3008,7 +3039,7 @@ const clickHandlers = {
   'edit-room': el => roomModal(roomById(el.dataset.id)),
   'del-room': el => delRoom(el.dataset.id),
 
-  'add-subject': () => subjectModal(null),
+  'add-subject': () => { if (!state.domainsConfirmed) { toast('請先完成領域節數設定'); return; } subjectModal(null); },
   'edit-subject': el => subjectModal(subjectById(el.dataset.id)),
   'del-subject': el => delSubject(el.dataset.id),
   'pref-am': () => document.querySelectorAll('.s-prefper').forEach(el => { el.checked = isMorningPeriod(el.value); }),
@@ -3025,15 +3056,17 @@ const clickHandlers = {
   'add-load-row': () => { syncLoadFromDOM(); const cid = state.classes[0] ? state.classes[0].id : ''; const idx = modalLoad.length; modalLoad.push({ classId: cid, subjectId: firstAvailableSubject(cid, idx), hours: 0 }); refreshLoadEditor(); updateLoadSum(); },
   'del-load-row': el => { syncLoadFromDOM(); modalLoad.splice(parseInt(el.dataset.idx, 10), 1); refreshLoadEditor(); updateLoadSum(); },
 
-  'add-domain': () => { state.domains.push({ id: uid(), name: '新領域', hours: [0, 0, 0, 0, 0, 0] }); save(); render(); },
+  'add-domain': () => { subjDomainOpen = true; state.domains.push({ id: uid(), name: '新領域', hours: [0, 0, 0, 0, 0, 0] }); save(); render(); },
   'del-domain': el => {
     const d = domainById(el.dataset.id); if (!d) return;
     const used = state.subjects.filter(s => s.domainId === d.id);
+    subjDomainOpen = true;
     confirmDelete(`刪除領域「${d.name}」？${used.length ? '（' + used.length + ' 個科目將變回未分類）' : ''}`, () => {
       state.subjects.forEach(s => { if (s.domainId === d.id) s.domainId = ''; });
       state.domains = state.domains.filter(x => x.id !== d.id);
     });
   },
+  'confirm-domains': () => { state.domainsConfirmed = true; subjDomainOpen = false; save(); render(); toast('領域設定完成，可開始新增科目'); },
 
   'add-class': () => classModal(null),
   'edit-class': el => classModal(classById(el.dataset.id)),
@@ -3235,10 +3268,11 @@ const changeHandlers = {
   'set-maxperday': el => { state.settings.maxLessonsPerDay = parseInt(el.value, 10) || 0; save(); },
   'report-field': el => { state.settings[el.dataset.field] = el.value; save(); },
   'subjmap-field': el => { if (!state.settings.subjectMap) state.settings.subjectMap = {}; const v = el.value.trim(); if (v === '') delete state.settings.subjectMap[el.dataset.subj]; else state.settings.subjectMap[el.dataset.subj] = v; save(); },
-  'domain-name': el => { const d = domainById(el.dataset.id); if (d) { d.name = el.value; save(); render(); } },
+  'domain-name': el => { const d = domainById(el.dataset.id); if (d) { subjDomainOpen = true; d.name = el.value; save(); render(); } },
   'domain-hours': el => {
     const d = domainById(el.dataset.id); if (!d) return;
     if (!Array.isArray(d.hours)) d.hours = [0, 0, 0, 0, 0, 0];
+    subjDomainOpen = true;
     d.hours[parseInt(el.dataset.grade, 10)] = parseInt(el.value, 10) || 0;
     save(); render();
   },
@@ -3337,6 +3371,7 @@ async function init() {
   if (!state.selfBackup || typeof state.selfBackup !== 'object') state.selfBackup = {};       // v09.00 釋放前備份
   if (!state.selfDone || typeof state.selfDone !== 'object') state.selfDone = {};             // v09.00 導師自編完成
   if (typeof state.staffingOkSig !== 'string') state.staffingOkSig = '';                      // v09.01 配課檢查簽章
+  if (typeof state.domainsConfirmed !== 'boolean') state.domainsConfirmed = state.subjects.length > 0; // v09.20 領域→科目整合閘門（既有已建科目者視為已完成，不擋）
   state.subjects.forEach(s => { if (s.selfDesigned) delete s.selfDesigned; });                // v08.03 移除舊手動自編旗標
   // v03.00 課表輸出格式欄位 guard（舊資料補預設）
   if (!state.settings.reportSchool) state.settings.reportSchool = '臺東縣成功鎮三民國民小學';
