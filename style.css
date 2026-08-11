@@ -119,6 +119,27 @@ details.domain-fold[open] > summary { border-bottom: 1px solid var(--line); }
 .subj-card .sc-del { position: absolute; right: 8px; bottom: 8px; font-size: 16px; }
 .subj-card .sc-del:hover { background: var(--danger-bg); color: var(--danger); }
 
+/* ---------- ② 年級與班級：年級摺疊 + 班級卡片 ---------- */
+details.grade-fold { border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow); margin-bottom: 8px; overflow: hidden; }
+details.grade-fold > summary { cursor: pointer; font-weight: 700; font-size: 15px; padding: 14px 16px; user-select: none; list-style: none; display: flex; align-items: center; gap: 10px; }
+details.grade-fold > summary::-webkit-details-marker { display: none; }
+details.grade-fold > summary::before { content: '▸'; color: var(--muted); transition: transform .15s; font-size: 13px; }
+details.grade-fold[open] > summary::before { transform: rotate(90deg); }
+details.grade-fold[open] > summary { border-bottom: 1px solid var(--line); }
+.grade-fold-body { padding: 16px; }
+.grade-fold-body > .grade-cols .card { box-shadow: none; }
+
+.class-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
+.class-card { position: relative; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); padding: 14px 14px 8px; cursor: pointer; transition: border-color .15s, box-shadow .15s, transform .1s; }
+.class-card:hover { border-color: var(--brand); box-shadow: 0 4px 14px rgba(15, 23, 42, .12); }
+.class-card:active { transform: translateY(1px); }
+.class-card .cc-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+.class-card .cc-name { font-weight: 800; font-size: 16px; }
+.class-card .cc-meta { font-size: 13px; color: var(--muted); margin-bottom: 10px; }
+.class-card .cc-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; border-top: 1px solid var(--line); padding-top: 8px; }
+.class-card .cc-del { font-size: 16px; }
+.class-card .cc-del:hover { background: var(--danger-bg); color: var(--danger); }
+
 /* ---------- 半自動建議 ---------- */
 .ghost.mini { padding: 2px 7px; font-size: 11px; line-height: 1.4; white-space: nowrap; }
 .suggest-list { display: flex; flex-direction: column; gap: 6px; }
