@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v09.22';
+const APP_VERSION = 'v09.23';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -1213,20 +1213,25 @@ function viewTeachers() {
       </div></div>`;
   const head = `<div class="page-head"><h2>③ 教師</h2><button class="btn" data-action="add-teacher">＋ 新增教師</button></div>
     <div class="hint" style="margin-bottom:12px;color:var(--muted)">填入教師基本資料與不排課時段，並設定其配課（教哪個班的哪一科幾節）。每位教師配課合計須等於其每周授課時數才可儲存。</div>`;
-  if (state.teachers.length === 0) return head + statusCard + emptyCard('尚無教師', '新增教師並設定配課。');
-  const rows = state.teachers.map(t => {
+  if (state.teachers.length === 0) return head + statusCard + emptyCard('尚無教師', '點右上「＋ 新增教師」建立並設定配課。');
+  const cards = state.teachers.map(t => {
     const sum = teacherLoadSum(t); const match = sum === (t.weeklyHours || 0);
-    return `<tr>
-      <td><b>${esc(t.name)}</b></td>
-      <td><span class="pill gray">${esc(t.type || '')}</span>${t.type === '級任' && t.homeroomClassId && classById(t.homeroomClassId) ? `<span class="pill blue" style="margin-left:4px">🎓 ${esc(classById(t.homeroomClassId).name)}導師</span>` : ''}</td>
-      <td>${t.weeklyHours || 0} 節</td>
-      <td style="color:${match ? 'var(--ok)' : 'var(--danger)'};font-weight:700">${sum} 節 ${match ? '✓' : '✗'}</td>
-      <td>${(t.load || []).length} 筆</td>
-      <td>${(t.unavailable || []).length ? (t.unavailable.length + ' 個') : '—'}</td>
-      <td class="row-actions">
-        <button class="icon-btn" data-action="edit-teacher" data-id="${t.id}">✏️</button>
-        <button class="icon-btn" data-action="del-teacher" data-id="${t.id}">🗑️</button>
-      </td></tr>`;
+    const hr = t.type === '級任' && t.homeroomClassId && classById(t.homeroomClassId)
+      ? `<span class="pill blue">🎓 ${esc(classById(t.homeroomClassId).name)}導師</span>` : '';
+    const unav = (t.unavailable || []).length;
+    const clr = match ? 'var(--ok)' : 'var(--danger)';
+    return `<div class="teacher-card" data-action="edit-teacher" data-id="${t.id}">
+      <div class="tc-head">
+        <span class="tc-name">${esc(t.name)}</span>
+        <span class="pill gray">${esc(t.type || '')}</span>
+        ${hr}
+      </div>
+      <div class="tc-meta">
+        <div>授課 <b style="color:${clr}">${sum}</b> / ${t.weeklyHours || 0} 節 <span style="color:${clr};font-weight:700">${match ? '✓' : '✗'}</span></div>
+        <div>配課 ${(t.load || []).length} 筆${unav ? ` · 不排課 ${unav}` : ''}</div>
+      </div>
+      <button class="icon-btn tc-del" data-action="del-teacher" data-id="${t.id}" title="刪除教師">🗑️</button>
+    </div>`;
   }).join('');
   const matrixCard = state.classes.length ? `<div class="card"><div class="card-body">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
@@ -1235,9 +1240,7 @@ function viewTeachers() {
       </div>
       ${showLoadMatrix ? loadMatrixHTML() : '<p style="color:var(--muted);margin:8px 0 0">展開可一眼看出每班每科由誰配課、哪裡有缺口（未配足／超額）。</p>'}
     </div></div>` : '';
-  return head + statusCard + `<div class="card"><table class="data">
-    <thead><tr><th>姓名</th><th>身分</th><th>每周授課</th><th>已配</th><th>配課筆數</th><th>不排課</th><th></th></tr></thead>
-    <tbody>${rows}</tbody></table></div>` + matrixCard;
+  return head + statusCard + `<div class="teacher-cards">${cards}</div>` + matrixCard;
 }
 // v09.12 班×科配課矩陣：列＝班級（依年級序）、欄＝有任一年級需上的科目；格顯示配課教師與 已配/應排，缺口紅、超額橘
 function loadMatrixHTML() {
