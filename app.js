@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v09.24';
+const APP_VERSION = 'v09.25';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -403,6 +403,9 @@ function mergeFillFile(obj) {
     const chosen = content[key]; if (!chosen || state.slots[key] === chosen) return;
     if (!poolIds.has(chosen)) { res.conflicts.push(`${lbl(key)}：科目不在導師候選，略過`); return; }
     state.slots[key] = chosen; res.set++;
+    // 分節上課(✂️)科目：自編格由本班級任導師任教，需記錄授課老師，否則顯示「未指定老師」
+    const chSubj = subjectById(chosen), hrT = homeroomTeacher(classId);
+    if (chSubj && chSubj.splitTeachers && hrT) state.slotTeachers[key] = hrT.id; else delete state.slotTeachers[key];
     const a = key.split('|'); const gid = c.coteach && c.coteach[chosen];   // 協同連動：夥伴班同格（自編、未鎖、空）一併填
     if (gid) state.classes.filter(x => x.id !== classId && x.coteach && x.coteach[chosen] === gid).forEach(p => {
       const mk = slotKey(p.id, a[1], a[2]);
@@ -3254,6 +3257,9 @@ const clickHandlers = {
     if (state.slots[key] !== sid && selfCoursePlaced(classId, sid) >= selfCourseTarget(classId, sid)) { toast('該科已達可自編節數'); return; }
     pushUndo();
     state.slots[key] = sid;
+    // 分節上課(✂️)科目：自編格由本班級任導師任教，需記錄授課老師，否則顯示「未指定老師」
+    const sSubj = subjectById(sid), hrT = homeroomTeacher(classId);
+    if (sSubj && sSubj.splitTeachers && hrT) state.slotTeachers[key] = hrT.id; else delete state.slotTeachers[key];
     // v09.00 協同連動：夥伴班同格（同為自編格、未鎖、空）一併填入
     const c = classById(classId); const gid = c && c.coteach && c.coteach[sid];
     if (gid) state.classes.filter(x => x.id !== classId && x.coteach && x.coteach[sid] === gid).forEach(p => {
