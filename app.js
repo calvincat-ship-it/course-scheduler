@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v09.23';
+const APP_VERSION = 'v09.24';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -2181,7 +2181,7 @@ function classTimetableHTML(classId, conflicts, editable) {
         const tlock = selfCellTeacherLocked(key);                   // v09.00 導師自編完成→唯讀
         const co = s ? classCoteachPartners(c, sid).length : 0;
         html += `<td class="cell ${editable ? 'placeable' : ''}" ${dataAct} title="${tlock ? '導師自編已鎖定（唯讀）' : '自編格（導師選課）'}">
-          <div class="cell-lesson self-designed ${s ? '' : 'released'} ${tlock ? 'locked' : ''}" style="background:${color};color:${textOn(color)}">${tlock ? '🔒' : '🧩'}${co ? '🔗' : ''}${s ? esc(s.name) : '自編'}
+          <div class="cell-lesson self-designed ${s ? '' : 'released'} ${tlock ? 'locked' : ''}" style="background:${color};color:${textOn(color)}"><span class="cell-flag">${tlock ? '🔒' : '🧩'}${co ? '🔗' : ''}</span>${s ? esc(s.name) : '自編'}
             <small>${s ? esc(slotTeachersLabel(key)) : '＋ 點選課程'}</small></div></td>`;
       } else if (sid) {
         const s = subjectById(sid); const color = s ? s.color : '#94a3b8';
@@ -2189,7 +2189,7 @@ function classTimetableHTML(classId, conflicts, editable) {
         const selfBadge = selfPreview ? '<span class="lock-mark self" title="級任導師任課：完成鎖定後將自動釋放為導師自編">🧩</span>' : '';
         html += `<td class="cell ${editable ? 'placeable' : ''} ${canSelect ? 'lock-target' : ''} ${cellSel ? 'lock-sel' : ''} ${selfPreview ? 'self-preview' : ''}" ${dataAct} title="${selfPreview ? '級任導師任課→完成鎖定後自動釋放為導師自編（單格鎖定時不可鎖）' : (conf ? esc(conf.join('；')) : '')}">
           <div class="cell-lesson ${conf ? 'conflict' : ''} ${isLocked ? 'locked' : ''}" style="background:${color};color:${textOn(color)}">
-            ${lockMark}${selMark}${selfBadge}${co ? '🔗' : ''}${s && s.allowGrouping ? '👥' : ''}${s && s.splitTeachers ? '✂️' : ''}${esc(subjectName(sid))}
+            ${lockMark}${selMark}${selfBadge}<span class="cell-flag">${co ? '🔗' : ''}${s && s.allowGrouping ? '👥' : ''}${s && s.splitTeachers ? '✂️' : ''}</span>${esc(subjectName(sid))}
             <small>${esc(slotTeachersLabel(key))}${!(s && s.splitTeachers) && roomsLabelCS(classId, sid) ? '·' + esc(roomsLabelCS(classId, sid)) : ''}</small>
             ${conf ? `<span class="conf-mark">⚠ ${conf.some(x => x.includes('衝堂') || x.includes('不排課')) ? '衝堂' : conf.some(x => x.startsWith('協同')) ? '協同未同步' : '連堂未相鄰'}</span>` : ''}
           </div></td>`;

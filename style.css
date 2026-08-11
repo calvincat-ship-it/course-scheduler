@@ -338,6 +338,8 @@ table.avail td.slot.on { background: #dcfce7; color: var(--ok); font-weight: 700
   table.timetable { min-width: 0; }
   table.timetable th, table.timetable td { border: 1px solid #333; }
   .print-only { display: block !important; }
+  /* 列印／存 PDF：不顯示鎖定🔒、協同🔗、教學型態👥✂️🧩 等狀態圖示 */
+  .timetable .cell-flag, .timetable .lock-mark { display: none !important; }
 }
 .print-only { display: none; }
 
