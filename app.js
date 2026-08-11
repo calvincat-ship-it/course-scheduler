@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v09.21';
+const APP_VERSION = 'v09.22';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -1018,46 +1018,79 @@ function removeClassFromAllCoteach(classId) {
 // 班級卡片（點卡片編輯；「科目/協同」與刪除鈕在卡片底部）
 function classCards() {
   const head = `<div class="page-head" style="margin-top:20px"><h3 style="margin:0;font-size:17px">🏷️ 班級</h3><button class="btn" data-action="add-class">＋ 新增班級</button></div>
-    <div class="hint" style="margin-bottom:12px;color:var(--muted)">班級選定年級後，課程（科目與一周節數）自動沿用該年級設定。<b>點卡片可編輯</b>班級；「科目 / 協同」設定各科協同教學班級；刪除鈕在卡片右下角。</div>`;
+    <div class="hint" style="margin-bottom:12px;color:var(--muted)">班級選定年級後，課程（科目與一周節數）自動沿用該年級設定。<b>點卡片可編輯</b>班級（含課程與協同教學設定）；刪除鈕在卡片右下角。</div>`;
   if (state.classes.length === 0) return head + emptyCard('尚無班級', '點右上「＋ 新增班級」建立，例如：一年忠班、一年孝班。新增後課程沿用其年級。');
   const cards = sortedClasses().map(c => {
     const g = classGrade(c);
     const incomplete = g && !gradeComplete(g);
-    const coCount = Object.keys(c.coteach || {}).length;
     return `<div class="class-card" data-action="edit-class" data-id="${c.id}">
       <div class="cc-head">
         <span class="cc-name">${esc(c.name)}</span>
-        <span class="pill gray">${esc(gradeName(c.gradeId))}</span>
         ${c.code ? `<span class="pill blue">代號 ${esc(c.code)}</span>` : ''}
-        ${incomplete ? '<span class="pill red" title="該年級科目節數尚未相符">年級未完成</span>' : ''}
       </div>
-      <div class="cc-meta">${classSubjectHours(c).length} 科 / ${classWeeklyHours(c)} 節${coCount ? ` · <span class="pill blue">🔗 ${coCount} 科協同</span>` : ''}</div>
-      <div class="cc-foot">
-        <button class="ghost mini" data-action="class-detail" data-id="${c.id}">科目 / 協同</button>
-        <button class="icon-btn cc-del" data-action="del-class" data-id="${c.id}" title="刪除班級">🗑️</button>
-      </div>
+      <div class="cc-meta">${classSubjectHours(c).length} 科 / ${classWeeklyHours(c)} 節</div>
+      ${incomplete ? '<div class="cc-warn"><span class="pill red" title="該年級科目節數尚未相符">年級未完成</span></div>' : ''}
+      <button class="icon-btn cc-del" data-action="del-class" data-id="${c.id}" title="刪除班級">🗑️</button>
     </div>`;
   }).join('');
   return head + `<div class="class-cards">${cards}</div>`;
 }
+// 班級編輯：基本資料（名稱／代號／年級）＋ 課程與協同 合一
 function classModal(existing) {
   if (state.grades.length === 0) { openModal({ title: '無法新增', body: '<p>系統應有六個年級，請重整。</p>' }); return; }
   const c = existing || { name: '', gradeId: state.grades[0].id };
   const gradeOpts = state.grades.map(g => `<option value="${g.id}" ${g.id === c.gradeId ? 'selected' : ''}>${esc(g.name)}${gradeComplete(g) ? '' : '（節數未完成）'}</option>`).join('');
+  // 協同教學區：僅既有班級顯示（新班尚無課程）
+  let coteachSection = '';
+  if (existing) {
+    const subs = classSubjectHours(c);
+    const others = sameGradeOtherClasses(c);
+    if (subs.length === 0) {
+      coteachSection = `<div class="hint" style="color:var(--muted);margin-top:8px">此班年級尚未於「② 年級與班級」設定科目節數，完成年級設定後即可在此設定協同教學。</div>`;
+    } else {
+      const rows = subs.map(sh => {
+        const s = subjectById(sh.subjectId); if (!s) return '';
+        const partners = classCoteachPartners(c, sh.subjectId);
+        const picker = others.length === 0
+          ? `<span class="hint" style="color:var(--muted)">（同年級無其他班）</span>`
+          : others.map(o => `<label class="checkbox" style="font-weight:400;display:inline-flex;margin-right:12px">
+              <input type="checkbox" data-coteach-subj data-sid="${sh.subjectId}" data-cid="${o.id}" ${partners.includes(o.id) ? 'checked' : ''}> ${esc(o.name)}</label>`).join('');
+        return `<tr>
+          <td style="white-space:nowrap"><span class="pill" style="background:${s.color};color:${textOn(s.color)}">${esc(s.name)}</span>${s.allowGrouping ? ' 👥' : ''}</td>
+          <td style="white-space:nowrap">${sh.hours} 節</td>
+          <td>🔗 ${picker}</td>
+        </tr>`;
+      }).join('');
+      coteachSection = `<details class="subj-adv" open style="margin-top:14px"><summary>🔗 課程與協同教學</summary>
+        <p class="hint" style="color:var(--muted);margin:6px 0 8px">節數沿用年級、不可改。勾選要「同時段一起上」的其他班（同年級同科目）；協同班級彼此不計教室衝堂。<b>若上方改了年級，儲存後協同會重設。</b></p>
+        <table class="data"><thead><tr><th>科目</th><th>節數</th><th>協同教學班級</th></tr></thead><tbody>${rows}</tbody></table></details>`;
+    }
+  }
   openModal({
     title: existing ? '編輯班級' : '新增班級',
-    body: `<label class="field"><span>班級名稱</span><input type="text" id="cName" value="${esc(c.name)}" placeholder="例：一年忠班"></label>
+    wide: !!existing,
+    body: `<div class="field-row">
+        <label class="field" style="flex:2"><span>班級名稱</span><input type="text" id="cName" value="${esc(c.name)}" placeholder="例：一年忠班"></label>
+        <label class="field" style="flex:1"><span>數字代號（填課檔名用，如 01）</span><input type="text" id="cCode" value="${esc(c.code || '')}" placeholder="例：01" inputmode="numeric"></label>
+      </div>
       <label class="field"><span>年級</span><select id="cGrade">${gradeOpts}</select></label>
-      <label class="field" style="max-width:280px"><span>數字代號（導師線上填課檔名用，如 01）</span><input type="text" id="cCode" value="${esc(c.code || '')}" placeholder="例：01" inputmode="numeric"></label>
-      <p class="hint" style="color:var(--muted)">課程（科目＋節數）將沿用所選年級於「② 年級與班級」的設定。數字代號由排課者編排，用來組成線上填課檔名。</p>`,
+      <p class="hint" style="color:var(--muted);margin:0">課程（科目＋節數）沿用所選年級於「② 年級與班級」的設定；數字代號由排課者編排，用來組成線上填課檔名。</p>
+      ${coteachSection}`,
     onSave: () => {
       const name = $('#cName').value.trim();
       if (!name) { toast('請輸入班級名稱'); return false; }
       const gradeId = $('#cGrade').value;
       const code = ($('#cCode').value || '').trim();
       if (existing) {
-        if (existing.gradeId !== gradeId) removeClassFromAllCoteach(existing.id); // 換年級 → 協同失效
+        const gradeChanged = existing.gradeId !== gradeId;
+        if (gradeChanged) removeClassFromAllCoteach(existing.id); // 換年級 → 協同失效，忽略下方勾選
         existing.name = name; existing.gradeId = gradeId; existing.code = code;
+        if (!gradeChanged) {
+          classSubjectHours(existing).forEach(sh => {
+            const checked = Array.from(document.querySelectorAll(`#modalRoot input[data-coteach-subj][data-sid="${sh.subjectId}"]:checked`)).map(el => el.dataset.cid);
+            setClassCoteach(sh.subjectId, existing.id, checked);
+          });
+        }
       } else state.classes.push({ id: uid(), name, gradeId, code, coteach: {} });
       save(); render(); toast('已儲存班級');
       return true;
