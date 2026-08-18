@@ -108,25 +108,41 @@ details.domain-fold[open] > summary { border-bottom: 1px solid var(--line); }
 .domain-fold-body { padding: 16px; }
 .domain-fold-body > .card, .domain-fold-body .card { box-shadow: none; }
 
-/* 泡泡容器：整組科目卡片收進有立體感的圓角面板（外陰影＋內側高光/陰影＝膨膨泡泡感） */
+/* 泡泡容器：下陷式圓角面板（內陰影＝嵌入頁面、像標題列凹槽）＋底部 LED 燈條發光 */
 .subj-cards {
+  position: relative;
   display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 16px;
-  padding: 22px; border-radius: 24px;
-  background: linear-gradient(160deg, #f4f7fc 0%, #e7eef7 100%);
-  border: 1px solid #dbe3ee;
-  box-shadow: 0 10px 30px rgba(15, 23, 42, .10), inset 0 2px 4px rgba(255, 255, 255, .9), inset 0 -3px 8px rgba(148, 163, 184, .18);
+  padding: 24px 22px 36px; border-radius: 22px;
+  background: #e7edf6; border: 1px solid #cfd9e8;
+  box-shadow: inset 0 9px 20px rgba(15, 23, 42, .17), inset 0 2px 0 rgba(148, 163, 184, .28), inset 0 -2px 4px rgba(255, 255, 255, .55);
 }
-/* 懸浮卡片：多層柔和陰影，hover 上浮 */
+/* 底部往上的柔光暈（LED 打亮卡片下緣） */
+.subj-cards::before {
+  content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 92px;
+  border-radius: 0 0 22px 22px; pointer-events: none; z-index: 0;
+  background: radial-gradient(120% 100% at 50% 100%, rgba(56, 189, 248, .30), rgba(59, 130, 246, .12) 46%, transparent 72%);
+}
+/* LED 燈條本體 */
+.subj-cards::after {
+  content: ''; position: absolute; left: 7%; right: 7%; bottom: 13px; height: 4px;
+  border-radius: 999px; pointer-events: none; z-index: 0;
+  background: linear-gradient(90deg, #22d3ee, #38bdf8 35%, #6366f1 70%, #a855f7);
+  box-shadow: 0 0 10px 2px rgba(56, 189, 248, .85), 0 0 24px 7px rgba(59, 130, 246, .45);
+  animation: ledGlow 3s ease-in-out infinite;
+}
+@keyframes ledGlow { 0%, 100% { opacity: .82; } 50% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .subj-cards::after { animation: none; } }
+/* 懸浮卡片：更立體、hover 上浮更多 */
 .subj-card {
-  position: relative; display: flex; flex-direction: column; min-height: 150px;
-  background: linear-gradient(180deg, #ffffff 0%, #fbfcfe 100%);
+  position: relative; z-index: 1; display: flex; flex-direction: column; min-height: 150px;
+  background: linear-gradient(180deg, #ffffff 0%, #fafbfe 100%);
   border: 1px solid #e6ebf3; border-radius: 16px;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, .05), 0 6px 16px rgba(15, 23, 42, .10);
+  box-shadow: 0 2px 4px rgba(15, 23, 42, .08), 0 10px 22px rgba(15, 23, 42, .16);
   padding: 14px 14px 40px; cursor: pointer;
-  transition: transform .16s ease, box-shadow .16s ease, border-color .16s ease;
+  transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease;
 }
-.subj-card:hover { transform: translateY(-4px); border-color: #c7d6ea; box-shadow: 0 2px 4px rgba(15, 23, 42, .06), 0 14px 30px rgba(15, 23, 42, .18); }
-.subj-card:active { transform: translateY(-1px); box-shadow: 0 1px 2px rgba(15, 23, 42, .06), 0 6px 14px rgba(15, 23, 42, .12); }
+.subj-card:hover { transform: translateY(-6px); border-color: #c7d6ea; box-shadow: 0 4px 8px rgba(15, 23, 42, .10), 0 22px 44px rgba(15, 23, 42, .24); }
+.subj-card:active { transform: translateY(-2px); box-shadow: 0 2px 4px rgba(15, 23, 42, .08), 0 8px 18px rgba(15, 23, 42, .16); }
 .subj-card .sc-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
 .subj-card .sc-name { font-weight: 800; font-size: 15px; padding: 4px 14px; border-radius: 999px; }
 .subj-card .sc-meta { display: flex; flex-direction: column; gap: 6px; }
