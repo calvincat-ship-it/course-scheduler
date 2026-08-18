@@ -366,6 +366,12 @@ table.avail td.slot.on { background: #dcfce7; color: var(--ok); font-weight: 700
   .print-only { display: block !important; }
   /* 列印／存 PDF：不顯示鎖定🔒、協同🔗、教學型態👥✂️🧩 等狀態圖示 */
   .timetable .cell-flag, .timetable .lock-mark { display: none !important; }
+  /* 保留課表底色（瀏覽器列印預設會去背）→ 印出與畫面同樣填色 */
+  .cell-lesson, table.timetable th, table.timetable td.cell.blocked,
+  table.master th, table.master td, table.master td.mcell, table.master td.mblocked {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
 }
 .print-only { display: none; }
 
