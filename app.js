@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v09.33';
+const APP_VERSION = 'v09.34';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -2204,7 +2204,7 @@ function classTimetableHTML(classId, conflicts, editable) {
             ${conf ? `<span class="conf-mark">⚠ ${conf.some(x => x.includes('衝堂') || x.includes('不排課')) ? '衝堂' : conf.some(x => x.startsWith('協同')) ? '協同未同步' : '連堂未相鄰'}</span>` : ''}
           </div></td>`;
       } else if (open) {
-        html += `<td class="cell ${editable ? 'placeable' : ''} ${canSelect ? 'lock-target' : ''} ${cellSel ? 'lock-sel' : ''} ${isLocked ? 'blocked-lock' : ''}" ${dataAct}>${lockMark}${selMark}</td>`;
+        html += `<td class="cell ${editable ? 'placeable' : ''} ${editable && !isLocked ? 'open-empty' : ''} ${canSelect ? 'lock-target' : ''} ${cellSel ? 'lock-sel' : ''} ${isLocked ? 'blocked-lock' : ''}" ${dataAct}>${lockMark}${selMark}</td>`;
       } else {
         html += `<td class="cell blocked" title="此節本日不上課"></td>`;
       }

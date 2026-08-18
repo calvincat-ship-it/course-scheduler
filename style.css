@@ -241,6 +241,9 @@ table.timetable .period-th { text-align: left; padding: 6px 10px; white-space: n
 table.timetable .period-th small { display: block; color: var(--muted); font-weight: 400; }
 table.timetable td.cell { height: 54px; padding: 3px; cursor: pointer; vertical-align: middle; }
 table.timetable td.cell.placeable:hover { background: #eff6ff; }
+/* 尚未排課的空格：下挖凹槽視覺（排課板專用） */
+table.timetable td.cell.open-empty { background: #e8edf4; box-shadow: inset 0 3px 6px rgba(15, 23, 42, .17), inset 0 -1px 0 rgba(255, 255, 255, .55); }
+table.timetable td.cell.open-empty:hover { background: #dde7f6; box-shadow: inset 0 3px 7px rgba(15, 23, 42, .2); }
 table.timetable td.cell.blocked { background: repeating-linear-gradient(45deg, #f1f5f9, #f1f5f9 6px, #e9eef5 6px, #e9eef5 12px); cursor: not-allowed; }
 table.timetable tr.break-row td { background: #f8fafc; color: var(--muted); font-size: 12px; height: auto; padding: 4px; cursor: default; }
 /* v09.12 全校總表 */
@@ -289,7 +292,8 @@ button.ghost.xs { padding: 2px 8px; font-size: 12px; min-height: 0; }
 .cell-lesson { border-radius: 6px; padding: 4px 2px; font-weight: 700; font-size: 13px; height: 100%; display: flex; flex-direction: column; justify-content: center; line-height: 1.25; }
 .cell-lesson small { font-weight: 400; font-size: 11px; opacity: .85; }
 .cell-lesson.conflict { outline: 2px solid var(--danger); box-shadow: inset 0 0 0 2px var(--danger); }
-.cell-lesson.self-designed { outline: 2px dashed rgba(255, 255, 255, .85); outline-offset: -4px; }
+/* 導師自編格：維持底色與虛線圖樣，另加下挖凹槽感 */
+.cell-lesson.self-designed { outline: 2px dashed rgba(255, 255, 255, .85); outline-offset: -4px; box-shadow: inset 0 3px 7px rgba(15, 23, 42, .32), inset 0 -1px 2px rgba(255, 255, 255, .28); }
 .lock-banner { display: flex; align-items: center; gap: 12px; background: #fef3c7; color: #92400e; border: 1px solid #fcd34d; border-radius: 8px; padding: 10px 14px; font-weight: 600; margin-bottom: 12px; }
 .lock-banner span { flex: 1; }
 .schedule-layout.locked { grid-template-columns: 1fr; }
