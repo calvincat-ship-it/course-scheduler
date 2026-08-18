@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v09.31';
+const APP_VERSION = 'v09.32';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -2112,6 +2112,7 @@ function viewSchedule() {
       : '';
   const toolbarBtns = selecting ? '' : finalized ? '' :
     `<button class="ghost" data-action="lock-schedule" style="margin-left:auto" title="整表一次鎖定">🔒 一鍵鎖定</button><button class="ghost" data-action="lockcell-mode" title="逐格點選要鎖的格">🎯 單格鎖定</button><button class="btn" data-action="auto-schedule">🪄 自動排課</button>`;
+  const loadHtml = teacherLoadHTML();   // 教師已排/應排：拆成獨立卡片
   return `
     <div class="page-head no-print"><h2>④ 排課</h2><div class="hint">${hint}</div></div>
     ${banner}
@@ -2123,9 +2124,9 @@ function viewSchedule() {
       ${boardBusy ? '' : `<div class="palette card no-print"><div class="card-body"><h4>科目調色盤</h4>${paletteHTML(selectedClassId)}</div></div>`}
       <div class="card"><div class="card-body">
         <div class="grid-wrap">${classTimetableHTML(selectedClassId, conflicts, true)}</div>
-        <div class="teacher-load no-print">${teacherLoadHTML()}</div>
       </div></div>
-    </div>`;
+    </div>
+    ${loadHtml ? `<div class="card teacher-load-card no-print"><div class="card-body">${loadHtml}</div></div>` : ''}`;
 }
 function paletteHTML(classId) {
   const c = classById(classId); const subs = classSubjectHours(c);

@@ -309,6 +309,7 @@ td.cell { position: relative; }
 .board-toolbar { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
 .board-toolbar select { width: auto; min-width: 160px; }
 .teacher-load { margin-top: 14px; }
+.teacher-load-card { margin-top: 18px; }   /* 排課頁：與課表卡拉開間距 */
 .load-bar { height: 8px; background: #f1f5f9; border-radius: 999px; overflow: hidden; }
 .load-bar > span { display: block; height: 100%; background: var(--brand); }
 .load-bar.over > span { background: var(--danger); }
