@@ -3,10 +3,22 @@
 > 收工時 Claude 更新這裡；開工時 Claude 先讀這裡。跟程式碼一起 git 同步。
 
 ## 最後更新
-- 時間：2026-08-11 收工
+- 時間：2026-08-18 收工
 - 機器：（本次 session 的機器；Desktop\claude code）
-- 版本：**main = v09.26（已上線）**。schema 仍為 2、向下相容（textColor 等新欄位皆 optional）。
-- 狀態：全部本機實測通過、無 console error、已 push main（GH Pages 已部署 v09.26）。
+- 版本：**main = v09.36（已上線）**。schema 仍為 2、向下相容。
+- 狀態：全部本機實測通過、無 console error、已 push main（GH Pages 已部署 v09.36）。
+- **F③ live 與雲端同步 live 真機往返皆已驗證通過（2026-08-11，實際帳號無問題）**。
+
+## 本次區間做了什麼（v09.27 → v09.36）＝視覺打磨 + 3 修正
+- **v09.27–30 統一「下陷凹槽面板＋懸浮卡片」設計系統**：①科目(含領域節數摺疊)、②年級與班級(年級摺疊+班級卡)、③教師卡片 全部套用。面板 `.subj-cards/.class-cards/.teacher-cards` 與摺疊 body `.domain-fold-body/.grade-fold-body` 用 inset 內陰影＝凹槽；卡片漸層底+層疊陰影+hover 上浮 −6px。（曾加底部 LED 燈條後移除）
+- **v09.31**：③教師卡片區與上下資訊卡拉開 18px。
+- **v09.32**：④排課頁「教師已排/應排」拆成獨立卡與課表分開。
+- **v09.33**：課表輸出列印/存 PDF 保留底色（`@media print { print-color-adjust:exact }`）。
+- **v09.34–35**：排課板未排空格 `.open-empty` 下挖；**導師自編格：空格(released)深挖(淺底#dfeee7)、已填回收平面**。
+- **v09.36**：課表 `table-layout:fixed`→週一~五等寬、`.period-th` 84px 最小；.docx 日欄本就等寬不改。
+- **行為澄清(未變更)**：「解除鎖定」一律還原自編格+清 selfDone，selfDone 不跨越此邊界；使用者確認維持現狀。
+
+<details><summary>更早區間（v09.18 → v09.26，介面大改版 + 2 修正）</summary>
 
 ## 本次區間做了什麼（v09.18 → v09.26）＝介面大改版 + 2 修正
 - **v09.19 頂部分頁改分段式膠囊切換器**（參考阿剛老師「剛好系列」blog 版面；純 CSS `.tabs`）。
@@ -18,6 +30,7 @@
 - **v09.24 列印/存PDF 隱藏狀態圖示**：🔒🔗👥✂️🧩 包 `.cell-flag`，`@media print` 隱藏 `.cell-flag`/`.lock-mark`（螢幕照舊）。
 - **v09.25 修正**：分節科目(✂️)導師自編**收回合併後變「未指定老師」**→ `mergeFillFile` + `pick-selfcourse` 補 `slotTeachers[key]=本班導師id`。**舊資料需重收回/重點一次才補**。
 - **v09.26 科目文字色**：科目加 `textColor`（modal 底色+文字色雙票+預覽）＋`subjTextColor(s)`（未設→`textOn` fallback）；全面套用色塊處；`.docx` 單色不受影響。
+</details>
 
 <details><summary>更早區間（v08.05 → v09.11，已上線）</summary>
 
@@ -47,7 +60,7 @@
 
 ## 注意事項（給另一台的 Claude）
 - 開工先 sync-start、收工必 sync-end；不要兩台同時改同一個檔。
-- 版本 vNN.MM：`APP_VERSION`(app.js)＋sw `CACHE_NAME` 必須同步。小改直接 bump minor、大改先確認。現 **v09.26**。
+- 版本 vNN.MM：`APP_VERSION`(app.js)＋sw `CACHE_NAME` 必須同步。小改直接 bump minor、大改先確認。現 **v09.36**。
 - **UI 現況（v09.19–26）**：分頁 ①科目·②年級與班級·③教師·④排課·課表輸出·設定；科目/班級/教師皆卡片式；`data-tab` 鍵未變（render `case 'grades':case 'classes'`→`viewGradesClasses()`）。改 UI 前先看架構記憶的「v09.19–26 介面大改版」段。
 - **測試 app.js 後務必先清 SW 快取再 navigate**（否則跑舊碼）；量有 transition 的 CSS 前先關 transition（預覽窗凍結假象）。
 - **GH Pages 部署偶發逾時**（本輪 v09.03 卡約 3 小時）→ **推一個空 commit 重新觸發**即可，非程式問題。改版後可 curl `https://calvincat-ship-it.github.io/course-scheduler/app.js` 確認線上版本。
