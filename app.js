@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v09.34';
+const APP_VERSION = 'v09.35';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -700,7 +700,7 @@ function viewTeacherFill() {
       const key = d + '|' + pr.id; const cellKey = p.classId + '|' + d + '|' + pr.id;
       if (!openSet.has(key)) { table += `<td class="cell blocked" title="此節不上課"></td>`; continue; }
       if (cellSet.has(cellKey)) {
-        const sid = p.content[cellKey]; const s = sid ? smap[sid] : null; const color = s ? s.color : '#10b981';
+        const sid = p.content[cellKey]; const s = sid ? smap[sid] : null; const color = s ? s.color : '#dfeee7';   // 空自編格改用淺色凹槽底，讓「深挖」看得出來（已填則用科目色）
         table += `<td class="cell placeable" data-action="tfill-cell" data-key="${esc(cellKey)}" title="自編格：點我選課">
           <div class="cell-lesson self-designed ${s ? '' : 'released'}" style="background:${color};color:${subjTextColor(s, color)}">🧩${s ? esc(s.name) : '點我選課'}</div></td>`;
       } else {
@@ -2187,7 +2187,7 @@ function classTimetableHTML(classId, conflicts, editable) {
       const selMark = canSelect && cellSel ? '<span class="lock-mark sel">🔒</span>' : '';
       const dataAct = editable ? `data-action="cell-click" data-key="${key}"` : '';
       if (selfCell) {                                               // 自編格：導師選課（釋放後不論空/已選）
-        const s = sid ? subjectById(sid) : null; const color = s ? s.color : '#10b981';
+        const s = sid ? subjectById(sid) : null; const color = s ? s.color : '#dfeee7';   // 空自編格改用淺色凹槽底，讓「深挖」看得出來（已填則用科目色）
         const tlock = selfCellTeacherLocked(key);                   // v09.00 導師自編完成→唯讀
         const co = s ? classCoteachPartners(c, sid).length : 0;
         html += `<td class="cell ${editable ? 'placeable' : ''}" ${dataAct} title="${tlock ? '導師自編已鎖定（唯讀）' : '自編格（導師選課）'}">
