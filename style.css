@@ -99,39 +99,27 @@ table.data tr:hover td { background: #f8fafc; }
 .pill.teal { background: #ccfbf1; color: #0f766e; }
 
 /* ---------- ① 科目：領域摺疊區 + 科目卡片 ---------- */
-details.domain-fold { border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow); margin-bottom: 16px; overflow: hidden; }
+details.domain-fold { border: 1px solid #cfd9e8; border-radius: 16px; background: var(--surface); box-shadow: var(--shadow); margin-bottom: 16px; overflow: hidden; }
 details.domain-fold > summary { cursor: pointer; font-weight: 700; font-size: 15px; padding: 14px 16px; user-select: none; list-style: none; display: flex; align-items: center; gap: 10px; }
 details.domain-fold > summary::-webkit-details-marker { display: none; }
 details.domain-fold > summary::before { content: '▸'; color: var(--muted); transition: transform .15s; font-size: 13px; }
 details.domain-fold[open] > summary::before { transform: rotate(90deg); }
 details.domain-fold[open] > summary { border-bottom: 1px solid var(--line); }
-.domain-fold-body { padding: 16px; }
-.domain-fold-body > .card, .domain-fold-body .card { box-shadow: none; }
+/* 領域節數 body 比照科目卡片：下陷凹槽，內部兩張卡片懸浮 */
+.domain-fold-body { padding: 20px 20px 22px; background: #e7edf6; box-shadow: inset 0 8px 18px rgba(15, 23, 42, .15), inset 0 2px 0 rgba(148, 163, 184, .25); }
+.domain-fold-body > .card, .domain-fold-body .card {
+  background: linear-gradient(180deg, #ffffff 0%, #fafbfe 100%);
+  border: 1px solid #e6ebf3; border-radius: 16px;
+  box-shadow: 0 2px 4px rgba(15, 23, 42, .08), 0 10px 22px rgba(15, 23, 42, .16);
+}
 
-/* 泡泡容器：下陷式圓角面板（內陰影＝嵌入頁面、像標題列凹槽）＋底部 LED 燈條發光 */
+/* 下陷式圓角面板：內陰影＝嵌入頁面凹槽感，懸浮卡片浮在其中（科目卡片 + 領域節數共用觀感） */
 .subj-cards {
-  position: relative;
   display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 16px;
-  padding: 24px 22px 36px; border-radius: 22px;
+  padding: 22px; border-radius: 22px;
   background: #e7edf6; border: 1px solid #cfd9e8;
   box-shadow: inset 0 9px 20px rgba(15, 23, 42, .17), inset 0 2px 0 rgba(148, 163, 184, .28), inset 0 -2px 4px rgba(255, 255, 255, .55);
 }
-/* 底部往上的柔光暈（LED 打亮卡片下緣） */
-.subj-cards::before {
-  content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 92px;
-  border-radius: 0 0 22px 22px; pointer-events: none; z-index: 0;
-  background: radial-gradient(120% 100% at 50% 100%, rgba(56, 189, 248, .30), rgba(59, 130, 246, .12) 46%, transparent 72%);
-}
-/* LED 燈條本體 */
-.subj-cards::after {
-  content: ''; position: absolute; left: 7%; right: 7%; bottom: 13px; height: 4px;
-  border-radius: 999px; pointer-events: none; z-index: 0;
-  background: linear-gradient(90deg, #22d3ee, #38bdf8 35%, #6366f1 70%, #a855f7);
-  box-shadow: 0 0 10px 2px rgba(56, 189, 248, .85), 0 0 24px 7px rgba(59, 130, 246, .45);
-  animation: ledGlow 3s ease-in-out infinite;
-}
-@keyframes ledGlow { 0%, 100% { opacity: .82; } 50% { opacity: 1; } }
-@media (prefers-reduced-motion: reduce) { .subj-cards::after { animation: none; } }
 /* 懸浮卡片：更立體、hover 上浮更多 */
 .subj-card {
   position: relative; z-index: 1; display: flex; flex-direction: column; min-height: 150px;
