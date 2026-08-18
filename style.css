@@ -234,10 +234,10 @@ input:focus, select:focus, textarea:focus { outline: 2px solid #bfdbfe; border-c
 .palette .chip .chip-count { font-size: 12px; font-weight: 700; white-space: nowrap; }
 
 .grid-wrap { overflow-x: auto; }
-table.timetable { border-collapse: collapse; width: 100%; min-width: 560px; }
+table.timetable { border-collapse: collapse; width: 100%; min-width: 560px; table-layout: fixed; }   /* 固定版面：五天欄等寬、節次欄取最小固定寬 */
 table.timetable th, table.timetable td { border: 1px solid var(--line); text-align: center; }
 table.timetable th { background: #f8fafc; color: var(--muted); font-size: 12px; padding: 8px 4px; }
-table.timetable .period-th { text-align: left; padding: 6px 10px; white-space: nowrap; }
+table.timetable .period-th { text-align: left; padding: 6px 10px; white-space: nowrap; width: 84px; }   /* 節次欄最適最小寬 */
 table.timetable .period-th small { display: block; color: var(--muted); font-weight: 400; }
 table.timetable td.cell { height: 54px; padding: 3px; cursor: pointer; vertical-align: middle; }
 table.timetable td.cell.placeable:hover { background: #eff6ff; }
