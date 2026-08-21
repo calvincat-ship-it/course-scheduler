@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v09.37';
+const APP_VERSION = 'v09.38';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -948,13 +948,13 @@ function gradeFold() {
   const subjPill = s => `<span class="pill" style="background:${s.color};color:${subjTextColor(s)}">${esc(s.name)}</span>${s.allowGrouping ? ' 👥' : ''}`;
   const onSubs = state.subjects.filter(s => !!gradeSubjHours(g, s.id));
   const offSubs = state.subjects.filter(s => !gradeSubjHours(g, s.id));
-  const subjRows = onSubs.map(s => {
+  const subjCards = onSubs.map(s => {
     const sh = gradeSubjHours(g, s.id);
-    return `<tr>
-      <td><label class="checkbox" style="font-weight:400"><input type="checkbox" data-change="grade-subj-on" data-gid="${g.id}" data-sid="${s.id}" checked>
-        ${subjPill(s)}</label></td>
-      <td style="width:130px"><input type="number" min="0" max="40" data-change="grade-subj-hours" data-gid="${g.id}" data-sid="${s.id}" value="${sh.hours}" style="width:90px"> 節</td>
-    </tr>`;
+    return `<div class="subjh-card">
+      <button class="subjh-x" data-action="grade-subj-off" data-gid="${g.id}" data-sid="${s.id}" title="移除此科目">✕</button>
+      <div class="subjh-name">${subjPill(s)}</div>
+      <div class="subjh-hrs"><input type="number" min="0" max="40" data-change="grade-subj-hours" data-gid="${g.id}" data-sid="${s.id}" value="${sh.hours}"> 節</div>
+    </div>`;
   }).join('');
   const offChecks = offSubs.map(s =>
     `<label class="checkbox" style="font-weight:400"><input type="checkbox" data-change="grade-subj-on" data-gid="${g.id}" data-sid="${s.id}">
@@ -976,7 +976,7 @@ function gradeFold() {
         </div></div>
         <div class="card"><div class="card-body">
           <h4 style="margin-top:0">2.2 科目節數 — ${esc(g.name)}</h4>
-          ${onSubs.length ? `<table class="data"><tbody>${subjRows}</tbody></table>`
+          ${onSubs.length ? `<div class="subjh-cards">${subjCards}</div>`
             : '<p class="hint" style="color:var(--muted);margin:0">尚未加開任何科目，請從下方「加開科目」勾選要開課的科目並填節數。</p>'}
           ${offSubs.length ? `<details class="offsubj-fold"><summary>＋ 加開科目（還有 ${offSubs.length} 科未開）</summary><div class="offsubj-list">${offChecks}</div></details>` : ''}
           <div class="total-badge ${match ? 'ok' : 'bad'}">
@@ -3140,6 +3140,11 @@ const clickHandlers = {
   'class-detail': el => classDetailModal(classById(el.dataset.id)),
 
   'sel-grade': el => { selectedGradeId = el.dataset.id; render(); },
+  'grade-subj-off': el => {
+    const g = gradeById(el.dataset.gid); if (!g) return;
+    g.subjectHours = g.subjectHours.filter(x => x.subjectId !== el.dataset.sid);
+    save(); render();
+  },
   'toggle-gradeday': el => {
     const g = gradeById(el.dataset.gid); if (!g) return;
     const pid = el.dataset.pid, d = parseInt(el.dataset.day, 10);

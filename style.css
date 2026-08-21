@@ -350,6 +350,14 @@ table.avail td.slot.na { background: #f1f5f9; color: #cbd5e1; cursor: not-allowe
 /* 兩張卡片各自成一格，取消通用「.card+.card 上緣間距」造成的下移，使兩卡上緣對齊 */
 .grade-cols > .card + .card { margin-top: 0; }
 @media (max-width: 900px) { .grade-cols { grid-template-columns: 1fr; } }
+/* 科目節數：已加開科目卡片化（多欄自動排列，取代原本一科一列的長表） */
+.subjh-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 10px; }
+.subjh-card { position: relative; display: flex; flex-direction: column; gap: 8px; padding: 10px; border: 1px solid #e6ebf3; border-radius: 12px; background: linear-gradient(180deg, #ffffff 0%, #fafbfe 100%); box-shadow: 0 1px 3px rgba(15, 23, 42, .08); }
+.subjh-card .subjh-name { padding-right: 16px; }
+.subjh-card .subjh-hrs { display: flex; align-items: center; gap: 4px; font-size: 13px; color: var(--muted); }
+.subjh-card .subjh-hrs input { width: 56px; }
+.subjh-x { position: absolute; top: 4px; right: 4px; border: none; background: transparent; color: var(--muted); cursor: pointer; font-size: 12px; line-height: 1; padding: 3px 5px; border-radius: 6px; }
+.subjh-x:hover { background: var(--danger-bg); color: var(--danger); }
 /* 科目節數：未加開科目的摺疊區 */
 .offsubj-fold { margin-top: 12px; border: 1px dashed var(--line); border-radius: 10px; background: #f8fafc; overflow: hidden; }
 .offsubj-fold > summary { cursor: pointer; font-weight: 600; font-size: 13px; color: var(--muted); padding: 8px 12px; user-select: none; list-style: none; }
