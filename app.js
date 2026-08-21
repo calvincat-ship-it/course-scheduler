@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v09.40';
+const APP_VERSION = 'v09.41';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -950,7 +950,7 @@ function gradeFold() {
   const offSubs = state.subjects.filter(s => !gradeSubjHours(g, s.id));
   const subjCards = onSubs.map(s => {
     const sh = gradeSubjHours(g, s.id);
-    return `<div class="subjh-card">
+    return `<div class="subjh-card" style="--sc:${s.color}">
       <button class="subjh-x" data-action="grade-subj-off" data-gid="${g.id}" data-sid="${s.id}" title="移除此科目">✕</button>
       <div class="subjh-name">${subjPill(s)}</div>
       <div class="subjh-hrs"><input type="number" min="0" max="40" data-change="grade-subj-hours" data-gid="${g.id}" data-sid="${s.id}" value="${sh.hours}"> 節</div>
