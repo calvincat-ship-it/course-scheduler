@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v09.36';
+const APP_VERSION = 'v09.37';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -944,15 +944,21 @@ function gradeFold() {
 
   const avail = gradeAvailableSlots(g), assigned = gradeAssignedHours(g);
   const match = avail === assigned;
-  // 科目節數
-  const subjRows = state.subjects.map(s => {
-    const sh = gradeSubjHours(g, s.id); const on = !!sh;
+  // 科目節數：已勾選的科目列在上方（可調節數），未勾選的科目收進摺疊區，避免卡片過長
+  const subjPill = s => `<span class="pill" style="background:${s.color};color:${subjTextColor(s)}">${esc(s.name)}</span>${s.allowGrouping ? ' 👥' : ''}`;
+  const onSubs = state.subjects.filter(s => !!gradeSubjHours(g, s.id));
+  const offSubs = state.subjects.filter(s => !gradeSubjHours(g, s.id));
+  const subjRows = onSubs.map(s => {
+    const sh = gradeSubjHours(g, s.id);
     return `<tr>
-      <td><label class="checkbox" style="font-weight:400"><input type="checkbox" data-change="grade-subj-on" data-gid="${g.id}" data-sid="${s.id}" ${on ? 'checked' : ''}>
-        <span class="pill" style="background:${s.color};color:${subjTextColor(s)}">${esc(s.name)}</span>${s.allowGrouping ? ' 👥' : ''}</label></td>
-      <td style="width:130px"><input type="number" min="0" max="40" data-change="grade-subj-hours" data-gid="${g.id}" data-sid="${s.id}" value="${on ? sh.hours : ''}" ${on ? '' : 'disabled'} style="width:90px"> 節</td>
+      <td><label class="checkbox" style="font-weight:400"><input type="checkbox" data-change="grade-subj-on" data-gid="${g.id}" data-sid="${s.id}" checked>
+        ${subjPill(s)}</label></td>
+      <td style="width:130px"><input type="number" min="0" max="40" data-change="grade-subj-hours" data-gid="${g.id}" data-sid="${s.id}" value="${sh.hours}" style="width:90px"> 節</td>
     </tr>`;
   }).join('');
+  const offChecks = offSubs.map(s =>
+    `<label class="checkbox" style="font-weight:400"><input type="checkbox" data-change="grade-subj-on" data-gid="${g.id}" data-sid="${s.id}">
+      ${subjPill(s)}</label>`).join('');
 
   const allDone = state.grades.every(x => gradeComplete(x));
   const badge = allDone ? '<span class="pill green">✓ 全年級完成</span>' : '<span class="pill amber">尚未全部完成</span>';
@@ -970,7 +976,9 @@ function gradeFold() {
         </div></div>
         <div class="card"><div class="card-body">
           <h4 style="margin-top:0">2.2 科目節數 — ${esc(g.name)}</h4>
-          <table class="data"><tbody>${subjRows}</tbody></table>
+          ${onSubs.length ? `<table class="data"><tbody>${subjRows}</tbody></table>`
+            : '<p class="hint" style="color:var(--muted);margin:0">尚未加開任何科目，請從下方「加開科目」勾選要開課的科目並填節數。</p>'}
+          ${offSubs.length ? `<details class="offsubj-fold"><summary>＋ 加開科目（還有 ${offSubs.length} 科未開）</summary><div class="offsubj-list">${offChecks}</div></details>` : ''}
           <div class="total-badge ${match ? 'ok' : 'bad'}">
             已配 <b>${assigned}</b> / 應配 <b>${avail}</b> 節　${match ? '✓ 相符' : (assigned > avail ? '✗ 超過 ' + (assigned - avail) + ' 節' : '✗ 還差 ' + (avail - assigned) + ' 節')}
           </div>

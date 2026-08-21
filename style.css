@@ -347,7 +347,17 @@ table.avail td.slot.na { background: #f1f5f9; color: #cbd5e1; cursor: not-allowe
 .ok-check { color: var(--ok); font-weight: 800; }
 .gtab.active .ok-check { color: #bbf7d0; }
 .grade-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: start; }
+/* 兩張卡片各自成一格，取消通用「.card+.card 上緣間距」造成的下移，使兩卡上緣對齊 */
+.grade-cols > .card + .card { margin-top: 0; }
 @media (max-width: 900px) { .grade-cols { grid-template-columns: 1fr; } }
+/* 科目節數：未加開科目的摺疊區 */
+.offsubj-fold { margin-top: 12px; border: 1px dashed var(--line); border-radius: 10px; background: #f8fafc; overflow: hidden; }
+.offsubj-fold > summary { cursor: pointer; font-weight: 600; font-size: 13px; color: var(--muted); padding: 8px 12px; user-select: none; list-style: none; }
+.offsubj-fold > summary::-webkit-details-marker { display: none; }
+.offsubj-fold > summary::before { content: '▸ '; }
+.offsubj-fold[open] > summary::before { content: '▾ '; }
+.offsubj-list { display: flex; flex-wrap: wrap; gap: 8px 14px; padding: 4px 12px 12px; }
+.offsubj-list .checkbox { margin: 0; }
 table.avail td.slot.on { background: #dcfce7; color: var(--ok); font-weight: 700; }
 .total-badge { margin-top: 12px; padding: 10px 14px; border-radius: 8px; font-weight: 700; text-align: center; }
 .total-badge.ok { background: #dcfce7; color: #15803d; }
