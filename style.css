@@ -352,10 +352,13 @@ table.avail td.slot.na { background: #f1f5f9; color: #cbd5e1; cursor: not-allowe
 @media (max-width: 900px) { .grade-cols { grid-template-columns: 1fr; } }
 /* 科目節數：已加開科目卡片化（多欄自動排列，取代原本一科一列的長表） */
 .subjh-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 10px; }
-.subjh-card { position: relative; display: flex; flex-direction: column; gap: 8px; padding: 10px; border: 1px solid #e6ebf3; border-radius: 12px; background: linear-gradient(180deg, #ffffff 0%, #fafbfe 100%); box-shadow: 0 1px 3px rgba(15, 23, 42, .08); }
+/* 下挖凹槽視覺：卡面較底色略沉、內陰影營造被「挖進去」的立體感 */
+.subjh-card { position: relative; display: flex; flex-direction: column; gap: 8px; padding: 10px; border: 1px solid #cbd6e6; border-top-color: #b9c6da; border-radius: 12px; background: linear-gradient(180deg, #e6ecf5 0%, #f1f5fb 100%); box-shadow: inset 0 4px 9px rgba(15, 23, 42, .17), inset 0 2px 0 rgba(15, 23, 42, .05), inset 0 -2px 3px rgba(255, 255, 255, .85); transition: box-shadow .15s ease; }
+.subjh-card:focus-within { box-shadow: inset 0 4px 9px rgba(15, 23, 42, .2), inset 0 2px 0 rgba(15, 23, 42, .06), 0 0 0 2px rgba(59, 130, 246, .35); }
+/* 凹槽內的節數輸入框反做「浮起」感，與下挖卡面形成對比 */
+.subjh-card .subjh-hrs input { width: 56px; background: #fff; box-shadow: 0 1px 2px rgba(15, 23, 42, .12); }
 .subjh-card .subjh-name { padding-right: 16px; }
 .subjh-card .subjh-hrs { display: flex; align-items: center; gap: 4px; font-size: 13px; color: var(--muted); }
-.subjh-card .subjh-hrs input { width: 56px; }
 .subjh-x { position: absolute; top: 4px; right: 4px; border: none; background: transparent; color: var(--muted); cursor: pointer; font-size: 12px; line-height: 1; padding: 3px 5px; border-radius: 6px; }
 .subjh-x:hover { background: var(--danger-bg); color: var(--danger); }
 /* 科目節數：未加開科目的摺疊區 */
