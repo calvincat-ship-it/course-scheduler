@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v09.45';
+const APP_VERSION = 'v09.46';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -2449,6 +2449,71 @@ function substDelete(id) {
   save(); render(); toast('已刪除代課記錄');
 }
 
+// 代課者本人課表（原有課務 + 本次新增的代課節）— 供列印
+function subTeacherTimetableHTML(subId, rec) {
+  const days = activeDays();
+  const t = teacherById(subId); if (!t) return '';
+  const own = {};   // day|period → [{classId,sid}]（代課者自己原本的課）
+  for (const key in state.slots) {
+    if (!slotAssignments(key).some(a => a.teacherId === subId)) continue;
+    const [classId, day, period] = key.split('|');
+    (own[day + '|' + period] = own[day + '|' + period] || []).push({ classId, sid: state.slots[key] });
+  }
+  const sub = {};   // day|period → [{classId,sid}]（本次指派給此代課者的代課節）
+  for (const key in rec.assignments) {
+    if (rec.assignments[key] !== subId) continue;
+    const [classId, day, period] = key.split('|');
+    (sub[day + '|' + period] = sub[day + '|' + period] || []).push({ classId, sid: state.slots[key] });
+  }
+  const absentName = teacherName(rec.absentTeacherId);
+  let html = `<div class="print-only" style="text-align:center;font-weight:700;font-size:16px;margin-bottom:8px">${esc(t.name)} 課表（含代課）${rec.date ? '　' + esc(rec.date) : ''}</div>`;
+  html += `<table class="timetable"><thead><tr><th class="period-th">節次</th>${days.map(d => `<th>${DAY_LABELS[d]}</th>`).join('')}</tr></thead><tbody>`;
+  for (const p of state.settings.periods) {
+    if (p.isBreak) { html += `<tr class="break-row"><td colspan="${days.length + 1}">${esc(p.label)}</td></tr>`; continue; }
+    html += `<tr><td class="period-th">${esc(p.label)}<small>${esc(p.start)}–${esc(p.end)}</small></td>`;
+    for (const d of days) {
+      const dp = d + '|' + p.id;
+      const oh = own[dp], sh = sub[dp];
+      if (oh && oh.length) {
+        const s = subjectById(oh[0].sid); const color = s ? s.color : '#94a3b8';
+        const label = oh.map(h => (classById(h.classId) || {}).name || '').join('、');
+        html += `<td class="cell"><div class="cell-lesson" style="background:${color};color:${subjTextColor(s, color)}">${esc(label)}<small>${esc(subjectName(oh[0].sid))}</small></div></td>`;
+      } else if (sh && sh.length) {
+        const s = subjectById(sh[0].sid); const color = s ? s.color : '#94a3b8';
+        const label = sh.map(h => (classById(h.classId) || {}).name || '').join('、');
+        html += `<td class="cell"><div class="subst-offer assigned" style="background:${color};color:${subjTextColor(s, color)}">
+          <b>${esc(label)}</b><small>${esc(subjectName(sh[0].sid))}</small>
+          <span class="subst-sub">代課（代 ${esc(absentName)}）</span></div></td>`;
+      } else html += `<td class="cell"></td>`;
+    }
+    html += `</tr>`;
+  }
+  html += `</tbody></table>`;
+  return html;
+}
+
+// 組合列印內容：被代課者代課課表 + 每位代課者的課表（含代課）
+function substPrintHTML(rec) {
+  let html = `<div class="subst-print-page">${substTimetableHTML(rec, false)}</div>`;
+  const subIds = [...new Set(Object.values(rec.assignments).filter(Boolean))];
+  for (const sid of subIds) html += `<div class="subst-print-page">${subTeacherTimetableHTML(sid, rec)}</div>`;
+  return html;
+}
+
+function substPrint() {
+  const rec = substById(substOpenId); if (!rec) return;
+  if (!Object.keys(rec.assignments).some(k => rec.assignments[k])) { toast('尚未指派任何代課，無可列印內容'); return; }
+  const area = document.createElement('div');
+  area.className = 'subst-print-area';
+  area.innerHTML = substPrintHTML(rec);
+  document.body.appendChild(area);
+  document.body.classList.add('printing-subst');
+  const cleanup = () => { document.body.classList.remove('printing-subst'); area.remove(); };
+  window.addEventListener('afterprint', cleanup, { once: true });
+  window.print();
+  setTimeout(cleanup, 2000);
+}
+
 // v09.18 班級簡稱：去掉「年級／年／班」，如 六年忠班→六忠、一年甲班→一甲（教師總表格內用）
 function classShortName(c) {
   const n = (c && c.name) || '';
@@ -3545,7 +3610,7 @@ const clickHandlers = {
   'subst-del': el => substDelete(el.dataset.id),
   'subst-cell': el => substCellPicker(el.dataset.id, el.dataset.key, el.dataset.day, el.dataset.period),
   'subst-clear': el => { const r = substById(el.dataset.id); if (r) { delete r.assignments[el.dataset.key]; save(); closeModal(); render(); } },
-  'subst-print': () => window.print(),
+  'subst-print': () => substPrint(),
 };
 
 const changeHandlers = {

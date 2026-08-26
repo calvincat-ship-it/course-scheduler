@@ -420,6 +420,15 @@ table.avail td.slot.on { background: #dcfce7; color: var(--ok); font-weight: 700
 .subst-offer:hover { filter: brightness(1.06); }
 .subst-offer .subst-sub { margin-top: 3px; align-self: flex-start; font-size: 11px; font-weight: 800; background: rgba(255, 255, 255, .9); color: #0f172a; border-radius: 6px; padding: 1px 6px; }
 .subst-offer .subst-need-tag { margin-top: 3px; align-self: flex-start; font-size: 11px; font-weight: 700; background: rgba(15, 23, 42, .28); border-radius: 6px; padding: 1px 6px; }
+/* 代課列印：畫面隱藏，列印時取代 #view，內含被代課者＋各代課者課表，逐張換頁 */
+.subst-print-area { display: none; }
+.subst-print-page + .subst-print-page { margin-top: 24px; }
+@media print {
+  body.printing-subst #view { display: none !important; }
+  body.printing-subst .subst-print-area { display: block !important; }
+  .subst-print-page { break-inside: avoid; }
+  .subst-print-page + .subst-print-page { break-before: page; margin-top: 0; }
+}
 
 @media (max-width: 820px) {
   .schedule-layout { grid-template-columns: 1fr; }
