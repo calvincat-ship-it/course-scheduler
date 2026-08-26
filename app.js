@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v09.43';
+const APP_VERSION = 'v09.44';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -2490,7 +2490,8 @@ function viewSettings() {
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
         <h4 style="margin:0">專科教室</h4><button class="ghost" data-action="add-room">＋ 新增教室</button>
       </div>
-      ${state.rooms.length === 0 ? `<div style="color:var(--muted)">尚無專科教室（例：電腦教室、自然教室、音樂教室、體育館）。教室在「③ 教師配課」逐筆指定，排課會檢查同一教室同時段是否被兩班搶用。</div>`
+      <div class="hint" style="color:var(--muted);margin-bottom:10px">🏫 <b>指派方式：</b>在這裡建立教室後，到「<b>③ 教師</b>」點教師編輯，在其<b>配課列（班級 → 科目 → 節數 → 教室）</b>最右邊的下拉選單，把教室指派給該科。排課時會自動檢查同一教室同時段是否被兩班搶用。</div>
+      ${state.rooms.length === 0 ? `<div style="color:var(--muted)">尚無專科教室（例：電腦教室、自然教室、音樂教室、體育館）。</div>`
       : `<table class="data"><tbody>${state.rooms.map(r => `<tr>
           <td><b>${esc(r.name)}</b></td>
           <td>${state.teachers.reduce((n, t) => n + (t.load || []).filter(L => L.roomId === r.id).length, 0)} 筆配課使用</td>
