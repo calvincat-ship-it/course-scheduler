@@ -397,13 +397,29 @@ table.avail td.slot.on { background: #dcfce7; color: var(--ok); font-weight: 700
   /* 列印／存 PDF：不顯示鎖定🔒、協同🔗、教學型態👥✂️🧩 等狀態圖示 */
   .timetable .cell-flag, .timetable .lock-mark { display: none !important; }
   /* 保留課表底色（瀏覽器列印預設會去背）→ 印出與畫面同樣填色 */
-  .cell-lesson, table.timetable th, table.timetable td.cell.blocked,
+  .cell-lesson, .subst-offer, table.timetable th, table.timetable td.cell.blocked,
   table.master th, table.master td, table.master td.mcell, table.master td.mblocked {
     -webkit-print-color-adjust: exact !important;
     print-color-adjust: exact !important;
   }
 }
 .print-only { display: none; }
+
+/* ---------- 代課（v09.45） ---------- */
+.subst-list { display: grid; gap: 10px; }
+.subst-item { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); box-shadow: var(--shadow); cursor: pointer; transition: border-color .15s ease, transform .15s ease; }
+.subst-item:hover { border-color: #c7d6ea; transform: translateY(-2px); }
+.subst-item-main { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.subst-item-name { font-weight: 800; font-size: 16px; }
+.subst-item-meta { font-size: 13px; color: var(--muted); }
+.subst-item-del:hover { background: var(--danger-bg); color: var(--danger); }
+.subst-offer { display: flex; flex-direction: column; gap: 1px; padding: 4px 5px; border-radius: 7px; font-weight: 700; font-size: 13px; line-height: 1.2; cursor: pointer; }
+.subst-offer + .subst-offer { margin-top: 3px; }
+.subst-offer small { font-weight: 400; font-size: 11px; opacity: .85; }
+.subst-offer.need { outline: 2px dashed rgba(255, 255, 255, .8); outline-offset: -3px; }
+.subst-offer:hover { filter: brightness(1.06); }
+.subst-offer .subst-sub { margin-top: 3px; align-self: flex-start; font-size: 11px; font-weight: 800; background: rgba(255, 255, 255, .9); color: #0f172a; border-radius: 6px; padding: 1px 6px; }
+.subst-offer .subst-need-tag { margin-top: 3px; align-self: flex-start; font-size: 11px; font-weight: 700; background: rgba(15, 23, 42, .28); border-radius: 6px; padding: 1px 6px; }
 
 @media (max-width: 820px) {
   .schedule-layout { grid-template-columns: 1fr; }

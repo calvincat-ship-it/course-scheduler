@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v09.44';
+const APP_VERSION = 'v09.45';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -133,6 +133,7 @@ function defaultState() {
     selfDone: {},         // v09.00 導師自編完成：classId→true（該班自編格鎖定唯讀）
     staffingOkSig: '',    // v09.01 「檢查全校配課」通過時的資料簽章（含導師設定）；資料一變即需重新檢查
     fillShare: null,      // v09.03 F③ 線上填課分享：{ folderId, folderLink, year, files:{classId:{fileId,link,email}}, openedAt }
+    substitutions: [],    // v09.45 代課安排：[{ id, absentTeacherId, date, createdAt, assignments:{'classId|day|period':subTeacherId} }]
     helpSeen: false,
   };
 }
@@ -231,6 +232,7 @@ let fillLinkMode = false; // v09.07 由填課連結(?fill)進入：離開＝關�
 let fillEnded = false;    // v09.07 填課結束畫面旗標
 let showLoadMatrix = false; // v09.12 ③教師「班×科配課矩陣」展開狀態（runtime）
 let fillProgress = null;    // v09.12 F③ 線上填課進度快取 {classId:{total,filled,submitted,submittedAt}}（runtime，按需重讀）
+let substOpenId = null;     // v09.45 代課頁：目前開啟編輯中的代課記錄 id（null＝顯示清單）
 /* v09.11 排課復原 Undo/Redo：只快照 slots/slotTeachers/slotContent（不跨鎖定/自編結構邊界，故 lock/unlock/finalize 時清空堆疊）*/
 let undoStack = [], redoStack = [];
 const snapSlots = () => ({ slots: { ...state.slots }, slotTeachers: { ...state.slotTeachers }, slotContent: { ...state.slotContent } });
@@ -764,6 +766,7 @@ function render() {
     case 'domains': view.innerHTML = viewDomains(); break;
     case 'schedule': view.innerHTML = viewSchedule(); break;
     case 'output': view.innerHTML = viewOutput(); break;
+    case 'subst': view.innerHTML = viewSubst(); break;
     case 'settings': view.innerHTML = viewSettings(); break;
   }
 }
@@ -2291,6 +2294,161 @@ function teacherTimetableHTML(teacherId, conflicts) {
   html += `</tbody></table>`;
   return html;
 }
+/* ==========================================================================
+   代課（v09.45）：選被代課教師 → 調出課表 → 點有課格指派空堂教師 → 列印／存 PDF
+   代課記錄存 state.substitutions（可多筆、可刪除）；assignments key＝slotKey(classId|day|period)。
+   只影響代課課表輸出，不更動實際排課（state.slots 不動）。
+   ========================================================================== */
+const substById = id => (state.substitutions || []).find(x => x.id === id);
+// 某(day,period) 正在上課（忙碌）的教師 id 集合
+function busyTeachersAt(day, period) {
+  const set = new Set();
+  for (const key in state.slots) {
+    const [, d, p] = key.split('|');
+    if (d === String(day) && p === String(period)) slotAssignments(key).forEach(a => a.teacherId && set.add(a.teacherId));
+  }
+  return set;
+}
+// 某(day,period) 可代課的教師：不上課、未設不排課時段、非被代課者、且未在本記錄同節被指派為別格代課
+function freeTeachersAt(day, period, rec) {
+  const busy = busyTeachersAt(day, period);
+  const usedThisDP = new Set();
+  if (rec) for (const k in rec.assignments) { const [, d, p] = k.split('|'); if (d === String(day) && p === String(period) && rec.assignments[k]) usedThisDP.add(rec.assignments[k]); }
+  return state.teachers.filter(t =>
+    t.id !== rec.absentTeacherId &&
+    !busy.has(t.id) &&
+    !(t.unavailable || []).includes(day + '|' + period) &&
+    !usedThisDP.has(t.id));
+}
+// 被代課教師本週有課的格（keys）
+function absentCells(rec) {
+  const keys = [];
+  for (const key in state.slots) if (slotAssignments(key).some(a => a.teacherId === rec.absentTeacherId)) keys.push(key);
+  return keys;
+}
+
+function viewSubst() {
+  if (state.teachers.length === 0)
+    return `<div class="page-head"><h2>🔄 代課</h2></div>` + emptyCard('尚無教師', '請先到「③ 教師」建立教師與配課，才能安排代課。');
+  const rec = substOpenId ? substById(substOpenId) : null;
+  if (rec && teacherById(rec.absentTeacherId)) return substEditor(rec);
+  if (rec) substOpenId = null;   // 被代課教師已被刪除 → 回清單
+  return substList();
+}
+
+function substList() {
+  const head = `<div class="page-head"><h2>🔄 代課</h2><button class="btn" data-action="subst-add">＋ 新增代課</button></div>
+    <div class="hint" style="margin-bottom:12px;color:var(--muted)">選一位<b>被代課（請假）教師</b>，調出其課表，點<b>有課的格子</b>指派當節<b>空堂</b>的代課教師，最後列印／存 PDF。記錄會保存、可多筆。</div>`;
+  if (!(state.substitutions || []).length) return head + emptyCard('尚無代課記錄', '點右上「＋ 新增代課」建立第一筆。');
+  const rows = state.substitutions.slice().sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || '')).map(r => {
+    const t = teacherById(r.absentTeacherId);
+    const total = t ? absentCells(r).length : 0;
+    const done = Object.keys(r.assignments || {}).filter(k => r.assignments[k]).length;
+    return `<div class="subst-item" data-action="subst-open" data-id="${r.id}">
+      <div class="subst-item-main">
+        <span class="subst-item-name">${esc((t || {}).name || '（教師已刪除）')}</span>
+        ${r.date ? `<span class="pill blue">${esc(r.date)}</span>` : ''}
+        <span class="subst-item-meta">已指派 ${done} / 共 ${total} 節</span>
+      </div>
+      <button class="icon-btn subst-item-del" data-action="subst-del" data-id="${r.id}" title="刪除此代課記錄">🗑️</button>
+    </div>`;
+  }).join('');
+  return head + `<div class="subst-list">${rows}</div>`;
+}
+
+function substEditor(rec) {
+  const t = teacherById(rec.absentTeacherId);
+  const total = absentCells(rec).length;
+  const done = Object.keys(rec.assignments || {}).filter(k => rec.assignments[k]).length;
+  const head = `<div class="page-head no-print"><h2>🔄 代課 — ${esc(t.name)}${rec.date ? '（' + esc(rec.date) + '）' : ''}</h2>
+    <div style="display:flex;gap:8px">
+      <button class="ghost" data-action="subst-back">← 返回清單</button>
+      <button class="btn" data-action="subst-print">🖨️ 列印 / 存 PDF</button>
+    </div></div>
+    <div class="hint no-print" style="margin-bottom:10px;color:var(--muted)">點下方<b>有課的格子</b>指派代課教師（清單只列該節空堂的老師）；再點一次可更換或清除。已指派 <b>${done}</b> / 共 <b>${total}</b> 節。</div>`;
+  return head + `<div class="card"><div class="card-body"><div class="grid-wrap">${substTimetableHTML(rec, true)}</div></div></div>`;
+}
+
+function substTimetableHTML(rec, interactive) {
+  const days = activeDays();
+  const t = teacherById(rec.absentTeacherId);
+  const map = {};
+  for (const key in state.slots) {
+    if (!slotAssignments(key).some(a => a.teacherId === rec.absentTeacherId)) continue;
+    const [classId, day, period] = key.split('|');
+    (map[day + '|' + period] = map[day + '|' + period] || []).push({ classId, sid: state.slots[key], key });
+  }
+  let html = `<div class="print-only" style="text-align:center;font-weight:700;font-size:16px;margin-bottom:8px">${esc(t.name)} 代課課表${rec.date ? '　' + esc(rec.date) : ''}</div>`;
+  html += `<table class="timetable"><thead><tr><th class="period-th">節次</th>${days.map(d => `<th>${DAY_LABELS[d]}</th>`).join('')}</tr></thead><tbody>`;
+  for (const p of state.settings.periods) {
+    if (p.isBreak) { html += `<tr class="break-row"><td colspan="${days.length + 1}">${esc(p.label)}</td></tr>`; continue; }
+    html += `<tr><td class="period-th">${esc(p.label)}<small>${esc(p.start)}–${esc(p.end)}</small></td>`;
+    for (const d of days) {
+      const hits = map[d + '|' + p.id];
+      if (!hits || !hits.length) { html += `<td class="cell"></td>`; continue; }
+      const chips = hits.map(h => {
+        const s = subjectById(h.sid); const color = s ? s.color : '#94a3b8';
+        const subId = rec.assignments[h.key];
+        const act = interactive ? `data-action="subst-cell" data-id="${rec.id}" data-key="${esc(h.key)}" data-day="${d}" data-period="${esc(p.id)}"` : '';
+        return `<div class="subst-offer ${subId ? 'assigned' : 'need'}" ${act} style="background:${color};color:${subjTextColor(s, color)}">
+          <b>${esc((classById(h.classId) || {}).name || '')}</b><small>${esc(subjectName(h.sid))}</small>
+          ${subId ? `<span class="subst-sub">代課：${esc(teacherName(subId))}</span>` : `<span class="subst-need-tag no-print">＋ 指派代課</span>`}
+        </div>`;
+      }).join('');
+      html += `<td class="cell">${chips}</td>`;
+    }
+    html += `</tr>`;
+  }
+  html += `</tbody></table>`;
+  return html;
+}
+
+function substAddModal() {
+  const tOpts = state.teachers.map(t => `<option value="${t.id}">${esc(t.name)}${t.type ? `（${esc(t.type)}）` : ''}</option>`).join('');
+  openModal({
+    title: '新增代課', saveLabel: '建立',
+    body: `<label class="field" style="margin-bottom:10px"><span>被代課（請假）教師</span><select id="substTeacher">${tOpts}</select></label>
+      <label class="field"><span>日期／備註（可留空）</span><input id="substDate" type="text" value="${esc(localDateStr())}" placeholder="如 2026-09-01 或 週一上午"></label>`,
+    onSave: () => {
+      const tid = $('#substTeacher').value; if (!tid) { toast('請選擇教師'); return false; }
+      const rec = { id: uid(), absentTeacherId: tid, date: ($('#substDate').value || '').trim(), createdAt: new Date().toISOString(), assignments: {} };
+      state.substitutions.push(rec); save(); substOpenId = rec.id; closeModal(); render(); return true;
+    },
+  });
+}
+
+function substCellPicker(recId, key, day, period) {
+  const rec = substById(recId); if (!rec) return;
+  const classId = key.split('|')[0]; const sid = state.slots[key];
+  const free = freeTeachersAt(day, period, rec);
+  const cur = rec.assignments[key];
+  const clsName = (classById(classId) || {}).name || '';
+  const perLabel = (state.settings.periods.find(pp => pp.id === period) || {}).label || '';
+  const list = free.length
+    ? free.map(tt => `<label class="restore-item"><input type="radio" name="subT" value="${tt.id}" ${cur === tt.id ? 'checked' : ''}>
+        <span><b>${esc(tt.name)}</b>${tt.type ? ` <small style="color:var(--muted)">${esc(tt.type)}</small>` : ''}</span></label>`).join('')
+    : `<p style="color:var(--danger);margin:6px 0">本節沒有空堂教師可代課（其他老師都在上課或設為不排課時段）。</p>`;
+  openModal({
+    title: `指派代課 — ${clsName} ${subjectName(sid)}`, saveLabel: '確定',
+    onSave: free.length ? () => {
+      const sel = document.querySelector('input[name="subT"]:checked'); if (!sel) { toast('請選一位代課教師'); return false; }
+      rec.assignments[key] = sel.value; save(); closeModal(); render(); return true;
+    } : null,
+    body: `<p style="margin-top:0;color:var(--muted)">${DAY_LABELS[day]} ${esc(perLabel)}　被代課：<b>${esc(teacherName(rec.absentTeacherId))}</b></p>
+      <div class="restore-list">${list}</div>
+      ${cur ? `<button type="button" class="ghost" data-action="subst-clear" data-id="${rec.id}" data-key="${esc(key)}" style="margin-top:10px">清除此格代課</button>` : ''}`,
+  });
+}
+
+function substDelete(id) {
+  const r = substById(id); if (!r) return;
+  const t = teacherById(r.absentTeacherId);
+  if (!confirm(`確定刪除「${(t || {}).name || '（已刪除教師）'}」的代課記錄嗎？此動作無法復原。`)) return;
+  state.substitutions = state.substitutions.filter(x => x.id !== id);
+  if (substOpenId === id) substOpenId = null;
+  save(); render(); toast('已刪除代課記錄');
+}
+
 // v09.18 班級簡稱：去掉「年級／年／班」，如 六年忠班→六忠、一年甲班→一甲（教師總表格內用）
 function classShortName(c) {
   const n = (c && c.name) || '';
@@ -2586,7 +2744,7 @@ function importJSON() {
       try {
         const data = JSON.parse(reader.result);
         if (!data || data.schema !== SCHEMA) throw new Error('版本不符（需 schema ' + SCHEMA + '）');
-        state = data; if (!state.slotTeachers || typeof state.slotTeachers !== 'object') state.slotTeachers = {}; if (!state.slotContent || typeof state.slotContent !== 'object') state.slotContent = {}; if (!Array.isArray(state.lockedCells)) state.lockedCells = []; if (!Array.isArray(state.selfCells)) state.selfCells = []; if (!state.selfBackup || typeof state.selfBackup !== 'object') state.selfBackup = {}; if (!state.selfDone || typeof state.selfDone !== 'object') state.selfDone = {}; if (typeof state.staffingOkSig !== 'string') state.staffingOkSig = ''; save(); closeModal(); selectedGradeId = null; render(); toast('已匯入備份');
+        state = data; if (!state.slotTeachers || typeof state.slotTeachers !== 'object') state.slotTeachers = {}; if (!state.slotContent || typeof state.slotContent !== 'object') state.slotContent = {}; if (!Array.isArray(state.lockedCells)) state.lockedCells = []; if (!Array.isArray(state.selfCells)) state.selfCells = []; if (!state.selfBackup || typeof state.selfBackup !== 'object') state.selfBackup = {}; if (!state.selfDone || typeof state.selfDone !== 'object') state.selfDone = {}; if (typeof state.staffingOkSig !== 'string') state.staffingOkSig = ''; if (!Array.isArray(state.substitutions)) state.substitutions = []; save(); closeModal(); selectedGradeId = null; render(); toast('已匯入備份');
       } catch (e) { toast('匯入失敗：' + e.message); }
     };
     reader.readAsText(file);
@@ -2885,6 +3043,7 @@ async function applyBackupObject(data) {
     if (!state.selfDone || typeof state.selfDone !== 'object') state.selfDone = {};
     if (typeof state.staffingOkSig !== 'string') state.staffingOkSig = '';
     if (!Array.isArray(state.domains)) state.domains = defaultDomains();
+    if (!Array.isArray(state.substitutions)) state.substitutions = [];
     if (!state.settings.subjectMap || typeof state.settings.subjectMap !== 'object') state.settings.subjectMap = {};
     await idbSet(STATE_KEY, state);   // 直接寫 IDB，繞過 save() 的雲端 hook
     selectedGradeId = null;
@@ -3379,6 +3538,14 @@ const clickHandlers = {
   'cloud-switch': () => cloudSwitchAccount(),
   'cloud-disconnect': () => cloudDisconnect(),
   'cloud-diagnose': () => cloudDiagnose(),
+
+  'subst-add': () => substAddModal(),
+  'subst-open': el => { substOpenId = el.dataset.id; render(); },
+  'subst-back': () => { substOpenId = null; render(); },
+  'subst-del': el => substDelete(el.dataset.id),
+  'subst-cell': el => substCellPicker(el.dataset.id, el.dataset.key, el.dataset.day, el.dataset.period),
+  'subst-clear': el => { const r = substById(el.dataset.id); if (r) { delete r.assignments[el.dataset.key]; save(); closeModal(); render(); } },
+  'subst-print': () => window.print(),
 };
 
 const changeHandlers = {
@@ -3502,6 +3669,7 @@ async function init() {
   if (!state.selfBackup || typeof state.selfBackup !== 'object') state.selfBackup = {};       // v09.00 釋放前備份
   if (!state.selfDone || typeof state.selfDone !== 'object') state.selfDone = {};             // v09.00 導師自編完成
   if (typeof state.staffingOkSig !== 'string') state.staffingOkSig = '';                      // v09.01 配課檢查簽章
+  if (!Array.isArray(state.substitutions)) state.substitutions = [];                          // v09.45 代課安排
   if (typeof state.domainsConfirmed !== 'boolean') state.domainsConfirmed = state.subjects.length > 0; // v09.20 領域→科目整合閘門（既有已建科目者視為已完成，不擋）
   state.subjects.forEach(s => { if (s.selfDesigned) delete s.selfDesigned; });                // v08.03 移除舊手動自編旗標
   // v03.00 課表輸出格式欄位 guard（舊資料補預設）
