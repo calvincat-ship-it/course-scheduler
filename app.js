@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v09.47';
+const APP_VERSION = 'v10.00';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -2510,7 +2510,7 @@ function substClassTimetableHTML(classId, rec) {
         if (subId) {   // 此節被代課：改顯示代課教師名
           html += `<td class="cell"><div class="subst-offer assigned" style="background:${color};color:${subjTextColor(s, color)}" title="原任課：${esc(slotTeachersLabel(key))}">
             <b>${esc(subjectName(sid))}</b>
-            <span class="subst-sub">代課：${esc(teacherName(subId))}</span></div></td>`;
+            <span class="subst-sub">${esc(teacherName(subId))}</span></div></td>`;
         } else {
           html += `<td class="cell"><div class="cell-lesson" style="background:${color};color:${subjTextColor(s, color)}">${esc(subjectName(sid))}<small>${esc(slotTeachersLabel(key))}${esc(room)}</small></div></td>`;
         }
