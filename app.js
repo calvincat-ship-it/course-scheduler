@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v09.42';
+const APP_VERSION = 'v09.43';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -2810,10 +2810,19 @@ async function driveDelete(fileId) {
   return res.ok || res.status === 404;
 }
 async function resolveMainFileId() {
-  if (cloudState.fileId) return cloudState.fileId;
-  const f = await driveFindFile(CLOUD_FILE_NAME);
-  if (f) { cloudState.fileId = f.id; saveCloudState(); return f.id; }
-  return '';
+  // 一律以「檔名」重新確認主檔 id：cloudState.fileId 可能因另一台裝置重建檔案、
+  // 清除歷史或帳號動作而失效；若盲信舊 id，備份會 PATCH 到不存在的 id 而失敗、
+  // 還原會下載 404 而誤判「沒有備份」（本機備份時間會停在某天不再前進）。
+  try {
+    const f = await driveFindFile(CLOUD_FILE_NAME);
+    if (f) { if (cloudState.fileId !== f.id) { cloudState.fileId = f.id; saveCloudState(); } return f.id; }
+    // 名稱查詢成功但查無此檔 → 確實沒有；清掉可能失效的快取 id
+    if (cloudState.fileId) { cloudState.fileId = ''; saveCloudState(); }
+    return '';
+  } catch (e) {
+    // 列檔失敗（網路/暫時性）→ 退回快取 id，不要清空
+    return cloudState.fileId || '';
+  }
 }
 async function preserveRemoteAsPrev(fileId) {
   try {
