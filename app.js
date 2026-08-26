@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v09.46';
+const APP_VERSION = 'v09.47';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -2492,11 +2492,45 @@ function subTeacherTimetableHTML(subId, rec) {
   return html;
 }
 
-// 組合列印內容：被代課者代課課表 + 每位代課者的課表（含代課）
+// 受影響班級的班級課表（代課節改顯示代課教師名）— 供列印
+function substClassTimetableHTML(classId, rec) {
+  const days = activeDays(); const c = classById(classId); const g = classGrade(c);
+  let html = `<div class="print-only" style="text-align:center;font-weight:700;font-size:16px;margin-bottom:8px">${esc((c || {}).name || '')} 課表（代課後）${rec.date ? '　' + esc(rec.date) : ''}</div>`;
+  html += `<table class="timetable"><thead><tr><th class="period-th">節次</th>${days.map(d => `<th>${DAY_LABELS[d]}</th>`).join('')}</tr></thead><tbody>`;
+  for (const p of state.settings.periods) {
+    if (p.isBreak) { html += `<tr class="break-row"><td colspan="${days.length + 1}">${esc(p.label)}　${esc(p.start)}–${esc(p.end)}</td></tr>`; continue; }
+    html += `<tr><td class="period-th">${esc(p.label)}<small>${esc(p.start)}–${esc(p.end)}</small></td>`;
+    for (const d of days) {
+      const key = slotKey(classId, d, p.id); const sid = state.slots[key];
+      const open = g && gradePeriodHasDay(g, p.id, d);
+      if (sid) {
+        const s = subjectById(sid); const color = s ? s.color : '#94a3b8';
+        const subId = rec.assignments[key];
+        const room = roomsLabelCS(classId, sid) ? '·' + roomsLabelCS(classId, sid) : '';
+        if (subId) {   // 此節被代課：改顯示代課教師名
+          html += `<td class="cell"><div class="subst-offer assigned" style="background:${color};color:${subjTextColor(s, color)}" title="原任課：${esc(slotTeachersLabel(key))}">
+            <b>${esc(subjectName(sid))}</b>
+            <span class="subst-sub">代課：${esc(teacherName(subId))}</span></div></td>`;
+        } else {
+          html += `<td class="cell"><div class="cell-lesson" style="background:${color};color:${subjTextColor(s, color)}">${esc(subjectName(sid))}<small>${esc(slotTeachersLabel(key))}${esc(room)}</small></div></td>`;
+        }
+      } else if (open) { html += `<td class="cell"></td>`; }
+      else { html += `<td class="cell blocked" title="此節本日不上課"></td>`; }
+    }
+    html += `</tr>`;
+  }
+  html += `</tbody></table>`;
+  return html;
+}
+
+// 組合列印內容：被代課者代課課表 + 每位代課者的課表（含代課）+ 受影響班級課表（代課節改教師名）
 function substPrintHTML(rec) {
   let html = `<div class="subst-print-page">${substTimetableHTML(rec, false)}</div>`;
   const subIds = [...new Set(Object.values(rec.assignments).filter(Boolean))];
   for (const sid of subIds) html += `<div class="subst-print-page">${subTeacherTimetableHTML(sid, rec)}</div>`;
+  const setKeys = Object.keys(rec.assignments).filter(k => rec.assignments[k]);
+  const affected = state.classes.filter(c => setKeys.some(k => k.split('|')[0] === c.id));   // 依 state.classes 排序
+  for (const c of affected) html += `<div class="subst-print-page">${substClassTimetableHTML(c.id, rec)}</div>`;
   return html;
 }
 
