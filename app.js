@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v09.41';
+const APP_VERSION = 'v09.42';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -2947,6 +2947,45 @@ async function cloudRestore({ manual = false, confirmFirst = true, confirmMsg = 
   finally { setCloudBusy(false); }
 }
 
+/* ---- 診斷：只讀列出授權帳號與 App 資料夾內所有檔案，找出「沒有備份可還原」的真因 ---- */
+async function cloudDiagnose() {
+  setCloudBusy(true);
+  const lines = [];
+  const add = (k, v) => lines.push(`<tr><td style="color:var(--muted);white-space:nowrap;padding:2px 10px 2px 0;vertical-align:top">${esc(k)}</td><td style="word-break:break-all">${esc(v)}</td></tr>`);
+  try {
+    add('App 主檔名', CLOUD_FILE_NAME);
+    add('OAuth 用戶端', GOOGLE_CLIENT_ID.slice(0, 24) + '…');
+    add('本機記錄帳號', cloudState.email || '(無)');
+    add('資料擁有者', cloudState.dataOwnerEmail || '(無)');
+    add('本機記錄 fileId', cloudState.fileId || '(無)');
+    add('上次成功備份', cloudState.lastSyncedAt ? fmtDateTime(cloudState.lastSyncedAt) : '(從未)');
+    let rawErr = '';
+    try {
+      await getAccessToken('');
+      const email = await driveGetUserEmail();
+      add('本次授權帳號', email || '(讀取失敗)');
+      if (email && cloudState.email && email !== cloudState.email)
+        add('⚠ 帳號不一致', `本次授權「${email}」與本機記錄「${cloudState.email}」不同 → 備份在另一個帳號`);
+      // 不加任何 name 過濾，列出 App 資料夾全部檔案
+      const res = await driveFetch('https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&fields=files(id,name,modifiedTime,size)&pageSize=100&orderBy=modifiedTime desc', { method: 'GET' });
+      if (!res.ok) { rawErr = `列檔 HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`; }
+      else {
+        const data = await res.json();
+        const files = data.files || [];
+        add('App 資料夾檔案數', String(files.length));
+        if (files.length === 0) add('→ 判讀', '此帳號的 App 資料夾是空的：備份從未成功寫入，或此帳號非當初備份的帳號。');
+        files.slice(0, 30).forEach((f, i) => add(`檔案 ${i + 1}`, `${f.name}　${fmtDateTime(f.modifiedTime)}　${f.size ? Math.round(f.size / 1024) + 'KB' : ''}`));
+      }
+    } catch (e) { rawErr = (e && e.message) || String(e); }
+    if (rawErr) add('原始錯誤', rawErr);
+  } finally { setCloudBusy(false); }
+  openModal({
+    title: '🔍 雲端同步診斷',
+    body: `<p style="margin-top:0;color:var(--muted)">以下為只讀檢查，不會更動任何資料。把整份結果回報即可對症修正。</p>
+      <table style="font-size:13px;border-collapse:collapse;width:100%"><tbody>${lines.join('')}</tbody></table>`,
+  });
+}
+
 /* ---- 還原版本選擇器（最新 + 歷史版本）---- */
 async function openRestorePicker() {
   setCloudBusy(true);
@@ -3088,6 +3127,7 @@ function cloudSettingsCard() {
       <button class="ghost" data-action="cloud-restore" ${busy}>⬇️ 從雲端還原…</button>
       <button class="ghost" data-action="cloud-switch" ${busy}>🔄 更換帳號</button>
       <button class="ghost" data-action="cloud-disconnect" ${busy}>解除連結</button>
+      <button class="ghost" data-action="cloud-diagnose" ${busy}>🔍 診斷</button>
     </div>
     <p class="hint" style="color:var(--muted);margin-top:10px">自動備份：每次變更會在數秒後自動上傳。多裝置：開啟 App 時若雲端較新會詢問是否還原。歷史版本：每天首次變更保留一份、最多 7 份。</p>
   </div></div>`;
@@ -3328,6 +3368,7 @@ const clickHandlers = {
   'cloud-restore': () => openRestorePicker(),
   'cloud-switch': () => cloudSwitchAccount(),
   'cloud-disconnect': () => cloudDisconnect(),
+  'cloud-diagnose': () => cloudDiagnose(),
 };
 
 const changeHandlers = {
