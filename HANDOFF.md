@@ -3,11 +3,19 @@
 > 收工時 Claude 更新這裡；開工時 Claude 先讀這裡。跟程式碼一起 git 同步。
 
 ## 最後更新
-- 時間：2026-08-18 收工
+- 時間：2026-08-27 收工
 - 機器：（本次 session 的機器；Desktop\claude code）
-- 版本：**main = v09.36（已上線）**。schema 仍為 2、向下相容。
-- 狀態：全部本機實測通過、無 console error、已 push main（GH Pages 已部署 v09.36）。
-- **F③ live 與雲端同步 live 真機往返皆已驗證通過（2026-08-11，實際帳號無問題）**。
+- 版本：**main = v10.00（已 push；GH Pages 部署中/待確認）**。schema 仍為 2、向下相容。
+- 狀態：全部本機（預覽 + DOM 量測）實測通過、無 console error、已 push main。
+
+## 本次區間做了什麼（v09.37 → v10.00）＝②版面調整 + 雲端修復 + 診斷 + 教室引導 + **代課新功能**
+- **v09.37–41 ②年級與班級「科目節數」改版**：(37) 修 `.grade-cols` 第二張卡被 `.card+.card` margin 下移 14px→上緣對齊；(38) 已勾科目改**卡片化**多欄 `.subjh-cards`（每卡：科目 pill+節數 input+右上✕移除，`grade-subj-off` action），未勾科目收進「＋加開科目」`.offsubj-fold` 摺疊；(39–40) 卡片**下挖凹槽**視覺（inset 陰影漸深至 .34/9px/16px、白底輸入浮起對比）；(41) **卡片底色改用各科目色**（`--sc` 變數 + `color-mix` 混白淡色調漸層）。
+- **v09.42 雲端同步「🔍 診斷」只讀檢查**：列授權帳號 vs 本機記錄帳號、App 資料夾全部檔案(名/時間/大小)、原始 HTTP 錯誤、判讀。放在設定→雲端卡片。（`cloudDiagnose`）
+- **v09.43 雲端還原/備份修復（重要）**：真因＝`resolveMainFileId` 盲信 `cloudState.fileId` 快取；另一台重建主檔後本機 id 失效→備份 PATCH 死 id 失敗、還原下載 404 誤判「沒有備份」，備份時間停在某天。改為**一律以檔名重新解析並更新快取**，查無檔才清快取、列檔失敗才退回快取。使用者診斷證實：檔在(78KB,今天)、帳號一致、只是本機 id 失效。**另發現：課務與智慧記事本共用同一 OAuth client／appDataFolder（有 notebook-backup.json），因檔名不同不衝突，故意不改 client_id 以免 strand 現有備份。**
+- **v09.44 專科教室指派引導**：原引導只在「尚無教室」空狀態出現、建了就消失。改在專科教室標題下**常駐**一行：到③教師配課列(班級→科目→節數→**教室**)最右下拉指派。（教室綁在 teacher.load 的 roomId，非綁科目）
+- **v09.45–10.00 代課新功能（大改，使用者確認過設計）**：見下方「代課功能」段。
+
+<details><summary>更早區間（v09.27 → v09.36）＝視覺打磨 + 3 修正</summary>
 
 ## 本次區間做了什麼（v09.27 → v09.36）＝視覺打磨 + 3 修正
 - **v09.27–30 統一「下陷凹槽面板＋懸浮卡片」設計系統**：①科目(含領域節數摺疊)、②年級與班級(年級摺疊+班級卡)、③教師卡片 全部套用。面板 `.subj-cards/.class-cards/.teacher-cards` 與摺疊 body `.domain-fold-body/.grade-fold-body` 用 inset 內陰影＝凹槽；卡片漸層底+層疊陰影+hover 上浮 −6px。（曾加底部 LED 燈條後移除）
@@ -17,6 +25,16 @@
 - **v09.34–35**：排課板未排空格 `.open-empty` 下挖；**導師自編格：空格(released)深挖(淺底#dfeee7)、已填回收平面**。
 - **v09.36**：課表 `table-layout:fixed`→週一~五等寬、`.period-th` 84px 最小；.docx 日欄本就等寬不改。
 - **行為澄清(未變更)**：「解除鎖定」一律還原自編格+清 selfDone，selfDone 不跨越此邊界；使用者確認維持現狀。
+</details>
+
+## 代課功能（v09.45 起，新分頁「代課」）
+- **入口**：頂部分頁「課表輸出」右方；`data-tab="subst"`→`viewSubst()`。
+- **資料**：`state.substitutions: [{ id, absentTeacherId, date, createdAt, assignments:{'classId|day|period': subTeacherId} }]`。**未動 SCHEMA(仍=2)**，以載入/匯入(line~2589)/還原(applyBackupObject) 三處 guard 補預設，相容既有備份。runtime `substOpenId`＝目前開啟編輯的記錄 id。
+- **流程**：＋新增代課→選被代課(請假)教師+日期→調出其課表(`substTimetableHTML`,互動)→點有課格(`subst-cell`)跳空堂教師清單(`substCellPicker`)指派→列印/存 PDF。清單頁可多筆、🗑️刪除(`substDelete`)。
+- **空堂判定** `freeTeachersAt(day,period,rec)`：排除當節在上課者(`busyTeachersAt`用 `slotAssignments`)、設不排課時段者(`t.unavailable` 含 `day|period`)、被代課者、同節已被指派為別格代課者。
+- **列印組合** `substPrintHTML(rec)`：①被代課者代課課表 ②每位代課者課表(含代課節,`subTeacherTimetableHTML`,代課節標「代課（代 ○○）」) ③每個受影響班級課表(`substClassTimetableHTML`,**代課節只顯示代課教師名、原任課存 title tooltip**)。逐張換頁。`substPrint()` 注入 `.subst-print-area`+`body.printing-subst` 於列印時取代 `#view`。
+- **不動實際排課**（`state.slots` 不變），純輸出。
+- **CSS**：`.subst-list/.subst-item`、`.subst-offer(.assigned/.need)`、`.subst-print-area/.subst-print-page`（`@media print` break-before:page）；`.subst-offer` 已加入 print-color-adjust 清單。
 
 <details><summary>更早區間（v09.18 → v09.26，介面大改版 + 2 修正）</summary>
 
@@ -55,12 +73,14 @@
 - **G-Tier3**：首頁儀表板、範例資料、自動排課局部重排、連堂進階 pattern、docx 領域合併 legend、久未備份提醒。
 
 ## 待決 / 卡住的問題
-- **（已清）F③ live 與雲端同步 live 真機往返**：2026-08-11 使用者以實際 Google 帳號驗證通過，均無須修正的問題。
-- 使用者已確認：導師自編四調整、全校配課閘門、連堂奇數、分節導師節數、跨學年沿用、Undo/Redo 本機皆正確。
+- **（已清）受影響班級課表代課節「代課：」殘留**：實為舊 SW 快取，v10.00 部署+更新後只顯示代課教師名，使用者 2026-08-27 已確認解決。程式碼 app.js:2513。
+- **雲端同步修復待使用者實機驗證**：v09.43 已修 `resolveMainFileId`；請使用者在「卡在 8/13 的那台」更新到 v10 後，先「⬇️從雲端還原→最新」拉回 8/26 版，再「⬆️立即備份」確認時間前進到今天。🔍診斷按鈕可留著或日後移除。
+- **代課功能未寫「使用說明」**：已向使用者提過可補一段，尚未做；使用者未回覆要不要。
+- **（已清）F③ live 與雲端同步 live 真機往返**：2026-08-11 實際帳號驗證通過。
 
 ## 注意事項（給另一台的 Claude）
 - 開工先 sync-start、收工必 sync-end；不要兩台同時改同一個檔。
-- 版本 vNN.MM：`APP_VERSION`(app.js)＋sw `CACHE_NAME` 必須同步。小改直接 bump minor、大改先確認。現 **v09.36**。
+- 版本 vNN.MM：`APP_VERSION`(app.js)＋sw `CACHE_NAME` 必須同步。小改直接 bump minor、大改先確認。現 **v10.00**。
 - **UI 現況（v09.19–26）**：分頁 ①科目·②年級與班級·③教師·④排課·課表輸出·設定；科目/班級/教師皆卡片式；`data-tab` 鍵未變（render `case 'grades':case 'classes'`→`viewGradesClasses()`）。改 UI 前先看架構記憶的「v09.19–26 介面大改版」段。
 - **測試 app.js 後務必先清 SW 快取再 navigate**（否則跑舊碼）；量有 transition 的 CSS 前先關 transition（預覽窗凍結假象）。
 - **GH Pages 部署偶發逾時**（本輪 v09.03 卡約 3 小時）→ **推一個空 commit 重新觸發**即可，非程式問題。改版後可 curl `https://calvincat-ship-it.github.io/course-scheduler/app.js` 確認線上版本。
