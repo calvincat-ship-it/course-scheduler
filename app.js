@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v10.03';
+const APP_VERSION = 'v10.04';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -456,18 +456,6 @@ async function getFillToken(promptMode = '') {
     catch (e) { _fillResolve = _fillReject = null; reject(e); }
   });
 }
-// v10.03 強制重選 Google 帳號（清掉現有 token、彈帳號選擇器）
-async function switchFillAccount() {
-  fillToken = null;
-  await ensureGis();
-  if (!fillTokenClient) initFillTokenClient();
-  return new Promise((resolve, reject) => {
-    _fillResolve = resolve; _fillReject = reject;
-    try { fillTokenClient.requestAccessToken({ prompt: 'select_account' }); }
-    catch (e) { _fillResolve = _fillReject = null; reject(e); }
-  });
-}
-const PERSONAL_DOMAINS = ['gmail.com', 'googlemail.com', 'yahoo.com', 'yahoo.com.tw', 'outlook.com', 'hotmail.com', 'icloud.com'];
 async function fillFetch(url, opts) {
   let token = await getFillToken('');
   const build = (t) => ({ ...opts, headers: { ...(opts && opts.headers), Authorization: 'Bearer ' + t } });
@@ -506,14 +494,6 @@ async function fillDownloadText(fileId) {
   const res = await fillFetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, { method: 'GET' });
   if (!res.ok) throw new Error('下載檔案失敗');
   return res.text();
-}
-async function driveShareDomain(fileId, domain) {   // v10.01 代課填報：整份檔對學校網域共享(可編輯)
-  const res = await fillFetch(`https://www.googleapis.com/drive/v3/files/${fileId}/permissions?fields=id`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ role: 'writer', type: 'domain', domain }),
-  });
-  if (!res.ok) { const t = await res.text(); throw new Error('網域共享（' + domain + '）失敗：' + t.slice(0, 120)); }
-  return res.json();
 }
 async function fillUserInfo() {   // v10.01 取登入帳號 email + 顯示名稱
   try { const res = await fillFetch('https://www.googleapis.com/drive/v3/about?fields=user', { method: 'GET' }); if (!res.ok) return {}; const d = await res.json(); return { email: (d.user && d.user.emailAddress) || '', name: (d.user && d.user.displayName) || '' }; } catch (e) { return {}; }
@@ -1433,9 +1413,9 @@ function teacherModal(existing) {
         <label class="field"><span>每周授課時數</span><input type="number" id="tWeekly" data-change="weekly-hours" min="0" max="40" value="${t.weeklyHours || 0}"></label>
         <label class="field"><span>單日上限（0＝用全域）</span><input type="number" id="tMaxDay" min="0" max="20" value="${t.maxPerDay || 0}"></label>
       </div>
-      <div class="field-row" id="homeroomField" style="margin-bottom:6px;gap:12px;display:${t.type === '級任' ? 'flex' : 'none'}">
-        <label class="field" style="max-width:320px"><span>擔任導師的班級（級任）</span><select id="tHomeroom">${hrClsOpts}</select></label>
-        <label class="field" style="max-width:320px"><span>導師 Google Email（線上填課分享用）</span><input type="email" id="tEmail" value="${esc(t.email || '')}" placeholder="name@ttct.edu.tw"></label>
+      <div class="field-row" style="margin-bottom:6px;gap:12px">
+        <label class="field" style="max-width:340px"><span>Google Email（線上填課／代課分享用，可留空）</span><input type="email" id="tEmail" value="${esc(t.email || '')}" placeholder="學校 @ttct.edu.tw 或個人 Gmail"></label>
+        <label class="field" id="homeroomField" style="max-width:320px;display:${t.type === '級任' ? '' : 'none'}"><span>擔任導師的班級（級任）</span><select id="tHomeroom">${hrClsOpts}</select></label>
       </div>
       <label class="field" style="margin-bottom:4px"><span>教師配課（班級 → 科目 → 節數）</span></label>
       <div id="loadEditor">${loadEditorHTML()}</div>
@@ -1459,7 +1439,7 @@ function teacherModal(existing) {
       const unavailable = Array.from(document.querySelectorAll('#availGrid td.off')).map(td => td.dataset.slot);
       const type = $('#tType').value;
       const homeroomClassId = (type === '級任' && $('#tHomeroom')) ? $('#tHomeroom').value : '';
-      const email = (type === '級任' && $('#tEmail')) ? $('#tEmail').value.trim() : '';
+      const email = $('#tEmail') ? $('#tEmail').value.trim() : '';   // v10.04 所有教師皆可填 email（代課分享用）
       const data = { name, type, weeklyHours: weekly, maxPerDay: parseInt($('#tMaxDay').value, 10) || 0, homeroomClassId, email, unavailable, load };
       if (existing) Object.assign(existing, data); else state.teachers.push({ id: uid(), ...data });
       save(); render(); toast('已儲存教師');
@@ -2603,27 +2583,26 @@ function substContextState() {
 // 排課者：開放（建根目錄檔＋網域共享）
 async function openSubstShare() {
   if (!Array.isArray(state.substitutions)) state.substitutions = [];
+  // v10.04 逐位 email 分享（學校帳號＋個人 Gmail 皆通用；免網域，免後端）
+  const withEmail = state.teachers.filter(t => t.email && /@/.test(t.email));
+  if (!withEmail.length) { toast('尚無教師填 Email。請到「③ 教師」為要參與代課填報的老師填 Google Email（學校或 Gmail 皆可）。'); return; }
   let step = '連線 Google';
   try {
     toast('連線 Google…'); await getFillToken('');
-    step = '讀取帳號資訊';
-    const info = await fillUserInfo();
-    const domain = ((info.email || '').split('@')[1]) || 'ttct.edu.tw';   // null-safe
-    if (PERSONAL_DOMAINS.includes(domain.toLowerCase())) {   // 個人帳號無法做網域共享
-      openModal({ title: '請用學校帳號開放', body: `<p style="margin-top:0">你目前登入的是 <b>${esc(info.email || '')}</b>（個人帳號），<b>無法做學校網域共享</b>。</p>
-        <p>請切換到你的<b>學校帳號（@ttct.edu.tw）</b>再開放代課填報。</p>
-        <button class="btn" data-action="subst-switch-account">切換 Google 帳號並再試</button>` });
-      return;
-    }
     const year = String(state.settings.reportYear || '');
     const payload = { fmt: SUBST_FMT, ver: 1, openedAt: new Date().toISOString(), state: substContextState() };
     step = '建立雲端檔案';
     const f = await drivePutJson(`代課填報-${state.settings.schoolCode || 'msd9'}${year}.json`, null, JSON.stringify(payload));
-    step = `網域共享（${domain}）`;
-    await driveShareDomain(f.id, domain);
-    state.substShare = { fileId: f.id, link: f.webViewLink || '', domain, openedAt: new Date().toISOString() };
+    const shared = [], failed = [];
+    for (const t of withEmail) {
+      step = `分享給 ${t.email}`;
+      try { await driveShare(f.id, t.email); shared.push(t.email); }
+      catch (e) { failed.push(t.email + '（' + ((e && e.message) || '失敗').slice(0, 60) + '）'); }
+    }
+    state.substShare = { fileId: f.id, link: f.webViewLink || '', sharedEmails: shared, openedAt: new Date().toISOString() };
     save(); render(); substShareModal();
-    toast('已開放代課填報（' + domain + ' 網域共享）');
+    if (failed.length) openModal({ title: '已開放（部分分享失敗）', body: `<p style="margin-top:0">已分享給 <b>${shared.length}</b> 位；<b>${failed.length}</b> 位失敗：</p><pre style="white-space:pre-wrap;word-break:break-all;background:#f4f4f5;padding:10px;border-radius:8px;font-size:12px">${esc(failed.join('\n'))}</pre>` });
+    else toast('已開放代課填報，已分享給 ' + shared.length + ' 位教師');
   } catch (e) {
     openModal({ title: '開放失敗', body: `<p style="margin-top:0">在步驟「<b>${esc(step)}</b>」發生錯誤：</p><pre style="white-space:pre-wrap;word-break:break-all;background:#f4f4f5;padding:10px;border-radius:8px;font-size:12px">${esc((e && e.message) || String(e))}</pre><p style="color:var(--muted);font-size:12px">請把這段訊息回報，以便對症。</p>` });
   }
@@ -2645,18 +2624,20 @@ async function collectSubst() {
 function substShareModal() {
   const ss = state.substShare;
   const url = location.origin + location.pathname + '?subst=1';
+  const withEmail = state.teachers.filter(t => t.email && /@/.test(t.email));
+  const shareCount = ss && ss.sharedEmails ? ss.sharedEmails.length : 0;
   const body = ss
-    ? `<div class="total-badge ok">已開放（${esc(ss.domain || '')} 網域共享）</div>
-       <p style="margin:8px 0"><b>把這個代課填報連結給全校教師：</b><br><code style="user-select:all;word-break:break-all">${esc(url)}</code></p>
-       <p style="color:var(--muted);margin:8px 0">教師用學校 Google 帳號登入 → 看得到全部代課、可<b>新增自己的</b>（不可刪改他人）。你這邊按「收回」把他們新增的合併進來。</p>
+    ? `<div class="total-badge ok">已開放 · 已分享給 ${shareCount} 位教師</div>
+       <p style="margin:8px 0"><b>把這個代課填報連結給教師：</b><br><code style="user-select:all;word-break:break-all">${esc(url)}</code></p>
+       <p style="color:var(--muted);margin:8px 0">教師用<b>自己的 Google 帳號（學校或 Gmail 皆可）</b>登入 → Picker 選這份代課檔 → 看全部代課、可<b>新增自己的</b>（不可刪改他人）。<b>新增了教師（或臨時代課老師）→ 在③教師補其 Email → 按「重新開放」即會分享給新加入者。</b></p>
        <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
          <button class="btn" data-action="collect-subst">📥 收回代課（合併）</button>
-         <button class="ghost" data-action="reopen-subst">♻️ 重新開放（更新快照）</button>
+         <button class="ghost" data-action="reopen-subst">♻️ 重新開放（更新快照＋補分享）</button>
        </div>`
-    : `<p style="margin-top:0">將在你的雲端硬碟建立一份「代課填報」共享檔（含目前課表快照），對學校網域共享；全校教師可用連結登入查看全部代課、<b>新增</b>自己的代課安排，你再「收回」合併回來。</p>
-       <p style="color:var(--muted)">教師端<b>只能新增</b>、不能刪改他人；刪除代課仍只由你在此頁做。</p>
-       <button class="btn" data-action="open-subst">☁️ 開放代課填報</button>`;
-  openModal({ title: '線上代課填報（網域共享）', wide: true, body });
+    : `<p style="margin-top:0">在你的雲端硬碟建立一份「代課填報」共享檔（含目前課表快照），<b>逐位分享給有填 Email 的教師</b>（學校帳號或個人 Gmail 皆可）；教師用連結登入查看全部代課、<b>新增</b>自己的代課安排，你再「收回」合併回來。</p>
+       <p style="color:var(--muted)">目前有 Email 的教師：<b>${withEmail.length}</b> 位。無校帳號的臨時代課老師，用個人 Gmail 也可以（在③教師填其 Gmail）。教師端<b>只能新增</b>、不能刪改他人；刪除代課仍只由你在此頁做。</p>
+       <button class="btn" data-action="open-subst">☁️ 開放代課填報（分享給 ${withEmail.length} 位）</button>`;
+  openModal({ title: '線上代課填報（逐位 Email 分享）', wide: true, body });
 }
 // 教師 kiosk：登入 → Picker 開共享代課檔 → 載入為 state
 async function substKioskStart() {
@@ -3045,7 +3026,7 @@ function helpModal() {
       <li>可填<b>數字代號</b>（如 01）：供「導師線上填課」組成檔名用，由你編排。</li>
       <li>點「科目 / 協同」可為每一科勾選<b>協同教學</b>的同年級其他班（同時段一起上）。</li></ul>
     <h4>③ 教師</h4>
-    <ul><li>填姓名、身分、<b>每周授課時數</b>、不排課時段。身分選<b>級任</b>時，需設定其<b>擔任導師的班級</b>，並可填<b>導師 Google Email</b>（供後述「導師線上填課」逐位分享用）。</li>
+    <ul><li>填姓名、身分、<b>每周授課時數</b>、不排課時段。可填<b>Google Email</b>（學校或個人 Gmail 皆可）——供「導師線上填課」「線上代課填報」逐位分享用；無校帳號的臨時代課老師填其 Gmail 即可。身分選<b>級任</b>時另設<b>擔任導師的班級</b>。</li>
       <li><b>教師配課</b>：逐筆「班級 → 科目 → 節數 → 教室（可留空）」。該師配課合計<b>必須等於每周授課時數</b>才能儲存。專科教室先在「設定」建立。</li>
       <li>✂️ <b>分節上課</b>科目：直接把節數拆給不同老師（如生活給 A 4 節、B 2 節），下拉會顯示各科<b>剩餘節數</b>、填的節數不超過剩餘。</li>
       <li>⚠ <b>檢查全校配課（進入 ④ 排課的關卡）</b>：頁面上方按「<b>檢查全校配課</b>」，通過條件＝<b>每班每科節數都配齊</b>（分組每師足額、分節多師加總＝需求）<b>且每個班級都已指定級任導師</b>。通過後才會<b>解鎖 ④ 排課</b>；之後只要改動配課、導師、科目型態或年級節數，就需<b>再按一次</b>檢查。（此關卡為防呆——排課人員不一定是你。）</li>
@@ -3803,8 +3784,7 @@ const clickHandlers = {
   // v10.01 線上代課填報
   'subst-share-manage': () => substShareModal(),
   'open-subst': () => openSubstShare(),
-  'subst-switch-account': () => { closeModal(); toast('請選擇學校帳號…'); switchFillAccount().then(() => openSubstShare()).catch(e => toast('切換帳號失敗：' + e.message)); },
-  'reopen-subst': () => confirmDelete('重新開放會用目前課表快照覆蓋共享檔（教師已送出、且你已「收回」的代課會保留；未收回的教師填報請先收回再重開）。確定？', () => openSubstShare()),
+  'reopen-subst': () => confirmDelete('重新開放會用目前課表快照覆蓋共享檔（教師已送出、且你已「收回」的代課會保留；未收回的教師填報請先收回再重開），並補分享給新填 Email 的教師。確定？', () => openSubstShare()),
   'collect-subst': () => collectSubst(),
   'subst-login': () => substKioskStart(),
   'subst-submit': el => substSubmit(substById(el.dataset.id)),
@@ -3848,7 +3828,7 @@ const changeHandlers = {
     if ((modalLoad[idx].hours || 0) > rem) modalLoad[idx].hours = rem;
     refreshLoadEditor(); updateLoadSum();
   },
-  'teacher-type': el => { const f = $('#homeroomField'); if (f) f.style.display = el.value === '級任' ? 'flex' : 'none'; },
+  'teacher-type': el => { const f = $('#homeroomField'); if (f) f.style.display = el.value === '級任' ? '' : 'none'; },
   'load-hours': el => {
     syncLoadFromDOM();
     const idx = parseInt(el.dataset.idx, 10);
