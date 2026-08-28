@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v10.02';
+const APP_VERSION = 'v10.03';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -456,6 +456,18 @@ async function getFillToken(promptMode = '') {
     catch (e) { _fillResolve = _fillReject = null; reject(e); }
   });
 }
+// v10.03 強制重選 Google 帳號（清掉現有 token、彈帳號選擇器）
+async function switchFillAccount() {
+  fillToken = null;
+  await ensureGis();
+  if (!fillTokenClient) initFillTokenClient();
+  return new Promise((resolve, reject) => {
+    _fillResolve = resolve; _fillReject = reject;
+    try { fillTokenClient.requestAccessToken({ prompt: 'select_account' }); }
+    catch (e) { _fillResolve = _fillReject = null; reject(e); }
+  });
+}
+const PERSONAL_DOMAINS = ['gmail.com', 'googlemail.com', 'yahoo.com', 'yahoo.com.tw', 'outlook.com', 'hotmail.com', 'icloud.com'];
 async function fillFetch(url, opts) {
   let token = await getFillToken('');
   const build = (t) => ({ ...opts, headers: { ...(opts && opts.headers), Authorization: 'Bearer ' + t } });
@@ -2597,6 +2609,12 @@ async function openSubstShare() {
     step = '讀取帳號資訊';
     const info = await fillUserInfo();
     const domain = ((info.email || '').split('@')[1]) || 'ttct.edu.tw';   // null-safe
+    if (PERSONAL_DOMAINS.includes(domain.toLowerCase())) {   // 個人帳號無法做網域共享
+      openModal({ title: '請用學校帳號開放', body: `<p style="margin-top:0">你目前登入的是 <b>${esc(info.email || '')}</b>（個人帳號），<b>無法做學校網域共享</b>。</p>
+        <p>請切換到你的<b>學校帳號（@ttct.edu.tw）</b>再開放代課填報。</p>
+        <button class="btn" data-action="subst-switch-account">切換 Google 帳號並再試</button>` });
+      return;
+    }
     const year = String(state.settings.reportYear || '');
     const payload = { fmt: SUBST_FMT, ver: 1, openedAt: new Date().toISOString(), state: substContextState() };
     step = '建立雲端檔案';
@@ -3785,6 +3803,7 @@ const clickHandlers = {
   // v10.01 線上代課填報
   'subst-share-manage': () => substShareModal(),
   'open-subst': () => openSubstShare(),
+  'subst-switch-account': () => { closeModal(); toast('請選擇學校帳號…'); switchFillAccount().then(() => openSubstShare()).catch(e => toast('切換帳號失敗：' + e.message)); },
   'reopen-subst': () => confirmDelete('重新開放會用目前課表快照覆蓋共享檔（教師已送出、且你已「收回」的代課會保留；未收回的教師填報請先收回再重開）。確定？', () => openSubstShare()),
   'collect-subst': () => collectSubst(),
   'subst-login': () => substKioskStart(),
