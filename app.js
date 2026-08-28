@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v10.01';
+const APP_VERSION = 'v10.02';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -479,7 +479,7 @@ async function drivePutJson(name, parentId, contentStr, fileId) {
   const base = 'https://www.googleapis.com/upload/drive/v3/files';
   const url = fileId ? `${base}/${fileId}?uploadType=multipart&fields=id,webViewLink` : `${base}?uploadType=multipart&fields=id,webViewLink`;
   const res = await fillFetch(url, { method: fileId ? 'PATCH' : 'POST', headers: { 'Content-Type': `multipart/related; boundary=${boundary}` }, body });
-  if (!res.ok) throw new Error('寫入檔案失敗');
+  if (!res.ok) { let t = ''; try { t = await res.text(); } catch (e) {} throw new Error('寫入檔案失敗 (HTTP ' + res.status + ')：' + t.slice(0, 200)); }
   return res.json();
 }
 async function driveShare(fileId, email) {
@@ -2591,17 +2591,24 @@ function substContextState() {
 // 排課者：開放（建根目錄檔＋網域共享）
 async function openSubstShare() {
   if (!Array.isArray(state.substitutions)) state.substitutions = [];
+  let step = '連線 Google';
   try {
     toast('連線 Google…'); await getFillToken('');
-    const info = await fillUserInfo(); const domain = (info.email.split('@')[1]) || 'ttct.edu.tw';
+    step = '讀取帳號資訊';
+    const info = await fillUserInfo();
+    const domain = ((info.email || '').split('@')[1]) || 'ttct.edu.tw';   // null-safe
     const year = String(state.settings.reportYear || '');
     const payload = { fmt: SUBST_FMT, ver: 1, openedAt: new Date().toISOString(), state: substContextState() };
+    step = '建立雲端檔案';
     const f = await drivePutJson(`代課填報-${state.settings.schoolCode || 'msd9'}${year}.json`, null, JSON.stringify(payload));
+    step = `網域共享（${domain}）`;
     await driveShareDomain(f.id, domain);
     state.substShare = { fileId: f.id, link: f.webViewLink || '', domain, openedAt: new Date().toISOString() };
     save(); render(); substShareModal();
     toast('已開放代課填報（' + domain + ' 網域共享）');
-  } catch (e) { toast('開放失敗：' + e.message); }
+  } catch (e) {
+    openModal({ title: '開放失敗', body: `<p style="margin-top:0">在步驟「<b>${esc(step)}</b>」發生錯誤：</p><pre style="white-space:pre-wrap;word-break:break-all;background:#f4f4f5;padding:10px;border-radius:8px;font-size:12px">${esc((e && e.message) || String(e))}</pre><p style="color:var(--muted);font-size:12px">請把這段訊息回報，以便對症。</p>` });
+  }
 }
 // 排課者：收回（把教師新增的代課合併回本機，只增不覆蓋）
 async function collectSubst() {
