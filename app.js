@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v10.00';
+const APP_VERSION = 'v10.01';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -134,11 +134,12 @@ function defaultState() {
     staffingOkSig: '',    // v09.01 「檢查全校配課」通過時的資料簽章（含導師設定）；資料一變即需重新檢查
     fillShare: null,      // v09.03 F③ 線上填課分享：{ folderId, folderLink, year, files:{classId:{fileId,link,email}}, openedAt }
     substitutions: [],    // v09.45 代課安排：[{ id, absentTeacherId, date, createdAt, assignments:{'classId|day|period':subTeacherId} }]
+    substShare: null,     // v10.01 線上代課填報分享：{ fileId, link, domain, openedAt }
     helpSeen: false,
   };
 }
 
-async function save() { await idbSet(STATE_KEY, state); scheduleCloudBackup(); maybeDailySnapshot(); }
+async function save() { if (substKiosk) return; await idbSet(STATE_KEY, state); scheduleCloudBackup(); maybeDailySnapshot(); }   // v10.01 代課 kiosk 載入的是排課者狀態，不可寫進教師本機/雲端
 
 /* ---------- Helpers ---------- */
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -229,6 +230,9 @@ let gradeFoldOpen = true;     // ② 年級與班級頁：年級設定摺疊區�
 let lockMode = false;   // v08.02 單格鎖定選取模式進行中（runtime，不持久化）
 let kioskFill = false;  // v09.05 導師填課 kiosk：隱藏其他分頁、只顯示填課介面（?fill 或導師入口）
 let fillLinkMode = false; // v09.07 由填課連結(?fill)進入：離開＝關閉分頁/結束畫面，永不進入系統（防導師誤觸竄改資料）
+/* v10.01 代課線上填報 kiosk（?subst）：教師登入→開排課者網域共享的代課檔→看全部、只可新增（不可刪改他人） */
+let substKiosk = false, substLinkMode = false, substEnded = false, substFileId = null, substMyEmail = '', substMyName = '';
+let substEditableIds = new Set();   // 本 session kiosk 新建、可編輯/送出的記錄 id（其餘唯讀）
 let fillEnded = false;    // v09.07 填課結束畫面旗標
 let showLoadMatrix = false; // v09.12 ③教師「班×科配課矩陣」展開狀態（runtime）
 let fillProgress = null;    // v09.12 F③ 線上填課進度快取 {classId:{total,filled,submitted,submittedAt}}（runtime，按需重讀）
@@ -469,7 +473,7 @@ async function driveCreateFolder(name) {
 }
 async function drivePutJson(name, parentId, contentStr, fileId) {
   const boundary = 'csf' + Math.random().toString(16).slice(2);
-  const metadata = fileId ? {} : { name, parents: [parentId] };
+  const metadata = fileId ? {} : (parentId ? { name, parents: [parentId] } : { name });   // parentId 為空＝建在雲端根目錄
   const body = `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n` + JSON.stringify(metadata) +
     `\r\n--${boundary}\r\nContent-Type: application/json\r\n\r\n` + contentStr + `\r\n--${boundary}--`;
   const base = 'https://www.googleapis.com/upload/drive/v3/files';
@@ -490,6 +494,17 @@ async function fillDownloadText(fileId) {
   const res = await fillFetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, { method: 'GET' });
   if (!res.ok) throw new Error('下載檔案失敗');
   return res.text();
+}
+async function driveShareDomain(fileId, domain) {   // v10.01 代課填報：整份檔對學校網域共享(可編輯)
+  const res = await fillFetch(`https://www.googleapis.com/drive/v3/files/${fileId}/permissions?fields=id`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ role: 'writer', type: 'domain', domain }),
+  });
+  if (!res.ok) { const t = await res.text(); throw new Error('網域共享（' + domain + '）失敗：' + t.slice(0, 120)); }
+  return res.json();
+}
+async function fillUserInfo() {   // v10.01 取登入帳號 email + 顯示名稱
+  try { const res = await fillFetch('https://www.googleapis.com/drive/v3/about?fields=user', { method: 'GET' }); if (!res.ok) return {}; const d = await res.json(); return { email: (d.user && d.user.emailAddress) || '', name: (d.user && d.user.displayName) || '' }; } catch (e) { return {}; }
 }
 async function fillUserEmail() {   // v09.08 取登入帳號 email（綁定驗證用）
   try { const res = await fillFetch('https://www.googleapis.com/drive/v3/about?fields=user', { method: 'GET' }); if (!res.ok) return ''; const d = await res.json(); return (d.user && d.user.emailAddress) || ''; } catch (e) { return ''; }
@@ -749,13 +764,14 @@ async function teacherSaveFill() {
   } catch (e) { toast('儲存失敗：' + e.message); }
 }
 
-function setKiosk(on) {   // v09.05 進/出導師填課 kiosk：隱藏分頁與右上動作鈕
-  kioskFill = on;
+function setKioskNav(on) {   // 只負責隱藏/顯示導覽與右上動作鈕
   const tabs = document.getElementById('tabs'); if (tabs) tabs.style.display = on ? 'none' : '';
   document.querySelectorAll('.topbar-actions').forEach(e => e.style.display = on ? 'none' : '');
-  render();
 }
+function setKiosk(on) { kioskFill = on; setKioskNav(on); render(); }              // v09.05 導師填課 kiosk
+function setSubstKiosk(on) { substKiosk = on; setKioskNav(on); render(); }        // v10.01 代課填報 kiosk
 function render() {
+  if (substKiosk) { $('#view').innerHTML = viewSubstKiosk(); return; }   // 代課填報模式
   if (kioskFill) { $('#view').innerHTML = viewTeacherFill(); return; }   // 導師填課模式：只出填課介面
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === currentTab));
   const view = $('#view');
@@ -2337,20 +2353,27 @@ function viewSubst() {
 }
 
 function substList() {
-  const head = `<div class="page-head"><h2>🔄 代課</h2><button class="btn" data-action="subst-add">＋ 新增代課</button></div>
-    <div class="hint" style="margin-bottom:12px;color:var(--muted)">選一位<b>被代課（請假）教師</b>，調出其課表，點<b>有課的格子</b>指派當節<b>空堂</b>的代課教師，最後列印／存 PDF。記錄會保存、可多筆。</div>`;
+  const shareBtn = substKiosk ? '' : `<button class="ghost" data-action="subst-share-manage">☁️ 線上代課填報${state.substShare ? '（已開放）' : ''}</button>`;
+  const head = `<div class="page-head"><h2>🔄 代課</h2><div style="display:flex;gap:8px">${shareBtn}<button class="btn" data-action="subst-add">＋ 新增代課</button></div></div>
+    <div class="hint" style="margin-bottom:12px;color:var(--muted)">${substKiosk
+      ? '你可以看到<b>全部</b>代課紀錄；按「＋ 新增代課」建立<b>自己的</b>代課安排並送出（不可刪改他人的）。'
+      : '選一位<b>被代課（請假）教師</b>，調出其課表，點<b>有課的格子</b>指派當節<b>空堂</b>的代課教師，最後列印／存 PDF。記錄會保存、可多筆。'}</div>`;
   if (!(state.substitutions || []).length) return head + emptyCard('尚無代課記錄', '點右上「＋ 新增代課」建立第一筆。');
   const rows = state.substitutions.slice().sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || '')).map(r => {
     const t = teacherById(r.absentTeacherId);
     const total = t ? absentCells(r).length : 0;
     const done = Object.keys(r.assignments || {}).filter(k => r.assignments[k]).length;
+    const mine = substKiosk && substEditableIds.has(r.id);
+    const by = r.createdByName ? `<span class="subst-item-meta">填報：${esc(r.createdByName)}</span>` : '';
+    const delBtn = substKiosk ? '' : `<button class="icon-btn subst-item-del" data-action="subst-del" data-id="${r.id}" title="刪除此代課記錄">🗑️</button>`;
     return `<div class="subst-item" data-action="subst-open" data-id="${r.id}">
       <div class="subst-item-main">
         <span class="subst-item-name">${esc((t || {}).name || '（教師已刪除）')}</span>
         ${r.date ? `<span class="pill blue">${esc(r.date)}</span>` : ''}
-        <span class="subst-item-meta">已指派 ${done} / 共 ${total} 節</span>
+        ${mine ? '<span class="pill amber">我的·可編輯</span>' : ''}
+        <span class="subst-item-meta">已指派 ${done} / 共 ${total} 節</span>${by}
       </div>
-      <button class="icon-btn subst-item-del" data-action="subst-del" data-id="${r.id}" title="刪除此代課記錄">🗑️</button>
+      ${delBtn}
     </div>`;
   }).join('');
   return head + `<div class="subst-list">${rows}</div>`;
@@ -2360,13 +2383,17 @@ function substEditor(rec) {
   const t = teacherById(rec.absentTeacherId);
   const total = absentCells(rec).length;
   const done = Object.keys(rec.assignments || {}).filter(k => rec.assignments[k]).length;
+  const editable = !substKiosk || substEditableIds.has(rec.id);   // 完整 App 皆可編；kiosk 僅本 session 新建、未送出者
+  const btns = substKiosk
+    ? `<button class="ghost" data-action="subst-back">← 返回</button>${editable ? `<button class="btn" data-action="subst-submit" data-id="${rec.id}">💾 送出到雲端</button>` : ''}`
+    : `<button class="ghost" data-action="subst-back">← 返回清單</button><button class="btn" data-action="subst-print">🖨️ 列印 / 存 PDF</button>`;
+  const hint = editable
+    ? '點下方<b>有課的格子</b>指派代課教師（清單只列該節空堂的老師）；再點一次可更換或清除。'
+    : '此為他人填報的代課，僅供檢視。';
   const head = `<div class="page-head no-print"><h2>🔄 代課 — ${esc(t.name)}${rec.date ? '（' + esc(rec.date) + '）' : ''}</h2>
-    <div style="display:flex;gap:8px">
-      <button class="ghost" data-action="subst-back">← 返回清單</button>
-      <button class="btn" data-action="subst-print">🖨️ 列印 / 存 PDF</button>
-    </div></div>
-    <div class="hint no-print" style="margin-bottom:10px;color:var(--muted)">點下方<b>有課的格子</b>指派代課教師（清單只列該節空堂的老師）；再點一次可更換或清除。已指派 <b>${done}</b> / 共 <b>${total}</b> 節。</div>`;
-  return head + `<div class="card"><div class="card-body"><div class="grid-wrap">${substTimetableHTML(rec, true)}</div></div></div>`;
+    <div style="display:flex;gap:8px">${btns}</div></div>
+    <div class="hint no-print" style="margin-bottom:10px;color:var(--muted)">${hint} 已指派 <b>${done}</b> / 共 <b>${total}</b> 節。</div>`;
+  return head + `<div class="card"><div class="card-body"><div class="grid-wrap">${substTimetableHTML(rec, editable)}</div></div></div>`;
 }
 
 function substTimetableHTML(rec, interactive) {
@@ -2412,6 +2439,7 @@ function substAddModal() {
     onSave: () => {
       const tid = $('#substTeacher').value; if (!tid) { toast('請選擇教師'); return false; }
       const rec = { id: uid(), absentTeacherId: tid, date: ($('#substDate').value || '').trim(), createdAt: new Date().toISOString(), assignments: {} };
+      if (substKiosk) { rec.createdByEmail = substMyEmail; rec.createdByName = substMyName; substEditableIds.add(rec.id); }
       state.substitutions.push(rec); save(); substOpenId = rec.id; closeModal(); render(); return true;
     },
   });
@@ -2546,6 +2574,108 @@ function substPrint() {
   window.addEventListener('afterprint', cleanup, { once: true });
   window.print();
   setTimeout(cleanup, 2000);
+}
+
+/* ---------- 代課線上填報（v10.01，網域共享；比照 F③：排課者開放/收回、教師 kiosk 只可新增） ---------- */
+const SUBST_FMT = 'course-subst-1';
+// 給共享檔的狀態快照（教師 kiosk 端當作 state 直接跑既有代課功能；不含任何憑證，state 本就無機密）
+function substContextState() {
+  return {
+    schema: SCHEMA,
+    settings: { periods: state.settings.periods, days: state.settings.days, reportYear: state.settings.reportYear || '', schoolCode: state.settings.schoolCode || '', subjectMap: state.settings.subjectMap || {}, maxLessonsPerDay: state.settings.maxLessonsPerDay || 0 },
+    subjects: state.subjects, grades: state.grades, classes: state.classes, teachers: state.teachers, rooms: state.rooms || [],
+    domains: state.domains || [], slots: state.slots, slotTeachers: state.slotTeachers, slotContent: state.slotContent || {},
+    substitutions: state.substitutions || [],
+  };
+}
+// 排課者：開放（建根目錄檔＋網域共享）
+async function openSubstShare() {
+  if (!Array.isArray(state.substitutions)) state.substitutions = [];
+  try {
+    toast('連線 Google…'); await getFillToken('');
+    const info = await fillUserInfo(); const domain = (info.email.split('@')[1]) || 'ttct.edu.tw';
+    const year = String(state.settings.reportYear || '');
+    const payload = { fmt: SUBST_FMT, ver: 1, openedAt: new Date().toISOString(), state: substContextState() };
+    const f = await drivePutJson(`代課填報-${state.settings.schoolCode || 'msd9'}${year}.json`, null, JSON.stringify(payload));
+    await driveShareDomain(f.id, domain);
+    state.substShare = { fileId: f.id, link: f.webViewLink || '', domain, openedAt: new Date().toISOString() };
+    save(); render(); substShareModal();
+    toast('已開放代課填報（' + domain + ' 網域共享）');
+  } catch (e) { toast('開放失敗：' + e.message); }
+}
+// 排課者：收回（把教師新增的代課合併回本機，只增不覆蓋）
+async function collectSubst() {
+  if (!state.substShare) { toast('尚未開放代課填報'); return; }
+  try {
+    toast('讀取代課填報…'); await getFillToken('');
+    const obj = JSON.parse(await fillDownloadText(state.substShare.fileId));
+    const incoming = (obj.state && Array.isArray(obj.state.substitutions)) ? obj.state.substitutions : [];
+    const localIds = new Set((state.substitutions || []).map(r => r.id));
+    let added = 0;
+    incoming.forEach(r => { if (r && r.id && !localIds.has(r.id)) { state.substitutions.push(r); added++; } });
+    save(); render(); substShareModal();
+    toast(added ? `已收回，新增 ${added} 筆教師填報的代課` : '已收回，無新的教師填報');
+  } catch (e) { toast('收回失敗：' + e.message); }
+}
+function substShareModal() {
+  const ss = state.substShare;
+  const url = location.origin + location.pathname + '?subst=1';
+  const body = ss
+    ? `<div class="total-badge ok">已開放（${esc(ss.domain || '')} 網域共享）</div>
+       <p style="margin:8px 0"><b>把這個代課填報連結給全校教師：</b><br><code style="user-select:all;word-break:break-all">${esc(url)}</code></p>
+       <p style="color:var(--muted);margin:8px 0">教師用學校 Google 帳號登入 → 看得到全部代課、可<b>新增自己的</b>（不可刪改他人）。你這邊按「收回」把他們新增的合併進來。</p>
+       <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+         <button class="btn" data-action="collect-subst">📥 收回代課（合併）</button>
+         <button class="ghost" data-action="reopen-subst">♻️ 重新開放（更新快照）</button>
+       </div>`
+    : `<p style="margin-top:0">將在你的雲端硬碟建立一份「代課填報」共享檔（含目前課表快照），對學校網域共享；全校教師可用連結登入查看全部代課、<b>新增</b>自己的代課安排，你再「收回」合併回來。</p>
+       <p style="color:var(--muted)">教師端<b>只能新增</b>、不能刪改他人；刪除代課仍只由你在此頁做。</p>
+       <button class="btn" data-action="open-subst">☁️ 開放代課填報</button>`;
+  openModal({ title: '線上代課填報（網域共享）', wide: true, body });
+}
+// 教師 kiosk：登入 → Picker 開共享代課檔 → 載入為 state
+async function substKioskStart() {
+  try {
+    toast('登入 Google…'); const token = await getFillToken('');
+    const info = await fillUserInfo(); substMyEmail = (info.email || '').trim(); substMyName = info.name || '';
+    const fileId = await pickFillFile(token);
+    if (!fileId) return;
+    const obj = JSON.parse(await fillDownloadText(fileId));
+    if (obj.fmt !== SUBST_FMT || !obj.state) { toast('這不是代課填報檔'); return; }
+    substFileId = fileId; state = obj.state;
+    if (!Array.isArray(state.substitutions)) state.substitutions = [];
+    if (!state.settings) state.settings = { periods: [], days: [1, 2, 3, 4, 5] };
+    substEditableIds = new Set(); substOpenId = null;
+    render();
+  } catch (e) { toast('開啟失敗：' + e.message); }
+}
+// 教師 kiosk：送出「自己新增的」一筆到雲端（重讀最新、只 upsert 自己這筆，不動他人）
+async function substSubmit(rec) {
+  if (!rec) return;
+  try {
+    toast('送出中…');
+    let obj; try { obj = JSON.parse(await fillDownloadText(substFileId)); } catch (e) { obj = { fmt: SUBST_FMT, ver: 1, state: { substitutions: [] } }; }
+    obj.state = obj.state || {}; const list = Array.isArray(obj.state.substitutions) ? obj.state.substitutions : [];
+    const clean = { ...rec, createdByEmail: substMyEmail, createdByName: substMyName };
+    const i = list.findIndex(x => x.id === rec.id);
+    if (i >= 0) list[i] = clean; else list.push(clean);
+    obj.state.substitutions = list;
+    await drivePutJson('', null, JSON.stringify(obj), substFileId);
+    substEditableIds.delete(rec.id);   // 送出後轉唯讀（已進共享紀錄）
+    substOpenId = null; render();
+    toast('已送出到雲端，排課老師收回後即生效');
+  } catch (e) { toast('送出失敗：' + e.message); }
+}
+function viewSubstKiosk() {
+  if (substEnded) return `<div class="card"><div class="card-body" style="text-align:center;padding:48px 20px">
+      <h2 style="margin-top:0">✅ 代課填報已結束</h2><p style="color:var(--muted)">你可以直接關閉此分頁。</p></div></div>`;
+  if (!substFileId) return `<div class="page-head"><h2>🔄 線上代課填報</h2></div>
+    <div class="card"><div class="card-body">
+      <p>用學校 Google 帳號登入，開啟排課老師分享的代課填報檔：可查看<b>全部</b>代課、<b>新增</b>自己的代課安排（不可刪改他人）。</p>
+      <button class="btn" data-action="subst-login">用 Google 登入並開啟</button></div></div>`;
+  const banner = `<div class="lock-banner no-print"><span>🔄 代課填報（可新增、不可刪改他人）｜帳號：${esc(substMyName || substMyEmail || '')}</span>
+      <button class="ghost" data-action="subst-kiosk-exit">完成／關閉</button></div>`;
+  return banner + viewSubst();
 }
 
 // v09.18 班級簡稱：去掉「年級／年／班」，如 六年忠班→六忠、一年甲班→一甲（教師總表格內用）
@@ -3641,10 +3771,18 @@ const clickHandlers = {
   'subst-add': () => substAddModal(),
   'subst-open': el => { substOpenId = el.dataset.id; render(); },
   'subst-back': () => { substOpenId = null; render(); },
-  'subst-del': el => substDelete(el.dataset.id),
-  'subst-cell': el => substCellPicker(el.dataset.id, el.dataset.key, el.dataset.day, el.dataset.period),
+  'subst-del': el => { if (substKiosk) return; substDelete(el.dataset.id); },   // kiosk 不可刪
+  'subst-cell': el => { const id = el.dataset.id; if (substKiosk && !substEditableIds.has(id)) { toast('此為他人填報的代課，僅供檢視'); return; } substCellPicker(id, el.dataset.key, el.dataset.day, el.dataset.period); },
   'subst-clear': el => { const r = substById(el.dataset.id); if (r) { delete r.assignments[el.dataset.key]; save(); closeModal(); render(); } },
   'subst-print': () => substPrint(),
+  // v10.01 線上代課填報
+  'subst-share-manage': () => substShareModal(),
+  'open-subst': () => openSubstShare(),
+  'reopen-subst': () => confirmDelete('重新開放會用目前課表快照覆蓋共享檔（教師已送出、且你已「收回」的代課會保留；未收回的教師填報請先收回再重開）。確定？', () => openSubstShare()),
+  'collect-subst': () => collectSubst(),
+  'subst-login': () => substKioskStart(),
+  'subst-submit': el => substSubmit(substById(el.dataset.id)),
+  'subst-kiosk-exit': () => { substEnded = true; render(); try { window.close(); } catch (e) {} },
 };
 
 const changeHandlers = {
@@ -3741,7 +3879,7 @@ function bindGlobal() {
   }, true);
   document.addEventListener('change', e => { const el = e.target.closest('[data-change]'); if (!el) return; const fn = changeHandlers[el.dataset.change]; if (fn) fn(el, e); });
   document.addEventListener('keydown', e => {   // v09.11 排課復原：Ctrl+Z 復原、Ctrl+Y/Ctrl+Shift+Z 重做（僅④排課、非輸入中、非 kiosk）
-    if (kioskFill || currentTab !== 'schedule' || lockMode) return;
+    if (kioskFill || substKiosk || currentTab !== 'schedule' || lockMode) return;
     if (/^(INPUT|TEXTAREA|SELECT)$/.test((e.target.tagName || '')) || e.target.isContentEditable) return;
     if (!(e.ctrlKey || e.metaKey)) return;
     const k = e.key.toLowerCase();
@@ -3779,8 +3917,11 @@ async function init() {
   if (!Array.isArray(state.domains)) state.domains = defaultDomains();                 // v06.00 領域節數參考表
   bindGlobal();
   render();
-  const fillMode = new URLSearchParams(location.search).has('fill');       // v09.03 導師填課入口（排課老師發的連結）
+  const params = new URLSearchParams(location.search);
+  const fillMode = params.has('fill');                                     // v09.03 導師填課入口（排課老師發的連結）
+  const substMode = params.has('subst');                                   // v10.01 代課填報入口（排課老師發的連結）
   if (fillMode) { fillLinkMode = true; setKiosk(true); }                    // v09.05/07 導師 kiosk：只顯示填課介面；連結進入者離開＝結束、不進系統
+  else if (substMode) { substLinkMode = true; setSubstKiosk(true); }        // v10.01 代課 kiosk：只顯示代課填報；離開＝結束、不進系統
   else if (hadOldData) upgradeNoticeModal();                              // 舊版同仁：改版通知
   else if (!state.helpSeen) { helpModal(); state.helpSeen = true; save(); } // 新同仁：使用說明
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => { });
