@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v10.16';
+const APP_VERSION = 'v10.17';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -2377,6 +2377,20 @@ function substEffectiveSub(rec, weekIdx, key) {
   return (rec.assignments || {})[key];
 }
 const substHasOverride = (rec, weekIdx, key) => weekIdx != null && !!(rec.weekOverrides && rec.weekOverrides[weekIdx + '|' + key]);
+// v10.17 同一位被代課教師、日期+節次重疊的既有代課→回傳該筆（防重複請假填報）；無則 null
+function substLeaveConflict(rec) {
+  const tid = rec && rec.absentTeacherId;
+  if (!tid || !rec.startDate || !rec.endDate) return null;
+  const pers = lessonPeriods().map(p => p.id);
+  for (const r2 of (state.substitutions || [])) {
+    if (!r2 || r2.id === rec.id || r2.absentTeacherId !== tid || !r2.startDate || !r2.endDate) continue;
+    let sharedWd = false;
+    for (let wd = 1; wd <= 5 && !sharedWd; wd++) if (rangesShareWeekday(rec.startDate, rec.endDate, r2.startDate, r2.endDate, wd)) sharedWd = true;
+    if (!sharedWd) continue;
+    if (pers.some(p => substPeriodOnLeave(rec, p) && substPeriodOnLeave(r2, p))) return r2;
+  }
+  return null;
+}
 function normalizeAllSubst() { (state.substitutions || []).forEach(normalizeSubst); }
 // 顯示用日期字串：「起～訖」；相同→單日；缺→空字串。
 function fmtSubstRange(rec) {
@@ -2666,6 +2680,8 @@ function substAddModal() {
       onSave: () => {
         const dates = readSubstDates(); if (!dates) return false;
         const periods = readSubstPeriods(); if (!periods) return false;
+        const conflict = substLeaveConflict({ id: '', absentTeacherId: substMyTeacherId, startDate: dates.startDate, endDate: dates.endDate, periods });
+        if (conflict) { toast(`你在「${fmtSubstScope(conflict)}」已經有一筆代課填報，日期／節次重疊，不能重複建立。請改期，或回上一頁編輯既有那筆。`); return false; }
         const rec = { id: uid(), absentTeacherId: substMyTeacherId, startDate: dates.startDate, endDate: dates.endDate, periods, createdAt: new Date().toISOString(), assignments: {}, createdByEmail: substMyEmail, createdByName: substMyName };
         substEditableIds.add(rec.id);
         state.substitutions.push(rec); save(); substOpenId = rec.id; closeModal(); render(); return true;
@@ -2682,6 +2698,8 @@ function substAddModal() {
       const tid = $('#substTeacher').value; if (!tid) { toast('請選擇教師'); return false; }
       const dates = readSubstDates(); if (!dates) return false;
       const periods = readSubstPeriods(); if (!periods) return false;
+      const conflict = substLeaveConflict({ id: '', absentTeacherId: tid, startDate: dates.startDate, endDate: dates.endDate, periods });
+      if (conflict) { toast(`${teacherName(tid)} 在「${fmtSubstScope(conflict)}」已有代課填報，日期／節次重疊，不能重複建立。若要修改請編輯既有那筆。`); return false; }
       const rec = { id: uid(), absentTeacherId: tid, startDate: dates.startDate, endDate: dates.endDate, periods, createdAt: new Date().toISOString(), assignments: {} };
       state.substitutions.push(rec); save(); substOpenId = rec.id; closeModal(); render(); return true;
     },
@@ -2695,6 +2713,8 @@ function substEditDates(recId) {
     onSave: () => {
       const dates = readSubstDates(); if (!dates) return false;
       const periods = readSubstPeriods(); if (!periods) return false;
+      const conflict = substLeaveConflict({ id: rec.id, absentTeacherId: rec.absentTeacherId, startDate: dates.startDate, endDate: dates.endDate, periods });
+      if (conflict) { toast(`${teacherName(rec.absentTeacherId)} 在「${fmtSubstScope(conflict)}」已有另一筆代課填報，日期／節次重疊。請改期或合併到那一筆。`); return false; }
       rec.startDate = dates.startDate; rec.endDate = dates.endDate; rec.periods = periods; save(); closeModal(); render(); return true;
     },
   });
