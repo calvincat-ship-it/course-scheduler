@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v10.04';
+const APP_VERSION = 'v10.05';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -76,6 +76,8 @@ let cloudTimer = null;
 let cloudBusy = false;
 let snapshotInFlight = false;
 let _tokResolve = null, _tokReject = null;
+// v10.05 開 App 自動查雲端的迴圈防護：進行中旗標 + 本 session 失敗即停 + 節流時間戳。
+let cloudCheckInFlight = false, cloudAutoDisabledThisSession = false, cloudLastCheckAt = 0;
 
 function defaultPeriods() {
   return [
@@ -456,9 +458,13 @@ async function getFillToken(promptMode = '') {
   if (fillToken && fillToken.expiresAt - 60000 > Date.now()) return fillToken.access_token;
   if (!fillTokenClient) initFillTokenClient();
   return new Promise((resolve, reject) => {
-    _fillResolve = resolve; _fillReject = reject;
+    let settled = false;   // v10.05 逾時保護（同 getAccessToken）
+    const finish = (fn, v) => { if (settled) return; settled = true; clearTimeout(timer); _fillResolve = _fillReject = null; fn(v); };
+    const timer = setTimeout(() => finish(reject, new Error('timeout')), 25000);
+    _fillResolve = (v) => finish(resolve, v);
+    _fillReject = (v) => finish(reject, v);
     try { fillTokenClient.requestAccessToken({ prompt: promptMode }); }
-    catch (e) { _fillResolve = _fillReject = null; reject(e); }
+    catch (e) { finish(reject, e); }
   });
 }
 async function fillFetch(url, opts) {
@@ -2921,6 +2927,9 @@ function viewSettings() {
       <p style="color:var(--muted);margin:4px 0 10px">新學年時一鍵沿用本學年的所有設定（科目／年級／班級／教師配課／教室／協同／領域），只把排課清空重排，免重建。套用前會自動下載備份。</p>
       <button class="btn" data-action="new-school-year">另存為新學年（沿用設定）</button></div></div>
     ${cloudSettingsCard()}
+    <div class="card"><div class="card-body"><h4 style="margin-top:0">🧹 疑難排解：只重設本 App</h4>
+      <p style="color:var(--muted);margin:4px 0 10px">手機上若一直跳「請稍候」授權、卡住或畫面異常，用這個清除「課務編排」在本機的資料並重新載入。<b>只影響這個 App</b>，不會動到血壓記錄、智慧筆記本等其他 App。（有雲端備份的話重新連結即可取回；救急也可直接在網址列開 <code>?reset=1</code>）</p>
+      <button class="ghost" data-action="reset-app" style="color:var(--danger)">🧹 清除本 App 資料並重設</button></div></div>
     <div class="card"><div class="card-body"><h4 style="margin-top:0">🧑‍🏫 導師線上填課</h4>
       <p style="color:var(--muted);margin:4px 0 10px">導師專用：用學校 Google 帳號登入，開啟排課老師分享給你的「班級填課檔」，為自編格選課後存回雲端。（排課老師的「開放/收回」在 ④ 排課鎖定後的「☁️ 線上填課」）</p>
       <button class="btn" data-action="teacher-fill">用 Google 登入並填課</button></div></div>
@@ -3139,9 +3148,15 @@ async function getAccessToken(promptMode = '') {
   if (gisToken && gisToken.expiresAt - 60000 > Date.now()) return gisToken.access_token;
   if (!tokenClient) initTokenClient();
   return new Promise((resolve, reject) => {
-    _tokResolve = resolve; _tokReject = reject;
+    // v10.05 逾時保護：Android 獨立 PWA 下 GIS 有時 callback/error_callback 都不觸發，
+    // 若不設逾時會永遠卡住（轉圈/白畫面）。25 秒沒回應就 reject，讓上層能收尾。
+    let settled = false;
+    const finish = (fn, v) => { if (settled) return; settled = true; clearTimeout(timer); _tokResolve = _tokReject = null; fn(v); };
+    const timer = setTimeout(() => finish(reject, new Error('timeout')), 25000);
+    _tokResolve = (v) => finish(resolve, v);
+    _tokReject = (v) => finish(reject, v);
     try { tokenClient.requestAccessToken({ prompt: promptMode }); }
-    catch (e) { _tokResolve = _tokReject = null; reject(e); }
+    catch (e) { finish(reject, e); }
   });
 }
 async function driveFetch(url, opts) {
@@ -3464,6 +3479,30 @@ async function clearAllLocalData() {
   finally { suppressCloud = false; }
 }
 
+// v10.05 只重設「本 App」：清 course_scheduler 的 IDB + course_cloud_v1 + 本 App 自己的 SW/快取，
+// 明確不動血壓記錄／智慧筆記本等其他 App（它們同 origin 但 DB 名/localStorage key/SW scope/快取名皆不同）。
+// 用途：手機上若卡在授權迴圈或畫面異常，改用這個取代瀏覽器「清除全站資料」（後者會連其他 App 一起清）。
+async function resetThisAppData() {
+  const onResetUrl = new URLSearchParams(location.search).has('reset');
+  const msg = '這會清除「課務編排」在這台裝置的本機資料與雲端連結設定，然後重新載入。\n\n' +
+    '✅ 只影響這個 App，不會動到「血壓記錄」「智慧筆記本」等其他 App 的資料。\n' +
+    '☁️ 若你有連結 Google 雲端備份，雲端上的備份不會被刪除，重新連結即可取回。\n\n確定要重設嗎？';
+  if (!confirm(msg)) { if (onResetUrl) location.replace(location.pathname); return; }
+  try { localStorage.removeItem(CLOUD_KEY); } catch {}
+  try { await new Promise((res) => { const r = indexedDB.deleteDatabase(DB_NAME); r.onsuccess = r.onerror = r.onblocked = () => res(); }); } catch {}
+  try {
+    if ('serviceWorker' in navigator) {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      for (const reg of regs) {
+        const url = (reg.active && reg.active.scriptURL) || '';
+        if (reg.scope.indexOf('/course-scheduler/') >= 0 || url.indexOf('/course-scheduler/') >= 0) await reg.unregister();
+      }
+    }
+  } catch {}
+  try { const keys = await caches.keys(); await Promise.all(keys.filter(k => k.indexOf('course-scheduler') === 0).map(k => caches.delete(k))); } catch {}
+  location.replace(location.pathname);   // 去掉 ?reset 等 query，乾淨重載
+}
+
 async function cloudConnect({ switchAccount = false } = {}) {
   if (!cloudConfigured()) { toast('雲端同步尚未設定（需先設定 OAuth 用戶端）'); return; }
   setCloudBusy(true);
@@ -3499,7 +3538,10 @@ function cloudDisconnect() {
   saveCloudState(); updateCloudUI(); toast('已解除雲端連結');
 }
 async function cloudCheckOnOpen() {
-  if (!cloudState.enabled || cloudBusy) return;
+  // v10.05 迴圈防護：本函式原本不設 cloudBusy，導致 visibilitychange 每次回前景都能重入，
+  // 在 Android 獨立 PWA（token 會跳轉 accounts.google.com「請稍候」再跳回）下形成無限授權迴圈。
+  if (!cloudState.enabled || cloudBusy || cloudCheckInFlight || cloudAutoDisabledThisSession) return;
+  cloudCheckInFlight = true; cloudLastCheckAt = Date.now();
   try {
     const fileId = await resolveMainFileId();
     if (!fileId) return;
@@ -3508,7 +3550,11 @@ async function cloudCheckOnOpen() {
     if (!remoteUpdated || remoteUpdated === cloudState.lastSyncedAt) return;
     const status = await cloudRestore({ confirmFirst: true, confirmMsg: '雲端有較新的備份（可能來自其他裝置）。\n\n要用雲端資料還原到此裝置嗎？選「取消」則保留此裝置資料，之後的變更會覆蓋雲端。' });
     if (status === 'declined') await cloudBackupNow({});
-  } catch {}
+  } catch {
+    // 自動查失敗（含 token 逾時／授權卡住）→ 本 session 不再自動重試，避免迴圈。
+    // 手動備份／還原不受影響（各自獨立），使用者仍可在設定頁主動同步。
+    cloudAutoDisabledThisSession = true;
+  } finally { cloudCheckInFlight = false; }
 }
 
 function cloudSettingsCard() {
@@ -3773,6 +3819,7 @@ const clickHandlers = {
   'import-json': importJSON,
 
   'cloud-connect': () => cloudConnect(),
+  'reset-app': () => resetThisAppData(),
   'cloud-backup': () => cloudBackupNow({ manual: true, interactive: true }),
   'cloud-restore': () => openRestorePicker(),
   'cloud-switch': () => cloudSwitchAccount(),
@@ -3906,6 +3953,9 @@ function upgradeNoticeModal() {
 
 /* ---------- Init ---------- */
 async function init() {
+  // v10.05 救援入口：畫面卡到連設定都點不到時，開 …/index.html?reset=1 只重設本 App。
+  // 放在最前面、任何雲端/token 邏輯之前，確保這條路永遠不會被授權迴圈卡住。
+  if (new URLSearchParams(location.search).has('reset')) { await resetThisAppData(); return; }
   let loaded = null;
   try { loaded = await idbGet(STATE_KEY); } catch (e) { loaded = null; }
   const hadOldData = !!(loaded && loaded.schema !== SCHEMA);
@@ -3939,7 +3989,9 @@ async function init() {
   // v07.00 雲端同步：開 App 若雲端較新則詢問還原；回前景再檢查一次
   if (cloudState.enabled && cloudConfigured()) { cloudCheckOnOpen(); refreshCloudEmailIfMissing(); }
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible' && cloudState.enabled && cloudConfigured()) cloudCheckOnOpen();
+    // v10.05 節流：回前景至少隔 5 分鐘、且本 session 未因失敗停用，才再自動查一次，避免回前景即重觸發的迴圈。
+    if (document.visibilityState === 'visible' && cloudState.enabled && cloudConfigured()
+        && !cloudAutoDisabledThisSession && Date.now() - cloudLastCheckAt > 5 * 60 * 1000) cloudCheckOnOpen();
   });
 }
 init();
