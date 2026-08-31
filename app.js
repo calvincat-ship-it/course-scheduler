@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v10.09';
+const APP_VERSION = 'v10.10';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -239,6 +239,7 @@ let kioskFill = false;  // v09.05 導師填課 kiosk：隱藏其他分頁、只�
 let fillLinkMode = false; // v09.07 由填課連結(?fill)進入：離開＝關閉分頁/結束畫面，永不進入系統（防導師誤觸竄改資料）
 /* v10.01 代課線上填報 kiosk（?subst）：教師登入→開排課者網域共享的代課檔→看全部、只可新增（不可刪改他人） */
 let substKiosk = false, substLinkMode = false, substEnded = false, substFileId = null, substMyEmail = '', substMyName = '';
+let substMyTeacherId = '', substNoMatch = false;   // v10.10 教師自助：用登入 email 對應教師本人，只安排自己的代課
 let substEditableIds = new Set();   // 本 session kiosk 新建、可編輯/送出的記錄 id（其餘唯讀）
 let fillEnded = false;    // v09.07 填課結束畫面旗標
 let showLoadMatrix = false; // v09.12 ③教師「班×科配課矩陣」展開狀態（runtime）
@@ -2434,12 +2435,15 @@ function viewSubst() {
 
 function substList() {
   const shareBtn = substKiosk ? '' : `<button class="ghost" data-action="subst-share-manage">☁️ 線上代課填報${state.substShare ? '（已開放）' : ''}</button>`;
-  const head = `<div class="page-head"><h2>🔄 代課</h2><div style="display:flex;gap:8px">${shareBtn}<button class="btn" data-action="subst-add">＋ 新增代課</button></div></div>
+  const addLabel = substKiosk ? '＋ 新增我的代課' : '＋ 新增代課';
+  const head = `<div class="page-head"><h2>🔄 ${substKiosk ? '我的代課' : '代課'}</h2><div style="display:flex;gap:8px">${shareBtn}<button class="btn" data-action="subst-add">${addLabel}</button></div></div>
     <div class="hint" style="margin-bottom:12px;color:var(--muted)">${substKiosk
-      ? '你可以看到<b>全部</b>代課紀錄；按「＋ 新增代課」建立<b>自己的</b>代課安排並送出（不可刪改他人的）。'
+      ? `以下是<b>你（${esc(teacherName(substMyTeacherId) || substMyName)}）</b>的代課安排。按「＋ 新增我的代課」設定請假日期，即可調出<b>你自己的課表</b>為當週有課的格子指派代課老師，最後送出到雲端。`
       : '選一位<b>被代課（請假）教師</b>，調出其課表，點<b>有課的格子</b>指派當節<b>空堂</b>的代課教師，最後列印／存 PDF。記錄會保存、可多筆。'}</div>`;
-  if (!(state.substitutions || []).length) return head + emptyCard('尚無代課記錄', '點右上「＋ 新增代課」建立第一筆。');
-  const rows = state.substitutions.slice().sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || '')).map(r => {
+  let list = state.substitutions || [];
+  if (substKiosk) list = list.filter(r => r.absentTeacherId === substMyTeacherId);   // v10.10 教師端只看自己的代課
+  if (!list.length) return head + emptyCard(substKiosk ? '你還沒有代課安排' : '尚無代課記錄', `點右上「${addLabel}」建立第一筆。`);
+  const rows = list.slice().sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || '')).map(r => {
     const t = teacherById(r.absentTeacherId);
     const wd = substRangeWeekdays(r);   // v10.09 只計代課日期涵蓋的星期幾
     const total = t ? absentCellsInRange(r).length : 0;
@@ -2536,6 +2540,21 @@ function readSubstDates() {
   return { startDate: s, endDate: e };
 }
 function substAddModal() {
+  // v10.10 教師 kiosk：被代課者＝登入教師本人，不提供選擇（挑教師只留在排課者主程式），只問日期
+  if (substKiosk) {
+    if (!substMyTeacherId) { toast('你的帳號不在教師名單，無法新增；請聯絡排課老師'); return; }
+    openModal({
+      title: '新增我的代課（請假）', saveLabel: '建立',
+      body: `<p style="margin-top:0;color:var(--muted)">被代課（請假）教師：<b>${esc(teacherName(substMyTeacherId))}</b>（你本人）</p>${substDateFieldsHTML('', '')}`,
+      onSave: () => {
+        const dates = readSubstDates(); if (!dates) return false;
+        const rec = { id: uid(), absentTeacherId: substMyTeacherId, startDate: dates.startDate, endDate: dates.endDate, createdAt: new Date().toISOString(), assignments: {}, createdByEmail: substMyEmail, createdByName: substMyName };
+        substEditableIds.add(rec.id);
+        state.substitutions.push(rec); save(); substOpenId = rec.id; closeModal(); render(); return true;
+      },
+    });
+    return;
+  }
   const tOpts = state.teachers.map(t => `<option value="${t.id}">${esc(t.name)}${t.type ? `（${esc(t.type)}）` : ''}</option>`).join('');
   openModal({
     title: '新增代課', saveLabel: '建立',
@@ -2545,7 +2564,6 @@ function substAddModal() {
       const tid = $('#substTeacher').value; if (!tid) { toast('請選擇教師'); return false; }
       const dates = readSubstDates(); if (!dates) return false;
       const rec = { id: uid(), absentTeacherId: tid, startDate: dates.startDate, endDate: dates.endDate, createdAt: new Date().toISOString(), assignments: {} };
-      if (substKiosk) { rec.createdByEmail = substMyEmail; rec.createdByName = substMyName; substEditableIds.add(rec.id); }
       state.substitutions.push(rec); save(); substOpenId = rec.id; closeModal(); render(); return true;
     },
   });
@@ -2819,6 +2837,20 @@ async function substKioskStart() {
     normalizeAllSubst();
     if (!state.settings) state.settings = { periods: [], days: [1, 2, 3, 4, 5] };
     substEditableIds = new Set(); substOpenId = null;
+    // v10.10 自助：用登入 email 對應教師本人。挑選被代課教師的權限只留在排課者主程式；
+    // 教師端只安排「自己」的代課（自己＝被代課/請假者）。
+    const em = (substMyEmail || '').trim().toLowerCase();
+    const me = em ? state.teachers.find(t => (t.email || '').trim().toLowerCase() === em) : null;
+    substMyTeacherId = me ? me.id : '';
+    substNoMatch = !me;
+    if (me) {
+      // 自己先前送出過的紀錄→可續編、可重送
+      state.substitutions.forEach(r => { if (r && (r.createdByEmail || '').trim().toLowerCase() === em) substEditableIds.add(r.id); });
+      // 有自己的紀錄→直接開啟本人課表；沒有→顯示自己的清單（含「新增我的代課」）
+      const mine = state.substitutions.filter(r => r.absentTeacherId === me.id && substEditableIds.has(r.id))
+        .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+      substOpenId = mine.length ? mine[0].id : null;
+    }
     render();
   } catch (e) { toast('開啟失敗：' + e.message); }
 }
@@ -2834,9 +2866,8 @@ async function substSubmit(rec) {
     if (i >= 0) list[i] = clean; else list.push(clean);
     obj.state.substitutions = list;
     await drivePutJson('', null, JSON.stringify(obj), substFileId);
-    substEditableIds.delete(rec.id);   // 送出後轉唯讀（已進共享紀錄）
-    substOpenId = null; render();
-    toast('已送出到雲端，排課老師收回後即生效');
+    render();   // v10.10 送出後保留可編輯／停留在本人課表，之後可再調整再送出
+    toast('已送出到雲端，排課老師收回後即生效（可再調整後重送）');
   } catch (e) { toast('送出失敗：' + e.message); }
 }
 function viewSubstKiosk() {
@@ -2844,10 +2875,13 @@ function viewSubstKiosk() {
       <h2 style="margin-top:0">✅ 代課填報已結束</h2><p style="color:var(--muted)">你可以直接關閉此分頁。</p></div></div>`;
   if (!substFileId) return `<div class="page-head"><h2>🔄 線上代課填報</h2></div>
     <div class="card"><div class="card-body">
-      <p>用學校 Google 帳號登入，開啟排課老師分享的代課填報檔：可查看<b>全部</b>代課、<b>新增</b>自己的代課安排（不可刪改他人）。</p>
+      <p>用<b>你自己的 Google 帳號</b>（學校或 Gmail 皆可）登入，開啟排課老師分享的代課填報檔。系統會以你的帳號 Email 對應你本人，直接調出<b>你自己的課表</b>，讓你為請假期間的課安排代課。</p>
       <button class="btn" data-action="subst-login">用 Google 登入並開啟</button></div></div>`;
-  const banner = `<div class="lock-banner no-print"><span>🔄 代課填報（可新增、不可刪改他人）｜帳號：${esc(substMyName || substMyEmail || '')}</span>
+  const banner = `<div class="lock-banner no-print"><span>🔄 我的代課填報｜${esc(substMyName || substMyEmail || '')}</span>
       <button class="ghost" data-action="subst-kiosk-exit">完成／關閉</button></div>`;
+  if (substNoMatch) return banner + `<div class="card"><div class="card-body" style="text-align:center;padding:40px 20px">
+      <h3 style="margin-top:0">找不到你的教師資料</h3>
+      <p style="color:var(--muted)">你登入的帳號 <b>${esc(substMyEmail || '')}</b> 不在教師名單中，無法對應到你的課表。<br>請聯絡排課老師，到「③ 教師」把<b>這個 Email</b> 填到你的教師資料後，再重新開啟此連結。</p></div></div>`;
   return banner + viewSubst();
 }
 
