@@ -3,16 +3,31 @@
 > 收工時 Claude 更新這裡；開工時 Claude 先讀這裡。跟程式碼一起 git 同步。
 
 ## 最後更新
-- 時間：2026-08-29 收工
+- 時間：2026-08-31 收工
 - 機器：（本次 session 的機器；Desktop\claude code）
-- 版本：**main = v10.04（已上線）**。schema 仍為 2、向下相容。
-- 狀態：全部本機（預覽 + DOM 量測）實測通過、無 console error、已 push main、GH Pages 已部署 v10.04。
+- 版本：**main = v10.18（已上線、GH Pages 已部署）**。schema 仍為 2、向下相容（新欄位皆 optional、缺省安全）。
+- 狀態：全部本機（node --check + 預覽 DOM/JS 邏輯實測）通過、無 console error、已 push main。**線上代課填報 + Android PWA 授權迴圈 + Picker 金鑰皆已使用者實機驗證通過**。
 
-## 本次區間做了什麼（v10.00 → v10.04）＝**線上代課填報**（比照 F③ 的共享協作）
-使用者需求：把「代課」頁像導師選課一樣**開放給其他教師新增代課**，介面不變、看得到全部、**權限僅新增、不可刪改他人**。
-- **v10.01 線上代課填報**：排課者代課頁「☁️ 線上代課填報」→ 開放 `openSubstShare`（建根目錄檔＝`substContextState()` 全課表快照＋substitutions，分享）/ 收回 `collectSubst`（**只增不覆蓋**本機）。教師 **`?subst` kiosk**（`substKiosk`/`substLinkMode`/`setSubstKiosk`）→ Picker 開檔 → `state=obj.state` 跑**既有代課 UI**（介面不變）。**只可新增**（`substEditableIds` 僅本 session 新建者可編、他人唯讀、kiosk 無🗑️）；`substSubmit` **append-only**（重讀最新只 upsert 自己那筆）；`save()` 於 `substKiosk` **early-return**（不汙染教師本機）；離開＝結束畫面不進系統。
-- **v10.02**：開放失敗改**持久視窗＋步驟標記**（不再一閃即逝）；`drivePutJson` 錯誤帶 HTTP status。
-- **v10.03→10.04 分享機制轉折（實機診斷）**：網域共享（type=domain）**對排課者用個人 Gmail 主持不成立**（回 `400 domain is invalid`）→ **改方案B＝逐位 email 分享**（`driveShare` type=user）：**主持帳號不拘、學校帳號＋個人 Gmail 收件皆可**、檔案進「與我共用」Picker 找得到。**教師 email 欄位開放給所有身分**（不再只級任）→無校帳號臨時代課老師填**個人 Gmail** 即可。已移除網域共享死碼。
+## 本次區間做了什麼（v10.05 → v10.18）＝**PWA/雲端修復 + 代課功能全面擴充**
+- **v10.05 Android PWA「請稍候」授權無限迴圈修復**：根因＝`cloudCheckOnOpen` 沒設 `cloudBusy`→`visibilitychange` 回前景重入；Android 3p cookie 受限下連靜默 token 都跳轉 accounts.google.com 再跳回→迴圈。修：`cloudCheckInFlight`＋`cloudAutoDisabledThisSession`(失敗即停)＋前景 5 分節流；`getAccessToken`/`getFillToken` 加 25s 逾時。**救援**：設定頁「🧹 只重設本 App」＋`?reset=1`（只清 course_scheduler IDB＋course_cloud_v1＋本 App SW/快取，不動同 origin 其他 App）。
+- **Picker 金鑰 gotcha（實機踩雷）**：`GOOGLE_API_KEY` 在 Cloud Console「應用程式限制」須設 **「無」**（⚠️勿改回 HTTP referrer——隱私瀏覽器/擴充/WebView/PWA 會清 Referer→「developer key is invalid」）。app.js 常數區已留 ⚠️ 註解。
+- **代課功能擴充（v10.06–v10.18，使用者逐項確認/實機驗證）**：
+  - **v10.06 起訖日期**取代單一 date（normalizeSubst 遷移）＋**跨紀錄互斥**（`rangesShareWeekday`：別筆同(星期,節)已用此人/此人是別筆請假者且日期重疊→不可選；截止過/刪除即失效）。v10.07 提示帶代課老師姓名。
+  - **v10.08 收回＝合併+更新線上合一**（先只增合併略過墓碑→`substContextState` 快照 PATCH 覆蓋共享檔→補分享新 email）。
+  - **v10.09 非代課日鎖定**（`substRangeWeekdays`）；**v10.13 半天/指定節次**（`rec.periods`，`amPmPeriods` 午休為界）。
+  - **v10.10 教師端自助填報**：`?subst` kiosk 用登入 email 對應 `state.teachers[].email`（`substMyTeacherId`；對不到 `substNoMatch`）→直接進本人課表、移除選教師下拉（只留主程式）、只看/新增自己的。
+  - **v10.11 不同日期各自一筆**（登入不 auto-open 既有筆；`fillFetch` 加 `cache:'no-store'`）。
+  - **v10.12 刪除墓碑 `state.substDeleted`**（收回略過）＋刪除後可推送線上＋收回檢查過期（`substExpired`）confirm 刪除。
+  - **v10.14/18 代課老師合併總表**（`subTeacherMergedTimetableHTML`；**連續同代課老師的週合併成一段日期**免爆長；只在主程式）。
+  - **v10.16 長假分週指派（核心）**：**全部週為底 `rec.assignments` ＋ 分週覆蓋 `rec.weekOverrides:{'週idx|班|星期|節':subId}`**；`substWeeks`(⚠️用 `localDateStr` 非 toISOString)/`weekWeekdays`/`effAssign`/`substEffectiveSub`；編輯器多週出「全部週/第N週」分頁；列印逐週各出一組。
+  - **v10.17 防重複請假 `substLeaveConflict`**（同教師日期共星期幾且共請假節次→擋；半天上午vs下午不衝突）。
+
+<details><summary>更早區間（v10.00 → v10.04）＝線上代課填報上線</summary>
+
+- **v10.01 線上代課填報**：排課者「☁️ 線上代課填報」開放 `openSubstShare`/收回 `collectSubst`；教師 `?subst` kiosk→Picker 開檔→跑既有代課 UI；只可新增(`substEditableIds`)、`substSubmit` append-only、`save()` 於 kiosk early-return、離開＝結束不進系統。
+- **v10.02**：開放失敗改持久視窗＋步驟標記；`drivePutJson` 錯誤帶 HTTP status。
+- **v10.03→10.04**：網域共享對個人 Gmail 主持不成立(400)→**改逐位 email 分享**(`driveShare` type=user，學校帳號＋個人 Gmail 皆通用)；教師 email 欄開放所有身分。
+</details>
 
 ## 更早區間做了什麼（v09.37 → v10.00）＝②版面調整 + 雲端修復 + 診斷 + 教室引導 + **代課新功能**
 - **v09.37–41 ②年級與班級「科目節數」改版**：(37) 修 `.grade-cols` 第二張卡被 `.card+.card` margin 下移 14px→上緣對齊；(38) 已勾科目改**卡片化**多欄 `.subjh-cards`（每卡：科目 pill+節數 input+右上✕移除，`grade-subj-off` action），未勾科目收進「＋加開科目」`.offsubj-fold` 摺疊；(39–40) 卡片**下挖凹槽**視覺（inset 陰影漸深至 .34/9px/16px、白底輸入浮起對比）；(41) **卡片底色改用各科目色**（`--sc` 變數 + `color-mix` 混白淡色調漸層）。
@@ -73,21 +88,28 @@
 - **v09.04** 使用說明全面重整（後續版本持續同步）。
 </details>
 
-## 下一步（可挑）
-- **線上代課填報 live 真機驗證**（唯一待驗，我不能代做）：需 ≥2 帳號測「排課者開放（用個人 Gmail 主持也可）→ 教師 `?subst=1` 登入 Picker 開檔新增 → 送出 → 排課者收回」；含個人 Gmail 教師。
-- **ROADMAP G-Tier2**：全校總表+PNG（=D）、F③ 填課進度總覽、④配課矩陣檢視（**按 ROADMAP 註記部分已於 v09.12 完成**，續看 repo ROADMAP.md）。
-- **G-Tier3**：首頁儀表板、範例資料、自動排課局部重排、連堂進階 pattern、docx 領域合併 legend、久未備份提醒。
+## 下一步（可挑）＝2026-08-31 已與使用者整理的待開發清單（13 項開發＋1 校對）
+- **A 代課小項**：①代課功能「使用說明」（使用者說暫不寫、等他提）②代課 kiosk 防呆指引（再遇 Picker「developer key invalid」等顯示自救步驟）。
+- **B 自動排課進階**（ROADMAP A/E）：③跨班調課連鎖 ④調課建議支援分組/協同/分節/連堂 ⑤更強求解(回溯/局部搜尋) ⑥自動排課局部重排。
+- **C 輸出強化**（ROADMAP D）：⑦PWA 圖示補 PNG（現只有 icon.svg）⑧docx 班級表「領域合併」legend（健體/藝文）。
+- **D 體驗/穩健**（ROADMAP G-Tier3）：⑨首頁儀表板 ⑩範例資料/快速開始 ⑪連堂進階 pattern ⑫平板適配 ⑬久未備份提醒。
+- **資料校對**：108 課綱領域節數（v06 內建起始值，尤其五六年級英語/綜合、彈性學習）。
+- 使用者投報率建議：先做 ①代課使用說明 / ⑨首頁儀表板 / ⑦PNG 圖示。
 
 ## 待決 / 卡住的問題
-- **線上代課填報 live OAuth/Drive/Picker/跨帳號往返尚未真機驗證**（本機非網路邏輯全測過：快照/收回合併/kiosk 隱藏 nav/他人唯讀/append-only 送出保留他人/離開安全/save 不汙染本機/per-email 同時分享校帳號+Gmail）。
-- **（已清）F³ live 與雲端同步 live**：2026-08-11 實機驗證通過；雲端修復（v09.43）使用者本 session 亦確認 OK。
-- **代課功能未寫「使用說明」**：使用者本 session 明確表示**暫不編寫、等他提出要求**。
-- **（已清）受影響班級課表代課節「代課：」殘留**：舊 SW 快取，v10.00 後已解決。
+- **（已清）線上代課填報 live**：2026-08-31 使用者實機驗證通過（含 Android PWA 授權迴圈修復後、Picker 金鑰設「無」後）。
+- **（已清）F³ live 與雲端同步 live**：2026-08-11 驗證通過；雲端修復（v09.43）亦確認 OK。
+- **列印多週逐週輸出未真機驗證**：v10.16 分週指派的列印（substPrintHTML 逐週各出一組）本機邏輯測過、但需真實配課資料真機列印確認排版。
+- **使用者資料需手動清**：截圖中已存在的重複代課筆（田凱臣 2026-09-01 兩筆）與疑似誤填的蔣美玲 5 個月那筆——防重複只擋未來，舊筆請使用者用清單 🗑️ 自行刪。
+- **代課功能未寫「使用說明」**：使用者暫不寫、等他提。
 
 ## 注意事項（給另一台的 Claude）
 - 開工先 sync-start、收工必 sync-end；不要兩台同時改同一個檔。
-- 版本 vNN.MM：`APP_VERSION`(app.js)＋sw `CACHE_NAME` 必須同步。小改直接 bump minor、大改先確認。現 **v10.04**。
-- **線上分享（F③/代課）一律逐位 email 分享**（`driveShare` type=user）：學校帳號＋個人 Gmail 皆通用；**網域共享 type=domain 對個人 Gmail 主持不成立、勿用**。教師 email 欄位已開放給所有身分。代課 kiosk 關鍵：`substKiosk`(save early-return 不汙染本機)、`substEditableIds`(只可編自己新建)、`substSubmit`(append-only)、`substContextState`(快照)。
+- 版本 vNN.MM：`APP_VERSION`(app.js)＋sw `CACHE_NAME` 必須同步。小改直接 bump minor、大改先確認。現 **v10.18**。
+- ⚠️ **Picker 金鑰在 Cloud Console「應用程式限制」須維持「無」**（勿改回 HTTP referrer——會被隱私瀏覽器/擴充/WebView/PWA 清 Referer 而擋掉老師）；靠「只限 Google Picker API」保安全。app.js 常數區有註解。
+- ⚠️ **同 origin 三 App 共用儲存**：血壓/筆記本/課務同 `github.io`，別叫使用者「清除網站資料」（三個一起清）；用各 App 的「只重設本 App」/`?reset=1`。
+- **手機更新版本**：先用一般 Chrome 開 live 網址（network-first 抓新版更新 SW），別點卡住的 PWA 圖示（跑舊快取）。
+- **代課關鍵**：分週指派＝`rec.assignments`(全部週為底)+`rec.weekOverrides`(分週覆蓋)、`substWeeks`(用 localDateStr)/`effAssign`/`substEffectiveSub`；`rec.periods`(半天/指定節次)；`state.substDeleted`(刪除墓碑)；`substLeaveConflict`(防重複)；教師端 `substMyTeacherId`(email 對應)；`fillFetch` 已加 no-store。**線上分享一律逐位 email**（type=user，學校帳號+個人 Gmail 皆通用；網域共享對個人 Gmail 不成立勿用）。
 - **UI 現況（v09.19–26）**：分頁 ①科目·②年級與班級·③教師·④排課·課表輸出·設定；科目/班級/教師皆卡片式；`data-tab` 鍵未變（render `case 'grades':case 'classes'`→`viewGradesClasses()`）。改 UI 前先看架構記憶的「v09.19–26 介面大改版」段。
 - **測試 app.js 後務必先清 SW 快取再 navigate**（否則跑舊碼）；量有 transition 的 CSS 前先關 transition（預覽窗凍結假象）。
 - **GH Pages 部署偶發逾時**（本輪 v09.03 卡約 3 小時）→ **推一個空 commit 重新觸發**即可，非程式問題。改版後可 curl `https://calvincat-ship-it.github.io/course-scheduler/app.js` 確認線上版本。
