@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v10.13';
+const APP_VERSION = 'v10.14';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -2472,8 +2472,9 @@ function viewSubst() {
 
 function substList() {
   const shareBtn = substKiosk ? '' : `<button class="ghost" data-action="subst-share-manage">☁️ 線上代課填報${state.substShare ? '（已開放）' : ''}</button>`;
+  const masterBtn = substKiosk ? '' : `<button class="ghost" data-action="subst-submaster">🧑‍🏫 代課老師合併總表</button>`;
   const addLabel = substKiosk ? '＋ 新增我的代課' : '＋ 新增代課';
-  const head = `<div class="page-head"><h2>🔄 ${substKiosk ? '我的代課' : '代課'}</h2><div style="display:flex;gap:8px">${shareBtn}<button class="btn" data-action="subst-add">${addLabel}</button></div></div>
+  const head = `<div class="page-head"><h2>🔄 ${substKiosk ? '我的代課' : '代課'}</h2><div style="display:flex;gap:8px;flex-wrap:wrap">${masterBtn}${shareBtn}<button class="btn" data-action="subst-add">${addLabel}</button></div></div>
     <div class="hint" style="margin-bottom:12px;color:var(--muted)">${substKiosk
       ? `以下是<b>你（${esc(teacherName(substMyTeacherId) || substMyName)}）</b>的代課安排。按「＋ 新增我的代課」設定請假日期，即可調出<b>你自己的課表</b>為當週有課的格子指派代課老師，最後送出到雲端。<b>不同日期的請假請各按一次「＋ 新增我的代課」，會各自成一筆</b>；點既有的一筆是「編輯／重送」那一筆。`
       : '選一位<b>被代課（請假）教師</b>，調出其課表，點<b>有課的格子</b>指派當節<b>空堂</b>的代課教師，最後列印／存 PDF。記錄會保存、可多筆。'}</div>`;
@@ -2780,6 +2781,77 @@ function substPrint() {
   window.addEventListener('afterprint', cleanup, { once: true });
   window.print();
   setTimeout(cleanup, 2000);
+}
+
+/* ---------- v10.14（A4）代課老師「跨紀錄合併總表」 ---------- */
+// 所有代課紀錄中被指派過的代課教師 id（依教師名單順序）
+function substituteTeacherIds() {
+  const ids = new Set();
+  for (const rec of (state.substitutions || [])) for (const k in (rec.assignments || {})) if (rec.assignments[k]) ids.add(rec.assignments[k]);
+  return state.teachers.filter(t => ids.has(t.id)).map(t => t.id);
+}
+// 一位代課老師橫跨所有紀錄的合併課表：灰底＝本人原課、彩色＝代課（標「代 ○○（日期/節次）」）
+function subTeacherMergedTimetableHTML(subId) {
+  const days = activeDays();
+  const t = teacherById(subId); if (!t) return '';
+  const own = {};   // day|period → [{classId,sid}]
+  for (const key in state.slots) {
+    if (!slotAssignments(key).some(a => a.teacherId === subId)) continue;
+    const [classId, day, period] = key.split('|');
+    (own[day + '|' + period] = own[day + '|' + period] || []).push({ classId, sid: state.slots[key] });
+  }
+  const sub = {};   // day|period → [{classId,sid,absent,scope}]（跨所有紀錄）
+  for (const rec of (state.substitutions || [])) {
+    for (const key in (rec.assignments || {})) {
+      if (rec.assignments[key] !== subId) continue;
+      const [classId, day, period] = key.split('|');
+      (sub[day + '|' + period] = sub[day + '|' + period] || []).push({ classId, sid: state.slots[key], absent: teacherName(rec.absentTeacherId), scope: fmtSubstScope(rec) });
+    }
+  }
+  const cnt = Object.values(sub).reduce((n, a) => n + a.length, 0);
+  let html = `<div style="text-align:center;font-weight:700;font-size:16px;margin-bottom:8px">${esc(t.name)} 代課合併總表<span style="font-weight:400;font-size:13px;color:#64748b">（代課 ${cnt} 節）</span></div>`;
+  html += `<table class="timetable"><thead><tr><th class="period-th">節次</th>${days.map(d => `<th>${DAY_LABELS[d]}</th>`).join('')}</tr></thead><tbody>`;
+  for (const p of state.settings.periods) {
+    if (p.isBreak) { html += `<tr class="break-row"><td colspan="${days.length + 1}">${esc(p.label)}</td></tr>`; continue; }
+    html += `<tr><td class="period-th">${esc(p.label)}<small>${esc(p.start)}–${esc(p.end)}</small></td>`;
+    for (const d of days) {
+      const dp = d + '|' + p.id; const oh = own[dp], sh = sub[dp];
+      if (sh && sh.length) {
+        const chips = sh.map(h => {
+          const s = subjectById(h.sid); const color = s ? s.color : '#94a3b8';
+          return `<div class="subst-offer assigned" style="background:${color};color:${subjTextColor(s, color)}">
+            <b>${esc((classById(h.classId) || {}).name || '')}</b><small>${esc(subjectName(h.sid))}</small>
+            <span class="subst-sub">代 ${esc(h.absent)}${h.scope ? '（' + esc(h.scope) + '）' : ''}</span></div>`;
+        }).join('');
+        html += `<td class="cell">${chips}</td>`;
+      } else if (oh && oh.length) {
+        const s = subjectById(oh[0].sid); const color = s ? s.color : '#94a3b8';
+        const label = oh.map(h => (classById(h.classId) || {}).name || '').join('、');
+        html += `<td class="cell"><div class="cell-lesson" style="background:${color};color:${subjTextColor(s, color)};opacity:.6">${esc(label)}<small>${esc(subjectName(oh[0].sid))}</small></div></td>`;
+      } else html += `<td class="cell"></td>`;
+    }
+    html += `</tr>`;
+  }
+  html += `</tbody></table>`;
+  return html;
+}
+function substSubMasterModal() {
+  const ids = substituteTeacherIds();
+  if (!ids.length) { toast('目前沒有任何已指派的代課'); return; }
+  const body = `<p style="margin-top:0;color:var(--muted)">每位代課老師在<b>所有代課紀錄</b>中的代課，合併成一張課表（灰底＝本人原有課、彩色＝代課並標「代 ○○（日期/節次）」）。不同紀錄若落在同一格會並列。</p>`
+    + ids.map(id => `<div style="margin:16px 0"><div class="grid-wrap">${subTeacherMergedTimetableHTML(id)}</div></div>`).join('')
+    + `<div style="margin-top:12px"><button class="btn" data-action="subst-submaster-print">🖨️ 列印 / 存 PDF（每位一頁）</button></div>`;
+  openModal({ title: '🧑‍🏫 代課老師合併總表', wide: true, body });
+}
+function substSubMasterPrint() {
+  const ids = substituteTeacherIds();
+  if (!ids.length) { toast('目前沒有任何已指派的代課'); return; }
+  const area = document.createElement('div'); area.className = 'subst-print-area';
+  area.innerHTML = ids.map(id => `<div class="subst-print-page">${subTeacherMergedTimetableHTML(id)}</div>`).join('');
+  document.body.appendChild(area); document.body.classList.add('printing-subst');
+  const cleanup = () => { document.body.classList.remove('printing-subst'); area.remove(); };
+  window.addEventListener('afterprint', cleanup, { once: true });
+  window.print(); setTimeout(cleanup, 2000);
 }
 
 /* ---------- 代課線上填報（v10.01，網域共享；比照 F③：排課者開放/收回、教師 kiosk 只可新增） ---------- */
@@ -4102,6 +4174,8 @@ const clickHandlers = {
   'cloud-diagnose': () => cloudDiagnose(),
 
   'subst-add': () => substAddModal(),
+  'subst-submaster': () => substSubMasterModal(),               // v10.14 代課老師合併總表
+  'subst-submaster-print': () => substSubMasterPrint(),
   'subst-dates': el => substEditDates(el.dataset.id),
   'subst-per-preset': el => {   // v10.13 請假節次快速鍵：全天/上午/下午
     const preset = el.dataset.preset; const { am, pm } = amPmPeriods();
