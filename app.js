@@ -28,7 +28,12 @@ const CLOUD_DEBOUNCE_MS = 8000;
 
 /* ---------- F③ 導師線上填課（Google Drive drive.file + Picker）常數 ----------
    排課者用 drive.file 建共享資料夾＋每班檔、逐位導師 email 分享；導師用 Picker 開自己班的檔填課。
-   GOOGLE_API_KEY 為 Picker 專用（前端公開、已用「網站來源＋只限 Picker API」限制）；
+   GOOGLE_API_KEY 為 Picker 專用（前端公開）。金鑰在 Cloud Console 的「應用程式限制」設為
+   ⚠️「無」（不要改回「網站/HTTP referrer」限制！）＋「API 限制＝只限 Google Picker API」。
+   原因：HTTP referrer 限制天生不可靠——Brave/Firefox 強化保護、擋廣告/隱私擴充套件、手機 App 內建
+   瀏覽器、加到主畫面的 PWA 都會清掉 Referer，導致 Picker 報「The API developer key is invalid」擋掉
+   老師（2026-08-31 線上代課填報實機踩雷）。安全性靠：此金鑰只能呼叫 Picker API，且每次開檔都仍需
+   老師本人 OAuth token，金鑰外洩也無用。
    GOOGLE_PROJECT_NUMBER 為 Picker 的 appId（即 client_id 開頭那串）。 */
 const GOOGLE_API_KEY = 'AIzaSyCobl3vcBm8sgeieam7TWMf_LtC4ld3esM';
 const GOOGLE_PROJECT_NUMBER = '682239566772';
