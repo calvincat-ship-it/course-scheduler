@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v10.06';
+const APP_VERSION = 'v10.07';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -2367,7 +2367,7 @@ function substOtherBlockers(day, period, rec) {
     for (const k in (r2.assignments || {})) {
       const [, d, p] = k.split('|');
       if (d === String(day) && p === String(period) && r2.assignments[k])
-        m.set(r2.assignments[k], `已在 ${teacherName(r2.absentTeacherId)} 的代課（${lbl}）`);
+        m.set(r2.assignments[k], `${teacherName(r2.assignments[k])} 已在 ${teacherName(r2.absentTeacherId)} 的代課（${lbl}）`);
     }
     if (r2.absentTeacherId) m.set(r2.absentTeacherId, `${teacherName(r2.absentTeacherId)} 該期間請假中（${lbl}）`);
   }
