@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v10.15';
+const APP_VERSION = 'v10.16';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -246,6 +246,7 @@ let fillEnded = false;    // v09.07 填課結束畫面旗標
 let showLoadMatrix = false; // v09.12 ③教師「班×科配課矩陣」展開狀態（runtime）
 let fillProgress = null;    // v09.12 F③ 線上填課進度快取 {classId:{total,filled,submitted,submittedAt}}（runtime，按需重讀）
 let substOpenId = null;     // v09.45 代課頁：目前開啟編輯中的代課記錄 id（null＝顯示清單）
+let substWeekTab = null;    // v10.16 分週指派目前檢視的週 index（null＝全部週為底）
 /* v09.11 排課復原 Undo/Redo：只快照 slots/slotTeachers/slotContent（不跨鎖定/自編結構邊界，故 lock/unlock/finalize 時清空堆疊）*/
 let undoStack = [], redoStack = [];
 const snapSlots = () => ({ slots: { ...state.slots }, slotTeachers: { ...state.slotTeachers }, slotContent: { ...state.slotContent } });
@@ -2333,8 +2334,49 @@ function normalizeSubst(rec) {
   }
   if (rec.endDate == null || rec.endDate === '') rec.endDate = rec.startDate || '';
   if (!Array.isArray(rec.periods)) rec.periods = [];   // v10.13 請假節次（空＝全天）
+  if (!rec.weekOverrides || typeof rec.weekOverrides !== 'object') rec.weekOverrides = {};   // v10.16 分週覆蓋：{'週index|班|星期|節':subId}
   return rec;
 }
+/* ---- v10.16 分週指派：長假中同一節可各週指派不同代課老師 ---- */
+// 代課日期範圍涵蓋的「週」清單（只列含上課日的週；start/end 為該週實際涵蓋的起訖日）
+function substWeeks(rec) {
+  const s = rec && rec.startDate, e = rec && rec.endDate;
+  if (!s || !e) return [];
+  const start = new Date(s + 'T00:00:00'), end = new Date(e + 'T00:00:00');
+  if (isNaN(start.getTime()) || isNaN(end.getTime()) || start > end) return [];
+  const byMon = {}; const fmt = d => localDateStr(d);   // v10.16 用本地日期字串（避免 toISOString 在 UTC+8 下 -1 天）
+  for (const d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+    const wd = d.getDay(); if (wd < 1 || wd > 5) continue;
+    const mon = new Date(d); mon.setDate(d.getDate() - (wd - 1)); const key = fmt(mon);
+    if (!byMon[key]) byMon[key] = { start: new Date(d), end: new Date(d) };
+    else { if (d < byMon[key].start) byMon[key].start = new Date(d); if (d > byMon[key].end) byMon[key].end = new Date(d); }
+  }
+  return Object.keys(byMon).sort().map((k, i) => ({ idx: i, mon: k, start: fmt(byMon[k].start), end: fmt(byMon[k].end) }));
+}
+const substMultiWeek = rec => substWeeks(rec).length > 1;
+// 某週實際涵蓋的星期幾集合(1..5)
+function weekWeekdays(week) {
+  if (!week) return null;
+  const start = new Date(week.start + 'T00:00:00'), end = new Date(week.end + 'T00:00:00');
+  const set = new Set();
+  for (const d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) { const wd = d.getDay(); if (wd >= 1 && wd <= 5) set.add(wd); }
+  return set;
+}
+// 某週(或 null=全部週為底)的有效指派 map：{'班|星期|節':subId}（覆蓋蓋過底）
+function effAssign(rec, weekIdx) {
+  const m = { ...(rec.assignments || {}) };
+  if (weekIdx != null && rec.weekOverrides) {
+    const pre = weekIdx + '|';
+    for (const k in rec.weekOverrides) if (k.indexOf(pre) === 0) { const key = k.slice(pre.length); if (rec.weekOverrides[k]) m[key] = rec.weekOverrides[k]; }
+  }
+  return m;
+}
+// 某週某格的有效代課老師 id
+function substEffectiveSub(rec, weekIdx, key) {
+  if (weekIdx != null && rec.weekOverrides && rec.weekOverrides[weekIdx + '|' + key]) return rec.weekOverrides[weekIdx + '|' + key];
+  return (rec.assignments || {})[key];
+}
+const substHasOverride = (rec, weekIdx, key) => weekIdx != null && !!(rec.weekOverrides && rec.weekOverrides[weekIdx + '|' + key]);
 function normalizeAllSubst() { (state.substitutions || []).forEach(normalizeSubst); }
 // 顯示用日期字串：「起～訖」；相同→單日；缺→空字串。
 function fmtSubstRange(rec) {
@@ -2364,15 +2406,14 @@ function substOtherBlockers(day, period, rec) {
   const m = new Map();
   if (!rec || !rec.startDate || !rec.endDate) return m;
   const wd = Number(day);
+  const tailDP = k => { const parts = k.split('|'); return parts.length >= 2 ? { d: parts[parts.length - 2], p: parts[parts.length - 1] } : { d: '', p: '' }; };
   for (const r2 of (state.substitutions || [])) {
     if (!r2 || r2.id === rec.id) continue;
     if (!rangesShareWeekday(rec.startDate, rec.endDate, r2.startDate, r2.endDate, wd)) continue;
     const lbl = fmtSubstScope(r2);
-    for (const k in (r2.assignments || {})) {
-      const [, d, p] = k.split('|');
-      if (d === String(day) && p === String(period) && r2.assignments[k])
-        m.set(r2.assignments[k], `${teacherName(r2.assignments[k])} 已在 ${teacherName(r2.absentTeacherId)} 的代課（${lbl}）`);
-    }
+    // v10.16 掃 r2 的底指派＋分週覆蓋（key 尾兩段皆為 星期|節），保守擋掉所有在此(星期,節)代課的人
+    const scan = obj => { for (const k in (obj || {})) { const { d, p } = tailDP(k); if (d === String(day) && p === String(period) && obj[k]) m.set(obj[k], `${teacherName(obj[k])} 已在 ${teacherName(r2.absentTeacherId)} 的代課（${lbl}）`); } };
+    scan(r2.assignments); scan(r2.weekOverrides);
     // v10.13 被代課者本人請假中，僅在「該節也在其請假範圍」時才不可代課（半天/指定節次請假者，其他節仍可代）
     if (r2.absentTeacherId && substPeriodOnLeave(r2, period)) m.set(r2.absentTeacherId, `${teacherName(r2.absentTeacherId)} 該期間請假中（${lbl}）`);
   }
@@ -2389,10 +2430,11 @@ function busyTeachersAt(day, period) {
   return set;
 }
 // 某(day,period) 可代課的教師：不上課、未設不排課時段、非被代課者、且未在本記錄同節被指派為別格代課
-function freeTeachersAt(day, period, rec) {
+function freeTeachersAt(day, period, rec, weekIdx = null) {
   const busy = busyTeachersAt(day, period);
   const usedThisDP = new Set();
-  if (rec) for (const k in rec.assignments) { const [, d, p] = k.split('|'); if (d === String(day) && p === String(period) && rec.assignments[k]) usedThisDP.add(rec.assignments[k]); }
+  // v10.16 同記錄同(星期,節)已指派別格者，依「目前檢視的週」的有效指派判定
+  if (rec) { const eff = effAssign(rec, weekIdx); for (const k in eff) { const [, d, p] = k.split('|'); if (d === String(day) && p === String(period) && eff[k]) usedThisDP.add(eff[k]); } }
   const blocked = substOtherBlockers(day, period, rec);   // v10.06 日期重疊的跨紀錄互斥
   return state.teachers.filter(t =>
     t.id !== rec.absentTeacherId &&
@@ -2504,9 +2546,16 @@ function substList() {
 
 function substEditor(rec) {
   const t = teacherById(rec.absentTeacherId);
-  const total = absentCellsInScope(rec).length;   // v10.09/13 只計代課日期＋節次範圍
-  const done = Object.keys(rec.assignments || {}).filter(k => rec.assignments[k] && substCellInScope(rec, k)).length;
   const editable = !substKiosk || substEditableIds.has(rec.id);   // 完整 App 皆可編；kiosk 僅本 session 新建、未送出者
+  const weeks = substWeeks(rec); const multi = weeks.length > 1;   // v10.16 分週指派
+  if (!multi) substWeekTab = null;
+  if (substWeekTab != null && substWeekTab >= weeks.length) substWeekTab = null;
+  const wk = (substWeekTab != null) ? weeks[substWeekTab] : null;
+  const eff = effAssign(rec, substWeekTab);
+  const scopeKeys = wk
+    ? absentCells(rec).filter(k => { const [, d, p] = k.split('|'); return weekWeekdays(wk).has(Number(d)) && substPeriodOnLeave(rec, p); })
+    : absentCellsInScope(rec);
+  const total = scopeKeys.length, done = scopeKeys.filter(k => eff[k]).length;
   const btns = substKiosk
     ? `<button class="ghost" data-action="subst-back">← 返回</button>${editable ? `<button class="btn" data-action="subst-submit" data-id="${rec.id}">💾 送出到雲端</button>` : ''}`
     : `<button class="ghost" data-action="subst-back">← 返回清單</button><button class="btn" data-action="subst-print">🖨️ 列印 / 存 PDF</button>`;
@@ -2515,39 +2564,49 @@ function substEditor(rec) {
     : '此為他人填報的代課，僅供檢視。';
   const rangeLbl = fmtSubstScope(rec);
   const dateBtn = editable ? `<button class="ghost" data-action="subst-dates" data-id="${rec.id}">📅 ${rangeLbl ? esc(rangeLbl) : '設定代課日期／節次'}</button>` : (rangeLbl ? `<span class="pill blue">${esc(rangeLbl)}</span>` : '');
+  const weekTabs = multi ? `<div class="subst-week-tabs no-print">
+      <button class="${substWeekTab == null ? 'active' : ''}" data-action="subst-week-tab" data-w="all">全部週</button>
+      ${weeks.map(w => `<button class="${substWeekTab === w.idx ? 'active' : ''}" data-action="subst-week-tab" data-w="${w.idx}">第${w.idx + 1}週<small>${esc(w.start.slice(5))}–${esc(w.end.slice(5))}</small></button>`).join('')}
+    </div>
+    <div class="hint no-print" style="color:var(--muted);margin:2px 0 10px">${substWeekTab == null
+      ? '「<b>全部週</b>」是基礎指派、套用到每一週。若某週的某節要換不同代課老師，切到<b>該週</b>單獨指派（會蓋過全部週；其餘格子仍沿用全部週）。'
+      : `目前編輯<b>第${substWeekTab + 1}週</b>（${esc(wk.start)}～${esc(wk.end)}）：在此指派＝<b>本週單獨</b>（蓋過全部週）；未單獨指派的格子沿用全部週。`}</div>` : '';
   const head = `<div class="page-head no-print"><h2>🔄 代課 — ${esc(t.name)}</h2>
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">${dateBtn}${btns}</div></div>
-    <div class="hint no-print" style="margin-bottom:10px;color:var(--muted)">${hint} 已指派 <b>${done}</b> / 共 <b>${total}</b> 節。</div>`;
-  return head + `<div class="card"><div class="card-body"><div class="grid-wrap">${substTimetableHTML(rec, editable)}</div></div></div>`;
+    <div class="hint no-print" style="margin-bottom:10px;color:var(--muted)">${hint} ${wk ? `第${substWeekTab + 1}週` : ''}已指派 <b>${done}</b> / 共 <b>${total}</b> 節。</div>`;
+  return head + weekTabs + `<div class="card"><div class="card-body"><div class="grid-wrap">${substTimetableHTML(rec, editable, substWeekTab)}</div></div></div>`;
 }
 
-function substTimetableHTML(rec, interactive) {
+function substTimetableHTML(rec, interactive, weekTab = null) {
   const days = activeDays();
   const t = teacherById(rec.absentTeacherId);
-  const wdSet = substRangeWeekdays(rec);   // v10.09 只有代課日期涵蓋的星期幾可指派，其他鎖定
+  const weeks = substWeeks(rec); const wk = (weekTab != null && weeks[weekTab]) ? weeks[weekTab] : null;
+  const wdSet = wk ? weekWeekdays(wk) : substRangeWeekdays(rec);   // v10.09/16 週別鎖定
   const map = {};
   for (const key in state.slots) {
     if (!slotAssignments(key).some(a => a.teacherId === rec.absentTeacherId)) continue;
     const [classId, day, period] = key.split('|');
     (map[day + '|' + period] = map[day + '|' + period] || []).push({ classId, sid: state.slots[key], key });
   }
-  let html = `<div class="print-only" style="text-align:center;font-weight:700;font-size:16px;margin-bottom:8px">${esc(t.name)} 代課課表${fmtSubstScope(rec) ? '　' + esc(fmtSubstScope(rec)) : ''}</div>`;
+  const scopeLbl = fmtSubstScope(rec) + (wk ? `　第${weekTab + 1}週 ${wk.start}～${wk.end}` : '');
+  let html = `<div class="print-only" style="text-align:center;font-weight:700;font-size:16px;margin-bottom:8px">${esc(t.name)} 代課課表${scopeLbl ? '　' + esc(scopeLbl) : ''}</div>`;
   html += `<table class="timetable"><thead><tr><th class="period-th">節次</th>${days.map(d => { const open = !wdSet || wdSet.has(d); return `<th${open ? '' : ' class="subst-day-off"'}>${DAY_LABELS[d]}${open ? '' : ' 🔒'}</th>`; }).join('')}</tr></thead><tbody>`;
   for (const p of state.settings.periods) {
     if (p.isBreak) { html += `<tr class="break-row"><td colspan="${days.length + 1}">${esc(p.label)}</td></tr>`; continue; }
-    const perOn = substPeriodOnLeave(rec, p.id);   // v10.13 此節是否在請假範圍
+    const perOn = substPeriodOnLeave(rec, p.id);
     html += `<tr><td class="period-th${perOn ? '' : ' subst-day-off'}">${esc(p.label)}<small>${esc(p.start)}–${esc(p.end)}</small></td>`;
     for (const d of days) {
-      const cellOpen = (!wdSet || wdSet.has(d)) && perOn;   // 日期+節次都在範圍才可指派
+      const cellOpen = (!wdSet || wdSet.has(d)) && perOn;
       const hits = map[d + '|' + p.id];
       if (!hits || !hits.length) { html += `<td class="cell${cellOpen ? '' : ' subst-cell-off'}"></td>`; continue; }
       const chips = hits.map(h => {
         const s = subjectById(h.sid); const color = s ? s.color : '#94a3b8';
-        const subId = rec.assignments[h.key];
-        const act = (interactive && cellOpen) ? `data-action="subst-cell" data-id="${rec.id}" data-key="${esc(h.key)}" data-day="${d}" data-period="${esc(p.id)}"` : '';
+        const subId = substEffectiveSub(rec, weekTab, h.key);
+        const ovr = substHasOverride(rec, weekTab, h.key);   // 本週單獨指派
+        const act = (interactive && cellOpen) ? `data-action="subst-cell" data-id="${rec.id}" data-key="${esc(h.key)}" data-day="${d}" data-period="${esc(p.id)}" data-week="${weekTab == null ? 'all' : weekTab}"` : '';
         const lockStyle = cellOpen ? '' : 'opacity:.4;filter:grayscale(.55);cursor:not-allowed;';
         const tail = subId
-          ? `<span class="subst-sub">代課：${esc(teacherName(subId))}</span>`
+          ? `<span class="subst-sub">代課：${esc(teacherName(subId))}${ovr ? '（本週）' : (wk ? '（沿用全部週）' : '')}</span>`
           : (cellOpen ? `<span class="subst-need-tag no-print">＋ 指派代課</span>` : `<span class="subst-need-tag no-print">🔒 非代課時段</span>`);
         return `<div class="subst-offer ${subId ? 'assigned' : (cellOpen ? 'need' : 'off')}" ${act} style="background:${color};color:${subjTextColor(s, color)};${lockStyle}">
           <b>${esc((classById(h.classId) || {}).name || '')}</b><small>${esc(subjectName(h.sid))}</small>
@@ -2641,11 +2700,13 @@ function substEditDates(recId) {
   });
 }
 
-function substCellPicker(recId, key, day, period) {
+function substCellPicker(recId, key, day, period, weekTab = null) {
   const rec = substById(recId); if (!rec) return;
   const classId = key.split('|')[0]; const sid = state.slots[key];
-  const free = freeTeachersAt(day, period, rec);
-  const cur = rec.assignments[key];
+  const free = freeTeachersAt(day, period, rec, weekTab);
+  const cur = substEffectiveSub(rec, weekTab, key);
+  const ovr = substHasOverride(rec, weekTab, key);
+  const weeks = substWeeks(rec); const wk = (weekTab != null && weeks[weekTab]) ? weeks[weekTab] : null;
   const clsName = (classById(classId) || {}).name || '';
   const perLabel = (state.settings.periods.find(pp => pp.id === period) || {}).label || '';
   const list = free.length
@@ -2656,15 +2717,21 @@ function substCellPicker(recId, key, day, period) {
   const blockedHTML = blocked.size
     ? `<div style="margin-top:10px"><p class="hint" style="color:var(--muted);margin:0 0 2px">因日期重疊，本節不可代課：</p>${[...blocked.entries()].map(([tid, reason]) => `<div class="hint" style="color:var(--muted);margin:2px 0">・${esc(reason)}</div>`).join('')}</div>`
     : '';
+  const weekNote = wk ? `<p class="hint" style="color:var(--muted);margin:2px 0 8px">指派範圍：<b>第${weekTab + 1}週（${esc(wk.start)}～${esc(wk.end)}）單獨</b>。${ovr ? '目前為本週單獨指派。' : '目前沿用「全部週」的指派。'}</p>` : '';
+  const setAssign = v => {
+    if (weekTab == null) rec.assignments[key] = v;
+    else rec.weekOverrides[weekTab + '|' + key] = v;
+  };
   openModal({
     title: `指派代課 — ${clsName} ${subjectName(sid)}`, saveLabel: '確定',
     onSave: free.length ? () => {
       const sel = document.querySelector('input[name="subT"]:checked'); if (!sel) { toast('請選一位代課教師'); return false; }
-      rec.assignments[key] = sel.value; save(); closeModal(); render(); return true;
+      setAssign(sel.value); save(); closeModal(); render(); return true;
     } : null,
-    body: `<p style="margin-top:0;color:var(--muted)">${DAY_LABELS[day]} ${esc(perLabel)}　被代課：<b>${esc(teacherName(rec.absentTeacherId))}</b>${fmtSubstScope(rec) ? `　<span class="pill blue">${esc(fmtSubstScope(rec))}</span>` : ''}</p>
+    body: `<p style="margin-top:0;color:var(--muted)">${DAY_LABELS[day]} ${esc(perLabel)}　被代課：<b>${esc(teacherName(rec.absentTeacherId))}</b>${fmtSubstScope(rec) ? `　<span class="pill blue">${esc(fmtSubstScope(rec))}</span>` : ''}</p>${weekNote}
       <div class="restore-list">${list}</div>${blockedHTML}
-      ${cur ? `<button type="button" class="ghost" data-action="subst-clear" data-id="${rec.id}" data-key="${esc(key)}" style="margin-top:10px">清除此格代課</button>` : ''}`,
+      ${(weekTab != null && ovr) ? `<button type="button" class="ghost" data-action="subst-clear-override" data-id="${rec.id}" data-key="${esc(key)}" data-week="${weekTab}" style="margin-top:10px">↩ 改回沿用「全部週」</button>` : ''}
+      ${(weekTab == null && cur) ? `<button type="button" class="ghost" data-action="subst-clear" data-id="${rec.id}" data-key="${esc(key)}" style="margin-top:10px">清除此格代課</button>` : ''}`,
   });
 }
 
@@ -2684,24 +2751,29 @@ function substDelete(id) {
   toast('已刪除代課記錄');
 }
 
-// 代課者本人課表（原有課務 + 本次新增的代課節）— 供列印
-function subTeacherTimetableHTML(subId, rec) {
+// 代課者本人課表（原有課務 + 本次新增的代課節）— 供列印。weekIdx!=null＝該週有效指派
+function subTeacherTimetableHTML(subId, rec, weekIdx = null) {
   const days = activeDays();
   const t = teacherById(subId); if (!t) return '';
+  const weeks = substWeeks(rec); const wk = (weekIdx != null && weeks[weekIdx]) ? weeks[weekIdx] : null;
+  const wdSet = wk ? weekWeekdays(wk) : substRangeWeekdays(rec);
   const own = {};   // day|period → [{classId,sid}]（代課者自己原本的課）
   for (const key in state.slots) {
     if (!slotAssignments(key).some(a => a.teacherId === subId)) continue;
     const [classId, day, period] = key.split('|');
     (own[day + '|' + period] = own[day + '|' + period] || []).push({ classId, sid: state.slots[key] });
   }
-  const sub = {};   // day|period → [{classId,sid}]（本次指派給此代課者的代課節）
-  for (const key in rec.assignments) {
-    if (rec.assignments[key] !== subId) continue;
+  const eff = effAssign(rec, weekIdx);
+  const sub = {};   // day|period → [{classId,sid}]（本次指派給此代課者的代課節，限本週範圍）
+  for (const key in eff) {
+    if (eff[key] !== subId) continue;
     const [classId, day, period] = key.split('|');
+    if ((wdSet && !wdSet.has(Number(day))) || !substPeriodOnLeave(rec, period)) continue;
     (sub[day + '|' + period] = sub[day + '|' + period] || []).push({ classId, sid: state.slots[key] });
   }
   const absentName = teacherName(rec.absentTeacherId);
-  let html = `<div class="print-only" style="text-align:center;font-weight:700;font-size:16px;margin-bottom:8px">${esc(t.name)} 課表（含代課）${fmtSubstScope(rec) ? '　' + esc(fmtSubstScope(rec)) : ''}</div>`;
+  const wkLbl = wk ? `　第${weekIdx + 1}週 ${wk.start}～${wk.end}` : (fmtSubstScope(rec) ? '　' + fmtSubstScope(rec) : '');
+  let html = `<div class="print-only" style="text-align:center;font-weight:700;font-size:16px;margin-bottom:8px">${esc(t.name)} 課表（含代課）${esc(wkLbl)}</div>`;
   html += `<table class="timetable"><thead><tr><th class="period-th">節次</th>${days.map(d => `<th>${DAY_LABELS[d]}</th>`).join('')}</tr></thead><tbody>`;
   for (const p of state.settings.periods) {
     if (p.isBreak) { html += `<tr class="break-row"><td colspan="${days.length + 1}">${esc(p.label)}</td></tr>`; continue; }
@@ -2727,10 +2799,14 @@ function subTeacherTimetableHTML(subId, rec) {
   return html;
 }
 
-// 受影響班級的班級課表（代課節改顯示代課教師名）— 供列印
-function substClassTimetableHTML(classId, rec) {
+// 受影響班級的班級課表（代課節改顯示代課教師名）— 供列印。weekIdx!=null＝該週有效指派
+function substClassTimetableHTML(classId, rec, weekIdx = null) {
   const days = activeDays(); const c = classById(classId); const g = classGrade(c);
-  let html = `<div class="print-only" style="text-align:center;font-weight:700;font-size:16px;margin-bottom:8px">${esc((c || {}).name || '')} 課表（代課後）${fmtSubstScope(rec) ? '　' + esc(fmtSubstScope(rec)) : ''}</div>`;
+  const weeks = substWeeks(rec); const wk = (weekIdx != null && weeks[weekIdx]) ? weeks[weekIdx] : null;
+  const wdSet = wk ? weekWeekdays(wk) : substRangeWeekdays(rec);
+  const eff = effAssign(rec, weekIdx);
+  const wkLbl = wk ? `　第${weekIdx + 1}週 ${wk.start}～${wk.end}` : (fmtSubstScope(rec) ? '　' + fmtSubstScope(rec) : '');
+  let html = `<div class="print-only" style="text-align:center;font-weight:700;font-size:16px;margin-bottom:8px">${esc((c || {}).name || '')} 課表（代課後）${esc(wkLbl)}</div>`;
   html += `<table class="timetable"><thead><tr><th class="period-th">節次</th>${days.map(d => `<th>${DAY_LABELS[d]}</th>`).join('')}</tr></thead><tbody>`;
   for (const p of state.settings.periods) {
     if (p.isBreak) { html += `<tr class="break-row"><td colspan="${days.length + 1}">${esc(p.label)}　${esc(p.start)}–${esc(p.end)}</td></tr>`; continue; }
@@ -2740,7 +2816,8 @@ function substClassTimetableHTML(classId, rec) {
       const open = g && gradePeriodHasDay(g, p.id, d);
       if (sid) {
         const s = subjectById(sid); const color = s ? s.color : '#94a3b8';
-        const subId = rec.assignments[key];
+        const inScope = (!wdSet || wdSet.has(d)) && substPeriodOnLeave(rec, p.id);
+        const subId = inScope ? eff[key] : null;   // v10.16 只在本週範圍內顯示代課
         const room = roomsLabelCS(classId, sid) ? '·' + roomsLabelCS(classId, sid) : '';
         if (subId) {   // 此節被代課：改顯示代課教師名
           html += `<td class="cell"><div class="subst-offer assigned" style="background:${color};color:${subjTextColor(s, color)}" title="原任課：${esc(slotTeachersLabel(key))}">
@@ -2759,19 +2836,28 @@ function substClassTimetableHTML(classId, rec) {
 }
 
 // 組合列印內容：被代課者代課課表 + 每位代課者的課表（含代課）+ 受影響班級課表（代課節改教師名）
+// v10.16 多週記錄：逐週各出一組（週標題＋該週有效指派）。
 function substPrintHTML(rec) {
-  let html = `<div class="subst-print-page">${substTimetableHTML(rec, false)}</div>`;
-  const subIds = [...new Set(Object.values(rec.assignments).filter(Boolean))];
-  for (const sid of subIds) html += `<div class="subst-print-page">${subTeacherTimetableHTML(sid, rec)}</div>`;
-  const setKeys = Object.keys(rec.assignments).filter(k => rec.assignments[k]);
-  const affected = state.classes.filter(c => setKeys.some(k => k.split('|')[0] === c.id));   // 依 state.classes 排序
-  for (const c of affected) html += `<div class="subst-print-page">${substClassTimetableHTML(c.id, rec)}</div>`;
+  const weeks = substWeeks(rec);
+  const parts = weeks.length > 1 ? weeks.map(w => w.idx) : [null];
+  let html = '';
+  for (const wi of parts) {
+    if (wi != null) html += `<div class="subst-print-page"><div style="text-align:center;font-weight:800;font-size:18px;margin:6px 0 10px">第${wi + 1}週（${esc(weeks[wi].start)}～${esc(weeks[wi].end)}）</div>${substTimetableHTML(rec, false, wi)}</div>`;
+    else html += `<div class="subst-print-page">${substTimetableHTML(rec, false, null)}</div>`;
+    const eff = effAssign(rec, wi);
+    const subIds = [...new Set(Object.values(eff).filter(Boolean))];
+    for (const sid of subIds) html += `<div class="subst-print-page">${subTeacherTimetableHTML(sid, rec, wi)}</div>`;
+    const setKeys = Object.keys(eff).filter(k => eff[k]);
+    const affected = state.classes.filter(c => setKeys.some(k => k.split('|')[0] === c.id));
+    for (const c of affected) html += `<div class="subst-print-page">${substClassTimetableHTML(c.id, rec, wi)}</div>`;
+  }
   return html;
 }
 
 function substPrint() {
   const rec = substById(substOpenId); if (!rec) return;
-  if (!Object.keys(rec.assignments).some(k => rec.assignments[k])) { toast('尚未指派任何代課，無可列印內容'); return; }
+  const any = Object.values(rec.assignments || {}).some(Boolean) || Object.values(rec.weekOverrides || {}).some(Boolean);   // v10.16 含分週覆蓋
+  if (!any) { toast('尚未指派任何代課，無可列印內容'); return; }
   const area = document.createElement('div');
   area.className = 'subst-print-area';
   area.innerHTML = substPrintHTML(rec);
@@ -2784,10 +2870,13 @@ function substPrint() {
 }
 
 /* ---------- v10.14（A4）代課老師「跨紀錄合併總表」 ---------- */
-// 所有代課紀錄中被指派過的代課教師 id（依教師名單順序）
+// 所有代課紀錄中被指派過的代課教師 id（依教師名單順序；含分週覆蓋）
 function substituteTeacherIds() {
   const ids = new Set();
-  for (const rec of (state.substitutions || [])) for (const k in (rec.assignments || {})) if (rec.assignments[k]) ids.add(rec.assignments[k]);
+  for (const rec of (state.substitutions || [])) {
+    for (const k in (rec.assignments || {})) if (rec.assignments[k]) ids.add(rec.assignments[k]);
+    for (const k in (rec.weekOverrides || {})) if (rec.weekOverrides[k]) ids.add(rec.weekOverrides[k]);
+  }
   return state.teachers.filter(t => ids.has(t.id)).map(t => t.id);
 }
 // 一位代課老師橫跨所有紀錄的合併課表：灰底＝本人原課、彩色＝代課（標「代 ○○（日期/節次）」）
@@ -2800,12 +2889,19 @@ function subTeacherMergedTimetableHTML(subId) {
     const [classId, day, period] = key.split('|');
     (own[day + '|' + period] = own[day + '|' + period] || []).push({ classId, sid: state.slots[key] });
   }
-  const sub = {};   // day|period → [{classId,sid,absent,scope}]（跨所有紀錄）
+  const sub = {};   // day|period → [{classId,sid,absent,scope}]（跨所有紀錄；多週逐週）
   for (const rec of (state.substitutions || [])) {
-    for (const key in (rec.assignments || {})) {
-      if (rec.assignments[key] !== subId) continue;
-      const [classId, day, period] = key.split('|');
-      (sub[day + '|' + period] = sub[day + '|' + period] || []).push({ classId, sid: state.slots[key], absent: teacherName(rec.absentTeacherId), scope: fmtSubstScope(rec) });
+    const weeks = substWeeks(rec); const parts = weeks.length > 1 ? weeks.map(w => w.idx) : [null];
+    for (const wi of parts) {
+      const eff = effAssign(rec, wi); const wk = wi != null ? weeks[wi] : null;
+      const wdSet = wk ? weekWeekdays(wk) : substRangeWeekdays(rec);
+      const scope = wk ? `${wk.start}～${wk.end}` : fmtSubstScope(rec);
+      for (const key in eff) {
+        if (eff[key] !== subId) continue;
+        const [classId, day, period] = key.split('|');
+        if ((wdSet && !wdSet.has(Number(day))) || !substPeriodOnLeave(rec, period)) continue;
+        (sub[day + '|' + period] = sub[day + '|' + period] || []).push({ classId, sid: state.slots[key], absent: teacherName(rec.absentTeacherId), scope });
+      }
     }
   }
   const cnt = Object.values(sub).reduce((n, a) => n + a.length, 0);
@@ -4183,11 +4279,13 @@ const clickHandlers = {
     const want = preset === 'am' ? new Set(am.map(String)) : preset === 'pm' ? new Set(pm.map(String)) : null;
     document.querySelectorAll('.subst-per-chk').forEach(chk => { chk.checked = want ? want.has(chk.value) : true; });
   },
-  'subst-open': el => { substOpenId = el.dataset.id; render(); },
-  'subst-back': () => { substOpenId = null; render(); },
+  'subst-open': el => { substOpenId = el.dataset.id; substWeekTab = null; render(); },
+  'subst-back': () => { substOpenId = null; substWeekTab = null; render(); },
   'subst-del': el => { if (substKiosk) return; substDelete(el.dataset.id); },   // kiosk 不可刪
-  'subst-cell': el => { const id = el.dataset.id; if (substKiosk && !substEditableIds.has(id)) { toast('此為他人填報的代課，僅供檢視'); return; } substCellPicker(id, el.dataset.key, el.dataset.day, el.dataset.period); },
+  'subst-week-tab': el => { substWeekTab = el.dataset.w === 'all' ? null : Number(el.dataset.w); render(); },   // v10.16 分週指派切換
+  'subst-cell': el => { const id = el.dataset.id; if (substKiosk && !substEditableIds.has(id)) { toast('此為他人填報的代課，僅供檢視'); return; } const w = el.dataset.week; substCellPicker(id, el.dataset.key, el.dataset.day, el.dataset.period, (w == null || w === 'all') ? null : Number(w)); },
   'subst-clear': el => { const r = substById(el.dataset.id); if (r) { delete r.assignments[el.dataset.key]; save(); closeModal(); render(); } },
+  'subst-clear-override': el => { const r = substById(el.dataset.id); if (r && r.weekOverrides) { delete r.weekOverrides[el.dataset.week + '|' + el.dataset.key]; save(); closeModal(); render(); } },   // v10.16 改回沿用全部週
   'subst-print': () => substPrint(),
   // v10.01 線上代課填報
   'subst-share-manage': () => substShareModal(),

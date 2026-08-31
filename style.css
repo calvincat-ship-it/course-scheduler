@@ -423,6 +423,12 @@ table.avail td.slot.on { background: #dcfce7; color: var(--ok); font-weight: 700
 /* v10.09 非代課日（日期區間未涵蓋的星期）：整欄鎖定、變灰、不可點 */
 table.timetable th.subst-day-off { opacity: .5; background: repeating-linear-gradient(45deg, rgba(148,163,184,.12), rgba(148,163,184,.12) 6px, transparent 6px, transparent 12px); }
 table.timetable td.cell.subst-cell-off { background: repeating-linear-gradient(45deg, rgba(148,163,184,.10), rgba(148,163,184,.10) 6px, transparent 6px, transparent 12px); }
+/* v10.16 分週指派切換 */
+.subst-week-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin: 4px 0 2px; }
+.subst-week-tabs button { display: inline-flex; flex-direction: column; align-items: center; gap: 1px; padding: 5px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); color: var(--ink); font-weight: 700; cursor: pointer; line-height: 1.15; }
+.subst-week-tabs button small { font-weight: 400; font-size: 11px; color: var(--muted); }
+.subst-week-tabs button.active { background: #2563eb; border-color: #2563eb; color: #fff; }
+.subst-week-tabs button.active small { color: #dbeafe; }
 .subst-offer.off { cursor: not-allowed; }
 .subst-offer.off:hover { filter: grayscale(.55) brightness(1); }
 /* 代課列印：畫面隱藏，列印時取代 #view，內含被代課者＋各代課者課表，逐張換頁 */
