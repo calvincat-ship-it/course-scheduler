@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v10.11';
+const APP_VERSION = 'v10.12';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -141,6 +141,7 @@ function defaultState() {
     staffingOkSig: '',    // v09.01 「檢查全校配課」通過時的資料簽章（含導師設定）；資料一變即需重新檢查
     fillShare: null,      // v09.03 F③ 線上填課分享：{ folderId, folderLink, year, files:{classId:{fileId,link,email}}, openedAt }
     substitutions: [],    // v09.45/v10.06 代課安排：[{ id, absentTeacherId, startDate, endDate, date(舊/相容), createdAt, assignments:{'classId|day|period':subTeacherId} }]
+    substDeleted: [],     // v10.12 已刪除代課記錄 id 墓碑：收回時略過，避免線上殘留資料被再度合併回來
     substShare: null,     // v10.01 線上代課填報分享：{ fileId, link, domain, openedAt }
     helpSeen: false,
   };
@@ -2613,8 +2614,15 @@ function substDelete(id) {
   const t = teacherById(r.absentTeacherId);
   if (!confirm(`確定刪除「${(t || {}).name || '（已刪除教師）'}」的代課記錄嗎？此動作無法復原。`)) return;
   state.substitutions = state.substitutions.filter(x => x.id !== id);
+  if (!Array.isArray(state.substDeleted)) state.substDeleted = [];
+  if (!state.substDeleted.includes(id)) state.substDeleted.push(id);   // v10.12 墓碑：收回時不再合併回來
   if (substOpenId === id) substOpenId = null;
-  save(); render(); toast('已刪除代課記錄');
+  save(); render();
+  // 已開放線上填報→線上檔可能還有這筆，提供立即更新線上的選擇
+  if (state.substShare) {
+    if (confirm('已刪除。線上代課檔可能還留有這筆資料。\n\n要現在就「更新線上代課檔」把刪除推送上去嗎？（同時會收回教師新填的代課）\n\n選「取消」也沒關係：之後按「收回代課」時，系統已會自動略過已刪除的紀錄，不會再合併回來。')) { collectSubst(); return; }
+  }
+  toast('已刪除代課記錄');
 }
 
 // 代課者本人課表（原有課務 + 本次新增的代課節）— 供列印
@@ -2768,14 +2776,30 @@ async function collectSubst() {
     toast('連線 Google…'); await getFillToken('');
     // 1) 收回合併（只增不覆蓋本機既有）
     step = '讀取教師填報';
+    if (!Array.isArray(state.substDeleted)) state.substDeleted = [];
+    const deleted = new Set(state.substDeleted);
     let added = 0;
     try {
       const obj = JSON.parse(await fillDownloadText(state.substShare.fileId));
       const incoming = (obj.state && Array.isArray(obj.state.substitutions)) ? obj.state.substitutions : [];
       const localIds = new Set((state.substitutions || []).map(r => r.id));
-      incoming.forEach(r => { if (r && r.id && !localIds.has(r.id)) { state.substitutions.push(r); added++; } });
+      // v10.12 略過墓碑：排課者已刪除的紀錄不再合併回來（避免線上殘留被再度收回）
+      incoming.forEach(r => { if (r && r.id && !localIds.has(r.id) && !deleted.has(r.id)) { state.substitutions.push(r); added++; } });
       normalizeAllSubst();
     } catch (e) { /* 舊檔讀不到(可能被刪)→視為無新填報，下面改建新檔 */ }
+    // 1.5) v10.12 檢查已合併記錄是否過期，讓排課者確認刪除（會一併從線上檔移除）
+    let removedExpired = 0;
+    const expired = (state.substitutions || []).filter(substExpired);
+    if (expired.length) {
+      const lines = expired.map(r => `・${teacherName(r.absentTeacherId)}（${fmtSubstRange(r) || '無日期'}）`).join('\n');
+      if (confirm(`偵測到 ${expired.length} 筆代課記錄截止日已過：\n\n${lines}\n\n要一併刪除這些過期記錄嗎？（會從系統與線上代課檔一起移除；選「取消」則保留）`)) {
+        const exIds = new Set(expired.map(r => r.id));
+        state.substitutions = state.substitutions.filter(r => !exIds.has(r.id));
+        exIds.forEach(id => { if (!state.substDeleted.includes(id)) state.substDeleted.push(id); });
+        if (substOpenId && exIds.has(substOpenId)) substOpenId = null;
+        removedExpired = expired.length;
+      }
+    }
     // 2) 用最新快照覆蓋共享檔（保留已收回的代課；同時把課表更新推給教師端）
     step = '更新共享檔快照';
     const year = String(state.settings.reportYear || '');
@@ -2799,7 +2823,7 @@ async function collectSubst() {
     }
     state.substShare = { fileId, link, sharedEmails: shared, openedAt: new Date().toISOString() };
     save(); render(); substShareModal();
-    let msg = (added ? `已收回 ${added} 筆教師填報，` : '無新填報，') + '已用最新課表更新共享檔' + (newShared ? `，補分享給 ${newShared} 位新教師` : '');
+    let msg = (added ? `已收回 ${added} 筆教師填報，` : '無新填報，') + '已用最新課表更新共享檔（含推送刪除）' + (removedExpired ? `，清除 ${removedExpired} 筆過期` : '') + (newShared ? `，補分享給 ${newShared} 位新教師` : '');
     if (failed.length) openModal({ title: '已收回並重新開放（部分分享失敗）', body: `<p style="margin-top:0">${esc(msg)}。以下分享失敗：</p><pre style="white-space:pre-wrap;word-break:break-all;background:#f4f4f5;padding:10px;border-radius:8px;font-size:12px">${esc(failed.join('\n'))}</pre>` });
     else toast(msg);
   } catch (e) {
@@ -2816,9 +2840,9 @@ function substShareModal() {
        <p style="margin:8px 0"><b>把這個代課填報連結給教師：</b><br><code style="user-select:all;word-break:break-all">${esc(url)}</code></p>
        <p style="color:var(--muted);margin:8px 0">教師用<b>自己的 Google 帳號（學校或 Gmail 皆可）</b>登入 → Picker 選這份代課檔 → 看全部代課、可<b>新增自己的</b>（不可刪改他人）。<b>新增了教師（或臨時代課老師）→ 在③教師補其 Email → 按下方「收回代課」即會補分享給新加入者。</b></p>
        <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
-         <button class="btn" data-action="collect-subst">📥 收回代課（合併＋重新開放）</button>
+         <button class="btn" data-action="collect-subst">📥 收回代課（合併＋更新線上）</button>
        </div>
-       <p class="hint" style="color:var(--muted);margin:8px 0 0">「收回代課」會：把教師新填的代課合併回來 → 用<b>目前最新課表</b>覆蓋共享檔（已收回的代課保留、課表更新也會同步給教師端）→ 補分享給新填 Email 的教師。</p>`
+       <p class="hint" style="color:var(--muted);margin:8px 0 0">「收回代課」會：把教師新填的代課合併回來 → 用<b>目前最新課表</b>覆蓋共享檔（已收回的代課保留、課表更新同步給教師端、<b>你刪除過的代課會一併從線上移除且不再合併回來</b>）→ <b>若有截止日已過的代課會先問你要不要清除</b> → 補分享給新填 Email 的教師。</p>`
     : `<p style="margin-top:0">在你的雲端硬碟建立一份「代課填報」共享檔（含目前課表快照），<b>逐位分享給有填 Email 的教師</b>（學校帳號或個人 Gmail 皆可）；教師用連結登入查看全部代課、<b>新增</b>自己的代課安排，你再「收回」合併回來。</p>
        <p style="color:var(--muted)">目前有 Email 的教師：<b>${withEmail.length}</b> 位。無校帳號的臨時代課老師，用個人 Gmail 也可以（在③教師填其 Gmail）。教師端<b>只能新增</b>、不能刪改他人；刪除代課仍只由你在此頁做。</p>
        <button class="btn" data-action="open-subst">☁️ 開放代課填報（分享給 ${withEmail.length} 位）</button>`;
@@ -3184,7 +3208,7 @@ function importJSON() {
       try {
         const data = JSON.parse(reader.result);
         if (!data || data.schema !== SCHEMA) throw new Error('版本不符（需 schema ' + SCHEMA + '）');
-        state = data; if (!state.slotTeachers || typeof state.slotTeachers !== 'object') state.slotTeachers = {}; if (!state.slotContent || typeof state.slotContent !== 'object') state.slotContent = {}; if (!Array.isArray(state.lockedCells)) state.lockedCells = []; if (!Array.isArray(state.selfCells)) state.selfCells = []; if (!state.selfBackup || typeof state.selfBackup !== 'object') state.selfBackup = {}; if (!state.selfDone || typeof state.selfDone !== 'object') state.selfDone = {}; if (typeof state.staffingOkSig !== 'string') state.staffingOkSig = ''; if (!Array.isArray(state.substitutions)) state.substitutions = []; normalizeAllSubst(); save(); closeModal(); selectedGradeId = null; render(); toast('已匯入備份');
+        state = data; if (!state.slotTeachers || typeof state.slotTeachers !== 'object') state.slotTeachers = {}; if (!state.slotContent || typeof state.slotContent !== 'object') state.slotContent = {}; if (!Array.isArray(state.lockedCells)) state.lockedCells = []; if (!Array.isArray(state.selfCells)) state.selfCells = []; if (!state.selfBackup || typeof state.selfBackup !== 'object') state.selfBackup = {}; if (!state.selfDone || typeof state.selfDone !== 'object') state.selfDone = {}; if (typeof state.staffingOkSig !== 'string') state.staffingOkSig = ''; if (!Array.isArray(state.substitutions)) state.substitutions = []; if (!Array.isArray(state.substDeleted)) state.substDeleted = []; normalizeAllSubst(); save(); closeModal(); selectedGradeId = null; render(); toast('已匯入備份');
       } catch (e) { toast('匯入失敗：' + e.message); }
     };
     reader.readAsText(file);
@@ -3490,6 +3514,7 @@ async function applyBackupObject(data) {
     if (typeof state.staffingOkSig !== 'string') state.staffingOkSig = '';
     if (!Array.isArray(state.domains)) state.domains = defaultDomains();
     if (!Array.isArray(state.substitutions)) state.substitutions = [];
+    if (!Array.isArray(state.substDeleted)) state.substDeleted = [];
     normalizeAllSubst();
     if (!state.settings.subjectMap || typeof state.settings.subjectMap !== 'object') state.settings.subjectMap = {};
     await idbSet(STATE_KEY, state);   // 直接寫 IDB，繞過 save() 的雲端 hook
@@ -4160,6 +4185,7 @@ async function init() {
   if (!state.selfDone || typeof state.selfDone !== 'object') state.selfDone = {};             // v09.00 導師自編完成
   if (typeof state.staffingOkSig !== 'string') state.staffingOkSig = '';                      // v09.01 配課檢查簽章
   if (!Array.isArray(state.substitutions)) state.substitutions = [];                          // v09.45 代課安排
+  if (!Array.isArray(state.substDeleted)) state.substDeleted = [];                            // v10.12 代課刪除墓碑
   normalizeAllSubst();                                                                        // v10.06 代課日期遷移（date→startDate/endDate）
   if (typeof state.domainsConfirmed !== 'boolean') state.domainsConfirmed = state.subjects.length > 0; // v09.20 領域→科目整合閘門（既有已建科目者視為已完成，不擋）
   state.subjects.forEach(s => { if (s.selfDesigned) delete s.selfDesigned; });                // v08.03 移除舊手動自編旗標
