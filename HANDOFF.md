@@ -3,12 +3,18 @@
 > 收工時 Claude 更新這裡；開工時 Claude 先讀這裡。跟程式碼一起 git 同步。
 
 ## 最後更新
-- 時間：2026-08-27 收工
+- 時間：2026-08-29 收工
 - 機器：（本次 session 的機器；Desktop\claude code）
-- 版本：**main = v10.00（已 push；GH Pages 部署中/待確認）**。schema 仍為 2、向下相容。
-- 狀態：全部本機（預覽 + DOM 量測）實測通過、無 console error、已 push main。
+- 版本：**main = v10.04（已上線）**。schema 仍為 2、向下相容。
+- 狀態：全部本機（預覽 + DOM 量測）實測通過、無 console error、已 push main、GH Pages 已部署 v10.04。
 
-## 本次區間做了什麼（v09.37 → v10.00）＝②版面調整 + 雲端修復 + 診斷 + 教室引導 + **代課新功能**
+## 本次區間做了什麼（v10.00 → v10.04）＝**線上代課填報**（比照 F③ 的共享協作）
+使用者需求：把「代課」頁像導師選課一樣**開放給其他教師新增代課**，介面不變、看得到全部、**權限僅新增、不可刪改他人**。
+- **v10.01 線上代課填報**：排課者代課頁「☁️ 線上代課填報」→ 開放 `openSubstShare`（建根目錄檔＝`substContextState()` 全課表快照＋substitutions，分享）/ 收回 `collectSubst`（**只增不覆蓋**本機）。教師 **`?subst` kiosk**（`substKiosk`/`substLinkMode`/`setSubstKiosk`）→ Picker 開檔 → `state=obj.state` 跑**既有代課 UI**（介面不變）。**只可新增**（`substEditableIds` 僅本 session 新建者可編、他人唯讀、kiosk 無🗑️）；`substSubmit` **append-only**（重讀最新只 upsert 自己那筆）；`save()` 於 `substKiosk` **early-return**（不汙染教師本機）；離開＝結束畫面不進系統。
+- **v10.02**：開放失敗改**持久視窗＋步驟標記**（不再一閃即逝）；`drivePutJson` 錯誤帶 HTTP status。
+- **v10.03→10.04 分享機制轉折（實機診斷）**：網域共享（type=domain）**對排課者用個人 Gmail 主持不成立**（回 `400 domain is invalid`）→ **改方案B＝逐位 email 分享**（`driveShare` type=user）：**主持帳號不拘、學校帳號＋個人 Gmail 收件皆可**、檔案進「與我共用」Picker 找得到。**教師 email 欄位開放給所有身分**（不再只級任）→無校帳號臨時代課老師填**個人 Gmail** 即可。已移除網域共享死碼。
+
+## 更早區間做了什麼（v09.37 → v10.00）＝②版面調整 + 雲端修復 + 診斷 + 教室引導 + **代課新功能**
 - **v09.37–41 ②年級與班級「科目節數」改版**：(37) 修 `.grade-cols` 第二張卡被 `.card+.card` margin 下移 14px→上緣對齊；(38) 已勾科目改**卡片化**多欄 `.subjh-cards`（每卡：科目 pill+節數 input+右上✕移除，`grade-subj-off` action），未勾科目收進「＋加開科目」`.offsubj-fold` 摺疊；(39–40) 卡片**下挖凹槽**視覺（inset 陰影漸深至 .34/9px/16px、白底輸入浮起對比）；(41) **卡片底色改用各科目色**（`--sc` 變數 + `color-mix` 混白淡色調漸層）。
 - **v09.42 雲端同步「🔍 診斷」只讀檢查**：列授權帳號 vs 本機記錄帳號、App 資料夾全部檔案(名/時間/大小)、原始 HTTP 錯誤、判讀。放在設定→雲端卡片。（`cloudDiagnose`）
 - **v09.43 雲端還原/備份修復（重要）**：真因＝`resolveMainFileId` 盲信 `cloudState.fileId` 快取；另一台重建主檔後本機 id 失效→備份 PATCH 死 id 失敗、還原下載 404 誤判「沒有備份」，備份時間停在某天。改為**一律以檔名重新解析並更新快取**，查無檔才清快取、列檔失敗才退回快取。使用者診斷證實：檔在(78KB,今天)、帳號一致、只是本機 id 失效。**另發現：課務與智慧記事本共用同一 OAuth client／appDataFolder（有 notebook-backup.json），因檔名不同不衝突，故意不改 client_id 以免 strand 現有備份。**
@@ -68,19 +74,20 @@
 </details>
 
 ## 下一步（可挑）
-- ~~F③ live 真機驗證~~ **✅ 已完成（2026-08-11，實際帳號往返無問題）**。
-- **ROADMAP G-Tier2**：全校總表+PNG（=D）、F③ 填課進度總覽（誰交/未交+一鍵全收）、④配課矩陣檢視。
+- **線上代課填報 live 真機驗證**（唯一待驗，我不能代做）：需 ≥2 帳號測「排課者開放（用個人 Gmail 主持也可）→ 教師 `?subst=1` 登入 Picker 開檔新增 → 送出 → 排課者收回」；含個人 Gmail 教師。
+- **ROADMAP G-Tier2**：全校總表+PNG（=D）、F③ 填課進度總覽、④配課矩陣檢視（**按 ROADMAP 註記部分已於 v09.12 完成**，續看 repo ROADMAP.md）。
 - **G-Tier3**：首頁儀表板、範例資料、自動排課局部重排、連堂進階 pattern、docx 領域合併 legend、久未備份提醒。
 
 ## 待決 / 卡住的問題
-- **（已清）受影響班級課表代課節「代課：」殘留**：實為舊 SW 快取，v10.00 部署+更新後只顯示代課教師名，使用者 2026-08-27 已確認解決。程式碼 app.js:2513。
-- **雲端同步修復待使用者實機驗證**：v09.43 已修 `resolveMainFileId`；請使用者在「卡在 8/13 的那台」更新到 v10 後，先「⬇️從雲端還原→最新」拉回 8/26 版，再「⬆️立即備份」確認時間前進到今天。🔍診斷按鈕可留著或日後移除。
-- **代課功能未寫「使用說明」**：已向使用者提過可補一段，尚未做；使用者未回覆要不要。
-- **（已清）F③ live 與雲端同步 live 真機往返**：2026-08-11 實際帳號驗證通過。
+- **線上代課填報 live OAuth/Drive/Picker/跨帳號往返尚未真機驗證**（本機非網路邏輯全測過：快照/收回合併/kiosk 隱藏 nav/他人唯讀/append-only 送出保留他人/離開安全/save 不汙染本機/per-email 同時分享校帳號+Gmail）。
+- **（已清）F³ live 與雲端同步 live**：2026-08-11 實機驗證通過；雲端修復（v09.43）使用者本 session 亦確認 OK。
+- **代課功能未寫「使用說明」**：使用者本 session 明確表示**暫不編寫、等他提出要求**。
+- **（已清）受影響班級課表代課節「代課：」殘留**：舊 SW 快取，v10.00 後已解決。
 
 ## 注意事項（給另一台的 Claude）
 - 開工先 sync-start、收工必 sync-end；不要兩台同時改同一個檔。
-- 版本 vNN.MM：`APP_VERSION`(app.js)＋sw `CACHE_NAME` 必須同步。小改直接 bump minor、大改先確認。現 **v10.00**。
+- 版本 vNN.MM：`APP_VERSION`(app.js)＋sw `CACHE_NAME` 必須同步。小改直接 bump minor、大改先確認。現 **v10.04**。
+- **線上分享（F③/代課）一律逐位 email 分享**（`driveShare` type=user）：學校帳號＋個人 Gmail 皆通用；**網域共享 type=domain 對個人 Gmail 主持不成立、勿用**。教師 email 欄位已開放給所有身分。代課 kiosk 關鍵：`substKiosk`(save early-return 不汙染本機)、`substEditableIds`(只可編自己新建)、`substSubmit`(append-only)、`substContextState`(快照)。
 - **UI 現況（v09.19–26）**：分頁 ①科目·②年級與班級·③教師·④排課·課表輸出·設定；科目/班級/教師皆卡片式；`data-tab` 鍵未變（render `case 'grades':case 'classes'`→`viewGradesClasses()`）。改 UI 前先看架構記憶的「v09.19–26 介面大改版」段。
 - **測試 app.js 後務必先清 SW 快取再 navigate**（否則跑舊碼）；量有 transition 的 CSS 前先關 transition（預覽窗凍結假象）。
 - **GH Pages 部署偶發逾時**（本輪 v09.03 卡約 3 小時）→ **推一個空 commit 重新觸發**即可，非程式問題。改版後可 curl `https://calvincat-ship-it.github.io/course-scheduler/app.js` 確認線上版本。
