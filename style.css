@@ -430,6 +430,7 @@ table.timetable td.cell.subst-cell-off { background: repeating-linear-gradient(4
 .subst-print-page + .subst-print-page { margin-top: 24px; }
 @media print {
   body.printing-subst #view { display: none !important; }
+  body.printing-subst .modal-backdrop { display: none !important; }   /* v10.15 列印代課時隱藏 modal，避免蓋過分頁 print-area */
   body.printing-subst .subst-print-area { display: block !important; }
   .subst-print-page { break-inside: avoid; }
   .subst-print-page + .subst-print-page { break-before: page; margin-top: 0; }

@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v10.14';
+const APP_VERSION = 'v10.15';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -2846,6 +2846,7 @@ function substSubMasterModal() {
 function substSubMasterPrint() {
   const ids = substituteTeacherIds();
   if (!ids.length) { toast('目前沒有任何已指派的代課'); return; }
+  closeModal();   // v10.15 先關 modal，否則列印時 modal(未被 printing-subst 隱藏)會蓋過分頁的 print-area
   const area = document.createElement('div'); area.className = 'subst-print-area';
   area.innerHTML = ids.map(id => `<div class="subst-print-page">${subTeacherMergedTimetableHTML(id)}</div>`).join('');
   document.body.appendChild(area); document.body.classList.add('printing-subst');
