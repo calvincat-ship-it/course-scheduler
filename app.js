@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v10.17';
+const APP_VERSION = 'v10.18';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -2909,22 +2909,39 @@ function subTeacherMergedTimetableHTML(subId) {
     const [classId, day, period] = key.split('|');
     (own[day + '|' + period] = own[day + '|' + period] || []).push({ classId, sid: state.slots[key] });
   }
-  const sub = {};   // day|period → [{classId,sid,absent,scope}]（跨所有紀錄；多週逐週）
+  // v10.18 連續同代課老師的週合併成一段日期（避免整學期代課逐週爆長）
+  const sub = {};   // day|period → [{classId,sid,absent,scope}]
+  let cnt = 0;      // 總代課節數（週×格 展開計）
   for (const rec of (state.substitutions || [])) {
-    const weeks = substWeeks(rec); const parts = weeks.length > 1 ? weeks.map(w => w.idx) : [null];
-    for (const wi of parts) {
-      const eff = effAssign(rec, wi); const wk = wi != null ? weeks[wi] : null;
-      const wdSet = wk ? weekWeekdays(wk) : substRangeWeekdays(rec);
-      const scope = wk ? `${wk.start}～${wk.end}` : fmtSubstScope(rec);
+    const weeks = substWeeks(rec); const absent = teacherName(rec.absentTeacherId);
+    if (weeks.length <= 1) {
+      const eff = effAssign(rec, null);
       for (const key in eff) {
-        if (eff[key] !== subId) continue;
+        if (eff[key] !== subId || !substCellInScope(rec, key)) continue;
         const [classId, day, period] = key.split('|');
-        if ((wdSet && !wdSet.has(Number(day))) || !substPeriodOnLeave(rec, period)) continue;
-        (sub[day + '|' + period] = sub[day + '|' + period] || []).push({ classId, sid: state.slots[key], absent: teacherName(rec.absentTeacherId), scope });
+        (sub[day + '|' + period] = sub[day + '|' + period] || []).push({ classId, sid: state.slots[key], absent, scope: fmtSubstScope(rec) }); cnt++;
+      }
+    } else {
+      // 候選格＝底指派 + 分週覆蓋的 key（去 W 前綴）
+      const keys = new Set(Object.keys(rec.assignments || {}));
+      for (const k in (rec.weekOverrides || {})) keys.add(k.split('|').slice(1).join('|'));
+      for (const key of keys) {
+        const [classId, day, period] = key.split('|');
+        if (!substPeriodOnLeave(rec, period)) continue;
+        const applies = weeks.filter(w => weekWeekdays(w).has(Number(day)) && substEffectiveSub(rec, w.idx, key) === subId).map(w => w.idx);
+        if (!applies.length) continue;
+        cnt += applies.length;
+        // 連續週 index 併成 run
+        const runs = []; let run = [applies[0]];
+        for (let i = 1; i < applies.length; i++) { if (applies[i] === applies[i - 1] + 1) run.push(applies[i]); else { runs.push(run); run = [applies[i]]; } }
+        runs.push(run);
+        for (const r of runs) {
+          const scope = `${weeks[r[0]].start}～${weeks[r[r.length - 1]].end}`;
+          (sub[day + '|' + period] = sub[day + '|' + period] || []).push({ classId, sid: state.slots[key], absent, scope });
+        }
       }
     }
   }
-  const cnt = Object.values(sub).reduce((n, a) => n + a.length, 0);
   let html = `<div style="text-align:center;font-weight:700;font-size:16px;margin-bottom:8px">${esc(t.name)} 代課合併總表<span style="font-weight:400;font-size:13px;color:#64748b">（代課 ${cnt} 節）</span></div>`;
   html += `<table class="timetable"><thead><tr><th class="period-th">節次</th>${days.map(d => `<th>${DAY_LABELS[d]}</th>`).join('')}</tr></thead><tbody>`;
   for (const p of state.settings.periods) {
