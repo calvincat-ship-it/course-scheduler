@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v10.07';
+const APP_VERSION = 'v10.08';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -2709,20 +2709,55 @@ async function openSubstShare() {
     openModal({ title: '開放失敗', body: `<p style="margin-top:0">在步驟「<b>${esc(step)}</b>」發生錯誤：</p><pre style="white-space:pre-wrap;word-break:break-all;background:#f4f4f5;padding:10px;border-radius:8px;font-size:12px">${esc((e && e.message) || String(e))}</pre><p style="color:var(--muted);font-size:12px">請把這段訊息回報，以便對症。</p>` });
   }
 }
-// 排課者：收回（把教師新增的代課合併回本機，只增不覆蓋）
+// 排課者：收回（把教師新增的代課合併回本機，只增不覆蓋）→ 接著重新開放：
+//   用目前課表快照「覆蓋」共享檔（已收回的代課含在快照裡故保留）＋補分享給新填 Email 的教師。
+// v10.08：收回與重新開放合一。先收回可確保覆蓋前教師填報都已進本機，覆蓋不會遺失。
 async function collectSubst() {
-  if (!state.substShare) { toast('尚未開放代課填報'); return; }
+  if (!state.substShare) { return openSubstShare(); }   // 尚未開放 → 直接開放
+  normalizeAllSubst();
+  const withEmail = state.teachers.filter(t => t.email && /@/.test(t.email));
+  let step = '連線 Google';
   try {
-    toast('讀取代課填報…'); await getFillToken('');
-    const obj = JSON.parse(await fillDownloadText(state.substShare.fileId));
-    const incoming = (obj.state && Array.isArray(obj.state.substitutions)) ? obj.state.substitutions : [];
-    const localIds = new Set((state.substitutions || []).map(r => r.id));
+    toast('連線 Google…'); await getFillToken('');
+    // 1) 收回合併（只增不覆蓋本機既有）
+    step = '讀取教師填報';
     let added = 0;
-    incoming.forEach(r => { if (r && r.id && !localIds.has(r.id)) { state.substitutions.push(r); added++; } });
-    normalizeAllSubst();
+    try {
+      const obj = JSON.parse(await fillDownloadText(state.substShare.fileId));
+      const incoming = (obj.state && Array.isArray(obj.state.substitutions)) ? obj.state.substitutions : [];
+      const localIds = new Set((state.substitutions || []).map(r => r.id));
+      incoming.forEach(r => { if (r && r.id && !localIds.has(r.id)) { state.substitutions.push(r); added++; } });
+      normalizeAllSubst();
+    } catch (e) { /* 舊檔讀不到(可能被刪)→視為無新填報，下面改建新檔 */ }
+    // 2) 用最新快照覆蓋共享檔（保留已收回的代課；同時把課表更新推給教師端）
+    step = '更新共享檔快照';
+    const year = String(state.settings.reportYear || '');
+    const payload = { fmt: SUBST_FMT, ver: 1, openedAt: new Date().toISOString(), state: substContextState() };
+    let fileId = state.substShare.fileId, link = state.substShare.link || '';
+    try {
+      const f = await drivePutJson('', null, JSON.stringify(payload), fileId);   // PATCH 覆蓋既有檔
+      fileId = f.id; link = f.webViewLink || link;
+    } catch (e) {
+      const f = await drivePutJson(`代課填報-${state.settings.schoolCode || 'msd9'}${year}.json`, null, JSON.stringify(payload));   // 舊檔失效→建新檔
+      fileId = f.id; link = f.webViewLink || '';
+    }
+    // 3) 補分享給尚未分享過的 Email（新加入的教師/臨時代課老師）
+    const already = new Set(state.substShare.sharedEmails || []);
+    const shared = [...already], failed = []; let newShared = 0;
+    for (const t of withEmail) {
+      if (already.has(t.email)) continue;
+      step = `分享給 ${t.email}`;
+      try { await driveShare(fileId, t.email); shared.push(t.email); newShared++; }
+      catch (e) { failed.push(t.email + '（' + ((e && e.message) || '失敗').slice(0, 60) + '）'); }
+    }
+    state.substShare = { fileId, link, sharedEmails: shared, openedAt: new Date().toISOString() };
     save(); render(); substShareModal();
-    toast(added ? `已收回，新增 ${added} 筆教師填報的代課` : '已收回，無新的教師填報');
-  } catch (e) { toast('收回失敗：' + e.message); }
+    let msg = (added ? `已收回 ${added} 筆教師填報，` : '無新填報，') + '已用最新課表更新共享檔' + (newShared ? `，補分享給 ${newShared} 位新教師` : '');
+    if (failed.length) openModal({ title: '已收回並重新開放（部分分享失敗）', body: `<p style="margin-top:0">${esc(msg)}。以下分享失敗：</p><pre style="white-space:pre-wrap;word-break:break-all;background:#f4f4f5;padding:10px;border-radius:8px;font-size:12px">${esc(failed.join('\n'))}</pre>` });
+    else toast(msg);
+  } catch (e) {
+    openModal({ title: '收回／重新開放失敗', body: `<p style="margin-top:0">在步驟「<b>${esc(step)}</b>」發生錯誤：</p><pre style="white-space:pre-wrap;word-break:break-all;background:#f4f4f5;padding:10px;border-radius:8px;font-size:12px">${esc((e && e.message) || String(e))}</pre>` });
+  }
 }
 function substShareModal() {
   const ss = state.substShare;
@@ -2732,11 +2767,11 @@ function substShareModal() {
   const body = ss
     ? `<div class="total-badge ok">已開放 · 已分享給 ${shareCount} 位教師</div>
        <p style="margin:8px 0"><b>把這個代課填報連結給教師：</b><br><code style="user-select:all;word-break:break-all">${esc(url)}</code></p>
-       <p style="color:var(--muted);margin:8px 0">教師用<b>自己的 Google 帳號（學校或 Gmail 皆可）</b>登入 → Picker 選這份代課檔 → 看全部代課、可<b>新增自己的</b>（不可刪改他人）。<b>新增了教師（或臨時代課老師）→ 在③教師補其 Email → 按「重新開放」即會分享給新加入者。</b></p>
+       <p style="color:var(--muted);margin:8px 0">教師用<b>自己的 Google 帳號（學校或 Gmail 皆可）</b>登入 → Picker 選這份代課檔 → 看全部代課、可<b>新增自己的</b>（不可刪改他人）。<b>新增了教師（或臨時代課老師）→ 在③教師補其 Email → 按下方「收回代課」即會補分享給新加入者。</b></p>
        <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
-         <button class="btn" data-action="collect-subst">📥 收回代課（合併）</button>
-         <button class="ghost" data-action="reopen-subst">♻️ 重新開放（更新快照＋補分享）</button>
-       </div>`
+         <button class="btn" data-action="collect-subst">📥 收回代課（合併＋重新開放）</button>
+       </div>
+       <p class="hint" style="color:var(--muted);margin:8px 0 0">「收回代課」會：把教師新填的代課合併回來 → 用<b>目前最新課表</b>覆蓋共享檔（已收回的代課保留、課表更新也會同步給教師端）→ 補分享給新填 Email 的教師。</p>`
     : `<p style="margin-top:0">在你的雲端硬碟建立一份「代課填報」共享檔（含目前課表快照），<b>逐位分享給有填 Email 的教師</b>（學校帳號或個人 Gmail 皆可）；教師用連結登入查看全部代課、<b>新增</b>自己的代課安排，你再「收回」合併回來。</p>
        <p style="color:var(--muted)">目前有 Email 的教師：<b>${withEmail.length}</b> 位。無校帳號的臨時代課老師，用個人 Gmail 也可以（在③教師填其 Gmail）。教師端<b>只能新增</b>、不能刪改他人；刪除代課仍只由你在此頁做。</p>
        <button class="btn" data-action="open-subst">☁️ 開放代課填報（分享給 ${withEmail.length} 位）</button>`;
@@ -3931,8 +3966,7 @@ const clickHandlers = {
   // v10.01 線上代課填報
   'subst-share-manage': () => substShareModal(),
   'open-subst': () => openSubstShare(),
-  'reopen-subst': () => confirmDelete('重新開放會用目前課表快照覆蓋共享檔（教師已送出、且你已「收回」的代課會保留；未收回的教師填報請先收回再重開），並補分享給新填 Email 的教師。確定？', () => openSubstShare()),
-  'collect-subst': () => collectSubst(),
+  'collect-subst': () => collectSubst(),   // v10.08 收回＝合併＋重新開放（覆蓋快照＋補分享）
   'subst-login': () => substKioskStart(),
   'subst-submit': el => substSubmit(substById(el.dataset.id)),
   'subst-kiosk-exit': () => { substEnded = true; render(); try { window.close(); } catch (e) {} },
