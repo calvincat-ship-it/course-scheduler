@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v10.08';
+const APP_VERSION = 'v10.09';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -2402,6 +2402,26 @@ function absentCells(rec) {
   for (const key in state.slots) if (slotAssignments(key).some(a => a.teacherId === rec.absentTeacherId)) keys.push(key);
   return keys;
 }
+// v10.09 代課日期區間實際涵蓋的星期幾(1..5)；缺日期→null＝不限制(舊行為)。
+// 只有落在這些星期幾的課才是「代課日」，其餘星期鎖定不可指派。
+function substRangeWeekdays(rec) {
+  if (!rec || !rec.startDate || !rec.endDate) return null;
+  const start = new Date(rec.startDate + 'T00:00:00'), end = new Date(rec.endDate + 'T00:00:00');
+  if (isNaN(start.getTime()) || isNaN(end.getTime()) || start > end) return null;
+  const span = Math.round((end - start) / 86400000);
+  const set = new Set();
+  for (let i = 0; i <= span && set.size < 5; i++) {
+    const wd = new Date(start.getTime() + i * 86400000).getDay();
+    if (wd >= 1 && wd <= 5) set.add(wd);   // getDay:1=一..5=五
+  }
+  return set;
+}
+// 被代課者「在代課日期內」有課的格（用於計「共 N 節」）
+function absentCellsInRange(rec) {
+  const wd = substRangeWeekdays(rec);
+  const keys = absentCells(rec);
+  return wd ? keys.filter(k => wd.has(Number(k.split('|')[1]))) : keys;
+}
 
 function viewSubst() {
   if (state.teachers.length === 0)
@@ -2421,8 +2441,9 @@ function substList() {
   if (!(state.substitutions || []).length) return head + emptyCard('尚無代課記錄', '點右上「＋ 新增代課」建立第一筆。');
   const rows = state.substitutions.slice().sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || '')).map(r => {
     const t = teacherById(r.absentTeacherId);
-    const total = t ? absentCells(r).length : 0;
-    const done = Object.keys(r.assignments || {}).filter(k => r.assignments[k]).length;
+    const wd = substRangeWeekdays(r);   // v10.09 只計代課日期涵蓋的星期幾
+    const total = t ? absentCellsInRange(r).length : 0;
+    const done = Object.keys(r.assignments || {}).filter(k => r.assignments[k] && (!wd || wd.has(Number(k.split('|')[1])))).length;
     const mine = substKiosk && substEditableIds.has(r.id);
     const by = r.createdByName ? `<span class="subst-item-meta">填報：${esc(r.createdByName)}</span>` : '';
     const delBtn = substKiosk ? '' : `<button class="icon-btn subst-item-del" data-action="subst-del" data-id="${r.id}" title="刪除此代課記錄">🗑️</button>`;
@@ -2442,8 +2463,9 @@ function substList() {
 
 function substEditor(rec) {
   const t = teacherById(rec.absentTeacherId);
-  const total = absentCells(rec).length;
-  const done = Object.keys(rec.assignments || {}).filter(k => rec.assignments[k]).length;
+  const wd = substRangeWeekdays(rec);   // v10.09 只計代課日期涵蓋的星期幾
+  const total = absentCellsInRange(rec).length;
+  const done = Object.keys(rec.assignments || {}).filter(k => rec.assignments[k] && (!wd || wd.has(Number(k.split('|')[1])))).length;
   const editable = !substKiosk || substEditableIds.has(rec.id);   // 完整 App 皆可編；kiosk 僅本 session 新建、未送出者
   const btns = substKiosk
     ? `<button class="ghost" data-action="subst-back">← 返回</button>${editable ? `<button class="btn" data-action="subst-submit" data-id="${rec.id}">💾 送出到雲端</button>` : ''}`
@@ -2462,6 +2484,7 @@ function substEditor(rec) {
 function substTimetableHTML(rec, interactive) {
   const days = activeDays();
   const t = teacherById(rec.absentTeacherId);
+  const wdSet = substRangeWeekdays(rec);   // v10.09 只有代課日期涵蓋的星期幾可指派，其他鎖定
   const map = {};
   for (const key in state.slots) {
     if (!slotAssignments(key).some(a => a.teacherId === rec.absentTeacherId)) continue;
@@ -2469,23 +2492,28 @@ function substTimetableHTML(rec, interactive) {
     (map[day + '|' + period] = map[day + '|' + period] || []).push({ classId, sid: state.slots[key], key });
   }
   let html = `<div class="print-only" style="text-align:center;font-weight:700;font-size:16px;margin-bottom:8px">${esc(t.name)} 代課課表${fmtSubstRange(rec) ? '　' + esc(fmtSubstRange(rec)) : ''}</div>`;
-  html += `<table class="timetable"><thead><tr><th class="period-th">節次</th>${days.map(d => `<th>${DAY_LABELS[d]}</th>`).join('')}</tr></thead><tbody>`;
+  html += `<table class="timetable"><thead><tr><th class="period-th">節次</th>${days.map(d => { const open = !wdSet || wdSet.has(d); return `<th${open ? '' : ' class="subst-day-off"'}>${DAY_LABELS[d]}${open ? '' : ' 🔒'}</th>`; }).join('')}</tr></thead><tbody>`;
   for (const p of state.settings.periods) {
     if (p.isBreak) { html += `<tr class="break-row"><td colspan="${days.length + 1}">${esc(p.label)}</td></tr>`; continue; }
     html += `<tr><td class="period-th">${esc(p.label)}<small>${esc(p.start)}–${esc(p.end)}</small></td>`;
     for (const d of days) {
+      const dayOpen = !wdSet || wdSet.has(d);
       const hits = map[d + '|' + p.id];
-      if (!hits || !hits.length) { html += `<td class="cell"></td>`; continue; }
+      if (!hits || !hits.length) { html += `<td class="cell${dayOpen ? '' : ' subst-cell-off'}"></td>`; continue; }
       const chips = hits.map(h => {
         const s = subjectById(h.sid); const color = s ? s.color : '#94a3b8';
         const subId = rec.assignments[h.key];
-        const act = interactive ? `data-action="subst-cell" data-id="${rec.id}" data-key="${esc(h.key)}" data-day="${d}" data-period="${esc(p.id)}"` : '';
-        return `<div class="subst-offer ${subId ? 'assigned' : 'need'}" ${act} style="background:${color};color:${subjTextColor(s, color)}">
+        const act = (interactive && dayOpen) ? `data-action="subst-cell" data-id="${rec.id}" data-key="${esc(h.key)}" data-day="${d}" data-period="${esc(p.id)}"` : '';
+        const lockStyle = dayOpen ? '' : 'opacity:.4;filter:grayscale(.55);cursor:not-allowed;';
+        const tail = subId
+          ? `<span class="subst-sub">代課：${esc(teacherName(subId))}</span>`
+          : (dayOpen ? `<span class="subst-need-tag no-print">＋ 指派代課</span>` : `<span class="subst-need-tag no-print">🔒 非代課日</span>`);
+        return `<div class="subst-offer ${subId ? 'assigned' : (dayOpen ? 'need' : 'off')}" ${act} style="background:${color};color:${subjTextColor(s, color)};${lockStyle}">
           <b>${esc((classById(h.classId) || {}).name || '')}</b><small>${esc(subjectName(h.sid))}</small>
-          ${subId ? `<span class="subst-sub">代課：${esc(teacherName(subId))}</span>` : `<span class="subst-need-tag no-print">＋ 指派代課</span>`}
+          ${tail}
         </div>`;
       }).join('');
-      html += `<td class="cell">${chips}</td>`;
+      html += `<td class="cell${dayOpen ? '' : ' subst-cell-off'}">${chips}</td>`;
     }
     html += `</tr>`;
   }

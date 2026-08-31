@@ -420,6 +420,11 @@ table.avail td.slot.on { background: #dcfce7; color: var(--ok); font-weight: 700
 .subst-offer:hover { filter: brightness(1.06); }
 .subst-offer .subst-sub { margin-top: 3px; align-self: flex-start; font-size: 11px; font-weight: 800; background: rgba(255, 255, 255, .9); color: #0f172a; border-radius: 6px; padding: 1px 6px; }
 .subst-offer .subst-need-tag { margin-top: 3px; align-self: flex-start; font-size: 11px; font-weight: 700; background: rgba(15, 23, 42, .28); border-radius: 6px; padding: 1px 6px; }
+/* v10.09 非代課日（日期區間未涵蓋的星期）：整欄鎖定、變灰、不可點 */
+table.timetable th.subst-day-off { opacity: .5; background: repeating-linear-gradient(45deg, rgba(148,163,184,.12), rgba(148,163,184,.12) 6px, transparent 6px, transparent 12px); }
+table.timetable td.cell.subst-cell-off { background: repeating-linear-gradient(45deg, rgba(148,163,184,.10), rgba(148,163,184,.10) 6px, transparent 6px, transparent 12px); }
+.subst-offer.off { cursor: not-allowed; }
+.subst-offer.off:hover { filter: grayscale(.55) brightness(1); }
 /* 代課列印：畫面隱藏，列印時取代 #view，內含被代課者＋各代課者課表，逐張換頁 */
 .subst-print-area { display: none; }
 .subst-print-page + .subst-print-page { margin-top: 24px; }
