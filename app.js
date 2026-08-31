@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v10.10';
+const APP_VERSION = 'v10.11';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -470,7 +470,8 @@ async function getFillToken(promptMode = '') {
 }
 async function fillFetch(url, opts) {
   let token = await getFillToken('');
-  const build = (t) => ({ ...opts, headers: { ...(opts && opts.headers), Authorization: 'Bearer ' + t } });
+  // v10.10 一律 no-store：避免讀共享代課檔讀到瀏覽器快取的舊版，導致多次填報互相覆蓋。
+  const build = (t) => ({ cache: 'no-store', ...opts, headers: { ...(opts && opts.headers), Authorization: 'Bearer ' + t } });
   let res = await fetch(url, build(token));
   if (res.status === 401) { fillToken = null; token = await getFillToken(''); res = await fetch(url, build(token)); }
   return res;
@@ -2438,7 +2439,7 @@ function substList() {
   const addLabel = substKiosk ? '＋ 新增我的代課' : '＋ 新增代課';
   const head = `<div class="page-head"><h2>🔄 ${substKiosk ? '我的代課' : '代課'}</h2><div style="display:flex;gap:8px">${shareBtn}<button class="btn" data-action="subst-add">${addLabel}</button></div></div>
     <div class="hint" style="margin-bottom:12px;color:var(--muted)">${substKiosk
-      ? `以下是<b>你（${esc(teacherName(substMyTeacherId) || substMyName)}）</b>的代課安排。按「＋ 新增我的代課」設定請假日期，即可調出<b>你自己的課表</b>為當週有課的格子指派代課老師，最後送出到雲端。`
+      ? `以下是<b>你（${esc(teacherName(substMyTeacherId) || substMyName)}）</b>的代課安排。按「＋ 新增我的代課」設定請假日期，即可調出<b>你自己的課表</b>為當週有課的格子指派代課老師，最後送出到雲端。<b>不同日期的請假請各按一次「＋ 新增我的代課」，會各自成一筆</b>；點既有的一筆是「編輯／重送」那一筆。`
       : '選一位<b>被代課（請假）教師</b>，調出其課表，點<b>有課的格子</b>指派當節<b>空堂</b>的代課教師，最後列印／存 PDF。記錄會保存、可多筆。'}</div>`;
   let list = state.substitutions || [];
   if (substKiosk) list = list.filter(r => r.absentTeacherId === substMyTeacherId);   // v10.10 教師端只看自己的代課
@@ -2846,12 +2847,12 @@ async function substKioskStart() {
     if (me) {
       // 自己先前送出過的紀錄→可續編、可重送
       state.substitutions.forEach(r => { if (r && (r.createdByEmail || '').trim().toLowerCase() === em) substEditableIds.add(r.id); });
-      // 有自己的紀錄→直接開啟本人課表；沒有→顯示自己的清單（含「新增我的代課」）
-      const mine = state.substitutions.filter(r => r.absentTeacherId === me.id && substEditableIds.has(r.id))
-        .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
-      substOpenId = mine.length ? mine[0].id : null;
     }
+    // v10.10 一律先顯示「我的代課」清單，不自動開啟某一筆——不同日期的請假各自成一筆，
+    // 避免在既有那筆上改日期重送而覆蓋（原 auto-open 造成「只保留一筆」）。
+    substOpenId = null;
     render();
+    if (me && !state.substitutions.some(r => r.absentTeacherId === me.id)) substAddModal();   // 首次無紀錄→引導設定請假日期
   } catch (e) { toast('開啟失敗：' + e.message); }
 }
 // 教師 kiosk：送出「自己新增的」一筆到雲端（重讀最新、只 upsert 自己這筆，不動他人）
