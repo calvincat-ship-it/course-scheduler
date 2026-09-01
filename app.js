@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v12.02';
+const APP_VERSION = 'v12.03';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -2199,6 +2199,59 @@ function autoScheduleModal() {
     },
   });
 }
+// 診斷某(班,科[,師])為何排不下：掃描所有「排課限制允許的格」，逐格找出第一個阻擋原因並統計，回一句可行動的說明。
+// 阻擋原因優先序＝先報「硬阻礙」（教師不排課、教師單日上限、同科間隔限制——清空該格也沒用），再報「軟阻礙」（占用/衝堂——可手動挪課）。
+function unplacedReason(spec) {
+  const { classId, sid, teacherId } = spec;
+  const s = subjectById(sid); const c = classById(classId); const g = classGrade(c);
+  if (!s) return '';
+  if (!g) return '班級未設定年級';
+  let loads = loadsForClassSubject(classId, sid);
+  if (teacherId) loads = loads.filter(x => x.teacher.id === teacherId);
+  if (!loads.length) return '尚未配課（此科在本班無授課老師）';
+  const DOW = ['', '週一', '週二', '週三', '週四', '週五', '週六', '週日'];
+  const allowed = [];
+  for (const d of activeDays()) {
+    if ((s.lockDays || []).length && !s.lockDays.includes(d)) continue;
+    for (const p of lessonPeriods()) {
+      if ((s.lockPeriods || []).length && !s.lockPeriods.includes(p.id)) continue;
+      if (gradePeriodHasDay(g, p.id, d)) allowed.push({ d, p: p.id });
+    }
+  }
+  if (!allowed.length) return '排課限制（指定上課日/節次）與該年級課表無交集，沒有任何可用格→請放寬此科的日/節限制';
+  const b = { unavail: 0, cap: 0, gap: 0, occupied: 0, tclash: 0, rclash: 0, free: 0 };
+  let capName = '', capDay = 0, capN = 0, unavailName = '';
+  for (const { d, p } of allowed) {
+    const un = loads.find(L => (teacherById(L.teacher.id).unavailable || []).includes(d + '|' + p));
+    if (un) { b.unavail++; unavailName = un.teacher.name; continue; }
+    let capT = null;
+    if (!s.excludeDailyCap) { for (const L of loads) { const cap = teacherDailyCap(L.teacher.id); if (cap > 0 && teacherDayLoad(L.teacher.id, d) + 1 > cap) { capT = { name: L.teacher.name, day: d, cap }; break; } } }
+    if (capT) { b.cap++; capName = capT.name; capDay = capT.day; capN = capT.cap; continue; }
+    let gapBad = false;
+    if (!s.consecutive && (s.gapDays || s.distinctDays)) { for (const k in state.slots) { if (state.slots[k] !== sid) continue; const kp = k.split('|'); if (kp[0] !== classId) continue; const ud = parseInt(kp[1], 10); if (s.gapDays ? Math.abs(ud - d) < 2 : ud === d) { gapBad = true; break; } } }
+    if (gapBad) { b.gap++; continue; }
+    if (state.slots[slotKey(classId, d, p)]) { b.occupied++; continue; }
+    const ex = assignmentsAtDP(d, p, slotKey(classId, d, p)); let tcl = false, rcl = false;
+    for (const e of ex) for (const L of loads) { const co = e.subjectId === sid && e.classId !== classId && classesCoteachTogether(e.classId, classId, sid); if (L.teacher.id === e.teacherId && !co) tcl = true; if (L.roomId && L.roomId === e.roomId && !(e.classId === classId && e.subjectId === sid) && !co) rcl = true; }
+    if (tcl) { b.tclash++; continue; }
+    if (rcl) { b.rclash++; continue; }
+    b.free++;
+  }
+  const N = allowed.length;
+  // 硬阻礙佔滿所有可用格 → 直接點名
+  if (b.cap > 0 && b.cap + b.unavail + b.gap >= N && b.cap >= b.gap) return `教師單日上限：${capName} 於${DOW[capDay]}已達單日上限（${capN} 節），此科又限定該日/節無法改天，故排不下→提高該師「單日上限」、放寬本科鎖定天、或改由其他老師分攤`;
+  if (b.unavail >= N) return `教師不排課時段擋住所有可用格（${unavailName}）→請檢查該師的「不排課時段」設定`;
+  if (b.gap > 0 && b.gap + b.occupied + b.tclash + b.rclash + b.cap >= N && b.free === 0 && b.gap >= Math.max(b.occupied, b.tclash, b.rclash)) return `同科間隔限制：此科設了「不同天／隔天」，可用的天都已排過→放寬此科的分散設定`;
+  const parts = [];
+  if (b.occupied) parts.push(`${b.occupied} 格已排其他課`);
+  if (b.tclash) parts.push(`${b.tclash} 格老師在他班上課`);
+  if (b.rclash) parts.push(`${b.rclash} 格教室被占用`);
+  if (b.cap) parts.push(`${b.cap} 格達教師單日上限`);
+  if (b.unavail) parts.push(`${b.unavail} 格教師不排課`);
+  if (b.gap) parts.push(`${b.gap} 格受間隔限制`);
+  if (!parts.length) return `可用格 ${N}，但求解未填入（可再按一次「只補空格」）`;
+  return `可用格共 ${N}，皆被擋：` + parts.join('、') + '→可手動挪走占用課或放寬限制後再「只補空格」';
+}
 function autoResultModal(unplaced, r) {
   const total = Object.keys(state.slots).length;
   const conf = Object.keys(computeConflicts()).length;
@@ -2207,11 +2260,11 @@ function autoResultModal(unplaced, r) {
   if (unplaced.length) {
     const agg = {};
     unplaced.forEach(u => { const k = u.classId + '|' + u.sid + '|' + (u.teacherId || ''); agg[k] = agg[k] || { u, n: 0 }; agg[k].n++; });
-    body += `<p style="color:var(--danger);font-weight:700;margin:12px 0 4px">排不下的課（無合法空格：可能受科目日/節限制、教師不排課、或衝堂擠壓）：</p>
-      <table class="data"><thead><tr><th>班級</th><th>科目</th><th>老師</th><th>缺幾節</th></tr></thead><tbody>
-      ${Object.values(agg).map(({ u, n }) => `<tr><td>${esc((classById(u.classId) || {}).name || '')}</td><td>${esc(subjectName(u.sid))}</td><td>${u.teacherId ? esc(teacherName(u.teacherId)) : '<span style="color:var(--muted)">—</span>'}</td><td style="font-weight:700">${n}</td></tr>`).join('')}
+    body += `<p style="color:var(--danger);font-weight:700;margin:12px 0 4px">排不下的課（下方「可能原因」逐項診斷，指出該調哪裡）：</p>
+      <table class="data"><thead><tr><th>班級</th><th>科目</th><th>老師</th><th>缺</th><th style="text-align:left">可能原因</th></tr></thead><tbody>
+      ${Object.values(agg).map(({ u, n }) => `<tr><td>${esc((classById(u.classId) || {}).name || '')}</td><td>${esc(subjectName(u.sid))}</td><td>${u.teacherId ? esc(teacherName(u.teacherId)) : '<span style="color:var(--muted)">—</span>'}</td><td style="font-weight:700">${n}</td><td style="text-align:left;font-size:12px;line-height:1.5;white-space:normal">${esc(unplacedReason({ classId: u.classId, sid: u.sid, teacherId: u.teacherId || null }))}</td></tr>`).join('')}
       </tbody></table>
-      <p style="color:var(--muted);font-size:12px;margin-top:8px">建議：放寬該科的排課限制、調整教師不排課時段，或手動挪動相鄰課程騰出空間後，再按一次「只補空格」。</p>`;
+      <p style="color:var(--muted);font-size:12px;margin-top:8px">「可能原因」以最關鍵的阻礙為主：<b>硬阻礙</b>（教師單日上限／不排課／科目日節限制）需調設定；<b>軟阻礙</b>（格被占用／衝堂）可手動挪課後再按「只補空格」。</p>`;
   }
   openModal({ title: '自動排課結果', wide: true, body });
 }
