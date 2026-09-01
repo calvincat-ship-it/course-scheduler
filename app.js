@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v12.03';
+const APP_VERSION = 'v12.04';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -1944,6 +1944,20 @@ function unitPriorityRank(classId, sid, teacherId) {
   if (hr) { const tids = s.splitTeachers ? [teacherId] : loadsForClassSubject(classId, sid).map(x => x.teacher.id); if (tids.includes(hr.id)) return 5; }
   return 4;
 }
+// 分階段排課的「階段」分類（v12.04）：1＝硬性規定課（有 lockDays/lockPeriods，如母語）；3＝級任導師教「本班」的課（多為主科）；2＝其餘（科任＋級任教他班＋協同）。
+// 注意：與 unitPriorityRank 不同——主科雖有軟性偏好(rank 2)，但只要是級任教本班就屬階段 3（依使用者分階段心智模型）。
+function unitStage(classId, sid, teacherId) {
+  const s = subjectById(sid); if (!s) return 2;
+  if ((s.lockDays || []).length || (s.lockPeriods || []).length) return 1;
+  const hr = homeroomTeacher(classId);
+  if (hr) { const tids = s.splitTeachers ? [teacherId] : loadsForClassSubject(classId, sid).map(x => x.teacher.id); if (tids.includes(hr.id)) return 3; }
+  return 2;
+}
+function cellStage(key) {
+  const sid = state.slots[key]; const cId = key.split('|')[0]; const s = subjectById(sid);
+  const tid = s && s.splitTeachers ? (state.slotTeachers[key] || null) : null;
+  return unitStage(cId, sid, tid);
+}
 // 建置待排單元（每單元＝一節課）；協同科目只由一個 leader 班代表（placeSubject 會同步夥伴班）
 function buildAutoUnits() {
   const units = []; const seenCoteach = new Set();
@@ -2058,26 +2072,30 @@ function coteachFullyInScope(key, scopeSet) {
    保底：全程只接受「不變差」的解（placed 單調不減、同 placed 取較低罰分），永不回退。
    安全：LNS 有時間預算與迭代上限，不會無限凍住瀏覽器。
    ========================================================================== */
-// 目前 grid 下（scope 內）還差幾節未排 → 產生待排 units（沿用 buildAutoUnits 的 need＝應排−已排）
+// 分階段排課：增強階段（連鎖修復/LNS）也只處理「當前階段」的單元/格（null＝不限）
+let autoStage = null;
+// 目前 grid 下（scope 內、且屬當前階段）還差幾節未排 → 產生待排 units（沿用 buildAutoUnits 的 need＝應排−已排）
 function residualUnitsScoped(scopeSet) {
   let units = buildAutoUnits();
   if (scopeSet) units = units.filter(u => scopeSet.has(u.classId));
+  if (autoStage) units = units.filter(u => unitStage(u.classId, u.sid, u.teacherId) === autoStage);
   return units;
 }
 function residualCountScoped(scopeSet) { return residualUnitsScoped(scopeSet).reduce((n) => n + 1, 0); }
-// 隨機「毀壞」單純層 K 格（只動單純科，保連堂/協同/分節完整；scope 內）；回實際移除數
+// 隨機「毀壞」單純層 K 格（只動單純科，保連堂/協同/分節完整；scope 內、當前階段內、非硬鎖）；回實際移除數
 function ruinSimpleCells(scopeSet, k, rnd) {
   const keys = [];
-  for (const key in state.slots) { const cId = key.split('|')[0]; if (scopeSet && !scopeSet.has(cId)) continue; if (isSimpleSubject(state.slots[key], cId)) keys.push(key); }
+  for (const key in state.slots) { const cId = key.split('|')[0]; if (scopeSet && !scopeSet.has(cId)) continue; if (autoHardLocked && autoHardLocked.has(key)) continue; if (autoStage && cellStage(key) !== autoStage) continue; if (isSimpleSubject(state.slots[key], cId)) keys.push(key); }
   for (let i = keys.length - 1; i > 0; i--) { const j = (rnd() * (i + 1)) | 0; const t = keys[i]; keys[i] = keys[j]; keys[j] = t; }
   const rm = keys.slice(0, Math.min(k, keys.length));
   rm.forEach(key => { delete state.slots[key]; delete state.slotTeachers[key]; });
   return rm.length;
 }
-// 「重建」：把單純層的殘餘需求（含剛毀壞的）以貪婪＋隨機抖動重排入 grid（不動連堂/協同/分節）
+// 「重建」：把單純層的殘餘需求（含剛毀壞的）以貪婪＋隨機抖動重排入 grid（不動連堂/協同/分節；分階段時只重建當前階段）
 function recreateSimple(scopeSet, rnd) {
   let units = buildAutoUnits().filter(u => isSimpleSubject(u.sid, u.classId));
   if (scopeSet) units = units.filter(u => scopeSet.has(u.classId));
+  if (autoStage) units = units.filter(u => unitStage(u.classId, u.sid, u.teacherId) === autoStage);
   units.forEach(u => (u._r = rnd()));
   units.sort((a, b) => (a.rank - b.rank) || (a.loose - b.loose) || (a._r - b._r));
   greedyRun(units, rnd);
@@ -2124,10 +2142,23 @@ function finalChainRepair(scopeSet, maxDepth, deadline) {
 }
 // 隨機重啟求解：多趟貪婪，保留「排最多、其次罰分最低」的最佳解
 //  scope＝null → 全校（clearFirst 決定清空重排或只補空格）；scope＝班級id陣列 → 只重排這些班、其餘凍結
-function runAutoSchedule(clearFirst, scope) {
+function runAutoSchedule(clearFirst, scope, opts) {
+  opts = opts || {};
+  const stage = opts.stage || null;                            // 分階段模式：1硬限制/2科任/3級任本班
   const scopeSet = (scope && scope.length) ? new Set(scope) : null;
+  autoHardLocked = null; autoStage = stage;
   let baseSlots, baseST;
-  if (scopeSet) {
+  if (stage) {
+    // 分階段：凍結「別階段」與「範圍外」全部；只清「當前階段且在範圍內」的格重排。階段1的格對階段2/3一律硬鎖（不得被連鎖/LNS 搬動）。
+    baseSlots = {}; baseST = {}; const hard = new Set();
+    for (const k in state.slots) {
+      const cs = cellStage(k);
+      if (cs === 1 && stage !== 1) hard.add(k);
+      const inScope = !scopeSet || scopeSet.has(k.split('|')[0]);
+      if (cs !== stage || !inScope) { baseSlots[k] = state.slots[k]; if (state.slotTeachers[k]) baseST[k] = state.slotTeachers[k]; }
+    }
+    if (stage !== 1) autoHardLocked = hard;
+  } else if (scopeSet) {
     // 凍結範圍外全部；範圍內「可清的格」（非跨範圍協同）清掉重排
     baseSlots = {}; baseST = {};
     for (const k in state.slots) {
@@ -2135,6 +2166,7 @@ function runAutoSchedule(clearFirst, scope) {
       if (!clearable) { baseSlots[k] = state.slots[k]; if (state.slotTeachers[k]) baseST[k] = state.slotTeachers[k]; }
     }
   } else {
+    if (opts.hardLockStage1) autoHardLocked = new Set(Object.keys(state.slots).filter(k => cellStage(k) === 1));   // 補完階段：階段1仍硬鎖不動
     baseSlots = clearFirst ? {} : { ...state.slots };
     baseST = clearFirst ? {} : { ...state.slotTeachers };
   }
@@ -2144,6 +2176,7 @@ function runAutoSchedule(clearFirst, scope) {
     state.slots = { ...baseSlots }; state.slotTeachers = { ...baseST };
     let units = buildAutoUnits();
     if (scopeSet) units = units.filter(u => scopeSet.has(u.classId));   // 局部重排：只排範圍內班級的單元
+    if (stage) units = units.filter(u => unitStage(u.classId, u.sid, u.teacherId) === stage);   // 分階段：只排當前階段科目
     units.forEach(u => (u._r = rnd()));
     units.sort((a, b) => (a.rank - b.rank) || (a.loose - b.loose) || (b.consec - a.consec) || (a._r - b._r));
     const unplaced = greedyRun(units, rnd);
@@ -2164,6 +2197,7 @@ function runAutoSchedule(clearFirst, scope) {
     strong = strongSolveLNS(scopeSet, performance.now() + STRONG_BUDGET * 0.30, rnd2);
     stillUnplaced = finalChainRepair(scopeSet, 4, performance.now() + STRONG_BUDGET * 0.15);
   }
+  autoHardLocked = null; autoStage = null;   // 清除分階段狀態，避免影響後續互動式喬課
   save();
   return { unplaced: stillUnplaced, runs, ms: Math.round(performance.now() - t0), penalty: scoreSolution(), repaired: beforeRepair - stillUnplaced.length, beforeRepair, strong };
 }
@@ -2181,7 +2215,12 @@ function autoScheduleModal() {
         <label class="checkbox" style="display:block;margin:0 0 12px 22px"><input type="checkbox" id="autoClear" checked> 清空現有排課，全部重排（取消則只補空格、保留已排）</label>
         <label class="checkbox" style="display:block;margin-bottom:6px"><input type="radio" name="autoScope" value="classes"> <b>只重排指定班級</b>（其餘班級<b>凍結不動</b>；勾選的班級會先清空再重排）</label>
         <div style="margin-left:22px;display:flex;flex-wrap:wrap;gap:2px 0">${clsChecks || '<span style="color:var(--muted)">尚無班級</span>'}</div>
-      </div></div>`,
+      </div></div>
+      <div style="margin-top:10px;padding:10px 12px;border:1px dashed var(--line,#cbd5e1);border-radius:8px;background:var(--panel,#f8fafc)">
+        <div style="font-weight:700;margin-bottom:2px">🎚️ 想分階段排課？</div>
+        <div style="color:var(--muted);font-size:13px;margin-bottom:8px">先排硬性規定課（母語）並鎖定，再排科任課，最後排級任本班主科——逐步檢視、逐步鎖定。</div>
+        <button class="ghost" data-action="staged-schedule">改用分階段排課 →</button>
+      </div>`,
     saveLabel: '開始排課',
     onSave: () => {
       const mode = (document.querySelector('input[name="autoScope"]:checked') || {}).value;
@@ -2267,6 +2306,46 @@ function autoResultModal(unplaced, r) {
       <p style="color:var(--muted);font-size:12px;margin-top:8px">「可能原因」以最關鍵的阻礙為主：<b>硬阻礙</b>（教師單日上限／不排課／科目日節限制）需調設定；<b>軟阻礙</b>（格被占用／衝堂）可手動挪課後再按「只補空格」。</p>`;
   }
   openModal({ title: '自動排課結果', wide: true, body });
+}
+/* ---------- 分階段排課（v12.04）：①硬限制→②科任→③級任本班→④補完；階段1硬鎖、階段2軟鎖 ---------- */
+let stagedStatus = { 1: null, 2: null, 3: null, fin: null };
+let stagedLast = null;   // 最近執行的階段（診斷表只顯示這一次的結果）
+function stageLabel(s) { return s === 1 ? '① 排硬性規定課（母語等有排課限制）' : s === 2 ? '② 排科任課（含級任教其他班）' : s === 3 ? '③ 排級任本班課（多為主科）' : '④ 補完剩餘（單趟補空格，階段①仍鎖）'; }
+function stagedScheduleModal() {
+  if (state.lockFinalized) { toast('課表已鎖定，請先解除鎖定再排課'); return; }
+  const problems = checkStaffing();
+  if (problems.length) { toast('尚有配課問題，請先在「④ 教師」把各班每科節數配齊'); return; }
+  const counts = { 1: 0, 2: 0, 3: 0 };
+  for (const k in state.slots) counts[cellStage(k)]++;
+  const stat = s => { const r = stagedStatus[s]; if (!r) return '<span style="color:var(--muted)">尚未執行</span>'; return r.unplaced.length ? `<span style="color:var(--danger);font-weight:700">⚠ ${r.unplaced.length} 節排不下</span>` : `<span style="color:#10b981;font-weight:700">✓ 完成</span>`; };
+  let body = `<p style="margin-top:0">依你的流程逐階段排入，每階段排完可先看課表、手動微調，再排下一階段。<b>階段①硬鎖</b>（母語等定案後不再被動）、<b>階段②軟鎖</b>（排③時求解器可自動微調挪讓科任的單純課以騰出空間，母語不動）。</p>
+    <div class="card"><div class="card-body" style="display:flex;flex-direction:column;gap:12px">
+      ${[1, 2, 3].map(s => `<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <button class="btn" data-action="run-stage" data-stage="${s}" style="min-width:280px;text-align:left">${stageLabel(s)}</button>
+        <span>${stat(s)}</span></div>`).join('')}
+      <hr style="border:none;border-top:1px solid var(--line,#e5e7eb);margin:0">
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <button class="ghost" data-action="run-stage" data-stage="fin" style="min-width:280px;text-align:left">${stageLabel('fin')}</button>
+        <span>${stat('fin')}</span></div>
+    </div></div>
+    <p style="color:var(--muted);font-size:12px;margin-top:8px">目前已排：階段① <b>${counts[1]}</b> 節、階段② <b>${counts[2]}</b> 節、階段③ <b>${counts[3]}</b> 節。分階段較好逐步檢視控制，但填滿率可能略低於「一次排全部」；剩少數排不下時用「④補完剩餘」或手動處理即可。每個階段都可重按（會清掉該階段重排、其餘階段保留）。</p>`;
+  const lastFail = (stagedLast != null && stagedStatus[stagedLast] && stagedStatus[stagedLast].unplaced.length) ? stagedStatus[stagedLast] : null;
+  if (lastFail) {
+    const agg = {}; lastFail.unplaced.forEach(u => { const k = u.classId + '|' + u.sid + '|' + (u.teacherId || ''); agg[k] = agg[k] || { u, n: 0 }; agg[k].n++; });
+    body += `<p style="color:var(--danger);font-weight:700;margin:12px 0 4px">最近一次排不下的課（可能原因）：</p>
+      <table class="data"><thead><tr><th>班級</th><th>科目</th><th>缺</th><th style="text-align:left">可能原因</th></tr></thead><tbody>
+      ${Object.values(agg).map(({ u, n }) => `<tr><td>${esc((classById(u.classId) || {}).name || '')}</td><td>${esc(subjectName(u.sid))}</td><td style="font-weight:700">${n}</td><td style="text-align:left;font-size:12px;white-space:normal">${esc(unplacedReason({ classId: u.classId, sid: u.sid, teacherId: u.teacherId || null }))}</td></tr>`).join('')}
+      </tbody></table>`;
+  }
+  openModal({ title: '🎚️ 分階段排課', wide: true, body });
+}
+function runStage(stage) {
+  pushUndo();
+  const opts = stage === 'fin' ? { hardLockStage1: true } : { stage: +stage };
+  const r = runAutoSchedule(false, null, opts);
+  stagedStatus[stage] = { unplaced: r.unplaced, r }; stagedLast = stage;
+  render();
+  setTimeout(() => stagedScheduleModal(), 0);
 }
 
 /* ---------- 半自動排課建議（手排輔助）：空格建議 + 調課連鎖 ---------- */
@@ -2434,10 +2513,13 @@ function tryPlace(spec, depth, avoid, budget) {
 }
 // 局部重排時限制連鎖修復只可搬動「範圍內班級」的課（null＝不限，喬課/全校用）
 let autoRelocScope = null;
+// 分階段排課「硬鎖」格集合（null＝不限）：連鎖修復/局部搜尋一律不得搬動這些格（如階段1母語）
+let autoHardLocked = null;
 // 把某格的「單純占用課」搬到本班其他合法格（可再連鎖）。回 {moves, toKey} 或 null。mutating。
 function relocateOffering(key, depth, avoid, budget) {
   const sid = state.slots[key]; const cId = key.split('|')[0];
   if (!sid || !isSimpleSubject(sid, cId)) return null;
+  if (autoHardLocked && autoHardLocked.has(key)) return null;    // 硬鎖格不得搬動（分階段：階段1定案）
   if (autoRelocScope && !autoRelocScope.has(cId)) return null;   // 局部重排：不得搬動範圍外（凍結）的課
   const snap = snapshotGrid();
   delete state.slots[key]; delete state.slotTeachers[key];
@@ -4650,6 +4732,8 @@ const clickHandlers = {
   'move-period-down': el => movePeriod(el.dataset.pid, 1),
 
   'auto-schedule': () => autoScheduleModal(),
+  'staged-schedule': () => stagedScheduleModal(),
+  'run-stage': (el) => runStage(el.dataset.stage),
   'undo-schedule': () => doUndo(),
   'redo-schedule': () => doRedo(),
   'flex-overview': () => flexOverviewModal(),
