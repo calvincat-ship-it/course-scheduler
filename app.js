@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v12.01';
+const APP_VERSION = 'v12.02';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -2051,6 +2051,77 @@ function coteachFullyInScope(key, scopeSet) {
   const gid = c && c.coteach && c.coteach[sid]; if (!gid) return true;
   return state.classes.filter(x => x.coteach && x.coteach[sid] === gid).every(x => scopeSet.has(x.id));
 }
+/* ==========================================================================
+   更強求解（v12.02）＝連鎖修復（回溯）升級 + LNS 局部搜尋（ruin & recreate）
+   —— 隨機重啟貪婪之後仍排不下時啟動：先以既有遞迴連鎖核心把排不下者（含連堂對/協同）
+      塞入，再以「毀壞單純層 K 格→貪婪重建」的大鄰域搜尋逃離貪婪局部最佳。
+   保底：全程只接受「不變差」的解（placed 單調不減、同 placed 取較低罰分），永不回退。
+   安全：LNS 有時間預算與迭代上限，不會無限凍住瀏覽器。
+   ========================================================================== */
+// 目前 grid 下（scope 內）還差幾節未排 → 產生待排 units（沿用 buildAutoUnits 的 need＝應排−已排）
+function residualUnitsScoped(scopeSet) {
+  let units = buildAutoUnits();
+  if (scopeSet) units = units.filter(u => scopeSet.has(u.classId));
+  return units;
+}
+function residualCountScoped(scopeSet) { return residualUnitsScoped(scopeSet).reduce((n) => n + 1, 0); }
+// 隨機「毀壞」單純層 K 格（只動單純科，保連堂/協同/分節完整；scope 內）；回實際移除數
+function ruinSimpleCells(scopeSet, k, rnd) {
+  const keys = [];
+  for (const key in state.slots) { const cId = key.split('|')[0]; if (scopeSet && !scopeSet.has(cId)) continue; if (isSimpleSubject(state.slots[key], cId)) keys.push(key); }
+  for (let i = keys.length - 1; i > 0; i--) { const j = (rnd() * (i + 1)) | 0; const t = keys[i]; keys[i] = keys[j]; keys[j] = t; }
+  const rm = keys.slice(0, Math.min(k, keys.length));
+  rm.forEach(key => { delete state.slots[key]; delete state.slotTeachers[key]; });
+  return rm.length;
+}
+// 「重建」：把單純層的殘餘需求（含剛毀壞的）以貪婪＋隨機抖動重排入 grid（不動連堂/協同/分節）
+function recreateSimple(scopeSet, rnd) {
+  let units = buildAutoUnits().filter(u => isSimpleSubject(u.sid, u.classId));
+  if (scopeSet) units = units.filter(u => scopeSet.has(u.classId));
+  units.forEach(u => (u._r = rnd()));
+  units.sort((a, b) => (a.rank - b.rank) || (a.loose - b.loose) || (a._r - b._r));
+  greedyRun(units, rnd);
+}
+// LNS 大鄰域局部搜尋：ruin&recreate 單純層，單調接受（不變差），逃離貪婪局部最佳。回統計。
+function strongSolveLNS(scopeSet, deadline, rnd) {
+  let curSlots = { ...state.slots }, curST = { ...state.slotTeachers };
+  let curPlaced = Object.keys(curSlots).length, curPen = scoreSolution();
+  const simpleCount = Object.keys(curSlots).filter(key => { const cId = key.split('|')[0]; return (!scopeSet || scopeSet.has(cId)) && isSimpleSubject(curSlots[key], cId); }).length;
+  let iters = 0, accepts = 0, stag = 0;
+  while (performance.now() < deadline && iters < 6000) {
+    iters++;
+    state.slots = { ...curSlots }; state.slotTeachers = { ...curST };
+    const k = Math.min(simpleCount, 2 + ((rnd() * 4) | 0) + Math.min(6, stag));   // 停滯時擴大毀壞範圍以逃離
+    if (k <= 0) break;
+    ruinSimpleCells(scopeSet, k, rnd);
+    recreateSimple(scopeSet, rnd);
+    const placed = Object.keys(state.slots).length, pen = scoreSolution();
+    if (placed > curPlaced || (placed === curPlaced && pen < curPen)) {
+      curSlots = { ...state.slots }; curST = { ...state.slotTeachers }; curPlaced = placed; curPen = pen; accepts++; stag = 0;
+      if (residualCountScoped(scopeSet) === 0) break;                             // 已全排滿，提早收工
+    } else { stag++; }
+  }
+  state.slots = curSlots; state.slotTeachers = curST;
+  return { iters, accepts };
+}
+// 連鎖修復（回溯）：對排不下者用遞迴連鎖調課塞入（含連堂對＋協同；奇數連堂剩單堂交給 greedy/LNS）。回仍排不下的 units。
+// deadline＝時間截止（ms，performance.now 基準）：超時後剩餘的直接列為排不下，避免大規模長凍。
+function finalChainRepair(scopeSet, maxDepth, deadline) {
+  autoRelocScope = scopeSet;
+  let units = residualUnitsScoped(scopeSet);
+  units.sort((a, b) => (a.rank - b.rank) || (a.loose - b.loose) || (b.consec - a.consec));
+  const still = []; const opts = { budgetN: 4000, deadline: deadline || 0 };
+  for (const u of units) {
+    const s = subjectById(u.sid); const spec = { classId: u.classId, sid: u.sid, teacherId: u.teacherId || null };
+    const rem = specRemaining(spec);
+    if (rem <= 0) continue;                                   // 已被其他修復填滿（同 spec 的重複 unit）
+    if (deadline && performance.now() > deadline) { still.push(u); continue; }   // 超時：剩餘不再嘗試
+    if (s && s.consecutive && rem < 2) { still.push(u); continue; }   // 連堂只成對搬入，奇數單堂除外
+    if (!placeWithChain(spec, maxDepth, opts)) still.push(u);
+  }
+  autoRelocScope = null;
+  return still;
+}
 // 隨機重啟求解：多趟貪婪，保留「排最多、其次罰分最低」的最佳解
 //  scope＝null → 全校（clearFirst 決定清空重排或只補空格）；scope＝班級id陣列 → 只重排這些班、其餘凍結
 function runAutoSchedule(clearFirst, scope) {
@@ -2068,7 +2139,7 @@ function runAutoSchedule(clearFirst, scope) {
     baseST = clearFirst ? {} : { ...state.slotTeachers };
   }
   let seed = 20260804; const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
-  let best = null, runs = 0; const t0 = performance.now(); const BUDGET = 2500;
+  let best = null, runs = 0; const t0 = performance.now(); const BUDGET = 2500; const STRONG_BUDGET = 4000;   // 更強求解（連鎖修復＋LNS）總時間上限；僅在仍排不下時才用，避免瀏覽器長凍
   do {
     state.slots = { ...baseSlots }; state.slotTeachers = { ...baseST };
     let units = buildAutoUnits();
@@ -2082,19 +2153,19 @@ function runAutoSchedule(clearFirst, scope) {
     runs++;
   } while (performance.now() - t0 < BUDGET && runs < 300);
   state.slots = best.slots; state.slotTeachers = best.slotTeachers;
-  // v11 增量2「更強求解」：對貪婪排不下者做連鎖修復 pass——用調課核心搬移已排的單純課挪出空間（零衝堂）。
-  // 連堂科目跳過（避免成對插入造成節數溢排）；已達應排節數者也跳過。
-  const beforeRepair = best.unplaced.length; let repaired = 0; const stillUnplaced = [];
-  autoRelocScope = scopeSet;   // 局部重排：連鎖修復不得搬動範圍外（凍結）的課
-  for (const u of best.unplaced) {
-    const s = subjectById(u.sid); const spec = { classId: u.classId, sid: u.sid, teacherId: u.teacherId || null };
-    if (s && s.consecutive) { stillUnplaced.push(u); continue; }
-    if (specRemaining(spec) <= 0) continue;                 // 已被其他修復填滿
-    if (placeWithChain(spec, 3)) repaired++; else stillUnplaced.push(u);
+  const beforeRepair = best.unplaced.length;
+  // ── 更強求解階段（各子階段有明確時間截止，總計 ≤ STRONG_BUDGET；僅在仍排不下時才付出成本）──
+  let strong = null;
+  // 階段①「連鎖修復（回溯）」＝主力：遞迴連鎖調課把排不下者（含連堂對/協同）塞入。
+  let stillUnplaced = finalChainRepair(scopeSet, 4, performance.now() + STRONG_BUDGET * 0.55);
+  // 階段②「LNS 局部搜尋」：仍排不下→毀壞單純層再貪婪重建以逃離貪婪局部最佳；再做一次短連鎖修復收尾。
+  if (stillUnplaced.length) {
+    let seed2 = (seed ^ 0x5bd1e995) & 0x7fffffff; const rnd2 = () => { seed2 = (seed2 * 1103515245 + 12345) & 0x7fffffff; return seed2 / 0x7fffffff; };
+    strong = strongSolveLNS(scopeSet, performance.now() + STRONG_BUDGET * 0.30, rnd2);
+    stillUnplaced = finalChainRepair(scopeSet, 4, performance.now() + STRONG_BUDGET * 0.15);
   }
-  autoRelocScope = null;
   save();
-  return { unplaced: stillUnplaced, runs, ms: Math.round(performance.now() - t0), penalty: scoreSolution(), repaired, beforeRepair };
+  return { unplaced: stillUnplaced, runs, ms: Math.round(performance.now() - t0), penalty: scoreSolution(), repaired: beforeRepair - stillUnplaced.length, beforeRepair, strong };
 }
 function autoScheduleModal() {
   if (state.lockFinalized) { toast('課表已鎖定，請先解除鎖定再自動排課'); return; }
@@ -2132,7 +2203,7 @@ function autoResultModal(unplaced, r) {
   const total = Object.keys(state.slots).length;
   const conf = Object.keys(computeConflicts()).length;
   let body = `<div class="total-badge ${unplaced.length ? 'bad' : 'ok'}">${unplaced.length ? `⚠ 有 ${unplaced.length} 節排不下（其餘已排）` : '✓ 全部排滿'}　·　已排 ${total} 格　·　衝堂 ${conf}</div>
-    <p style="color:var(--muted);font-size:12px;margin:6px 0 0">嘗試 ${r.runs} 種排法取最佳（品質分 ${r.penalty}，越低越好）·　${r.ms}ms${r.repaired ? `　·　🔧 連鎖修復再塞入 ${r.repaired} 節` : ''}</p>`;
+    <p style="color:var(--muted);font-size:12px;margin:6px 0 0">嘗試 ${r.runs} 種排法取最佳（品質分 ${r.penalty}，越低越好）·　${r.ms}ms${r.repaired ? `　·　🔧 連鎖修復＋更強求解再塞入 ${r.repaired} 節` : ''}${r.strong ? `　·　🧠 局部搜尋 ${r.strong.iters} 次（採用 ${r.strong.accepts}）` : ''}</p>`;
   if (unplaced.length) {
     const agg = {};
     unplaced.forEach(u => { const k = u.classId + '|' + u.sid + '|' + (u.teacherId || ''); agg[k] = agg[k] || { u, n: 0 }; agg[k].n++; });
@@ -2288,6 +2359,7 @@ function tentativePlaceSpec(spec, placement) {
 function tryPlace(spec, depth, avoid, budget) {
   for (const placement of targetPlacements(spec, avoid)) {
     if (budget.n-- <= 0) return null;
+    if (budget.deadline && performance.now() > budget.deadline) return null;   // 時間截止：大規模連鎖不得無限跑
     const blk = blockersFor(placement, spec); if (blk === null) continue;
     if (blk.size === 0) {
       const snap = snapshotGrid();
@@ -2322,14 +2394,15 @@ function relocateOffering(key, depth, avoid, budget) {
   return { moves: [...r.moves, { from: key, to: r.placement.cells[0], sid }], toKey: r.placement.cells[0] };
 }
 // 對外：找調課方案（state-preserving）。回 {targetCells, kind, moves} 或 null。
-function findRelocationPlan(spec, maxDepth) {
-  const snap = snapshotGrid(); const budget = { n: 8000 }; let r = null;
+function findRelocationPlan(spec, maxDepth, opts) {
+  const snap = snapshotGrid(); const budget = { n: (opts && opts.budgetN) || 8000, deadline: (opts && opts.deadline) || 0 }; let r = null;
   try { r = tryPlace(spec, maxDepth, new Set(), budget); } finally { restoreGrid(snap); }
   return r ? { targetCells: r.placement.cells, kind: r.placement.kind, moves: r.moves } : null;
 }
 // 求解用：直接把 spec 以連鎖方式排入（會實際搬移已排的單純課）；成功回 true。不進 undo/render/save。
-function placeWithChain(spec, maxDepth) {
-  const plan = findRelocationPlan(spec, maxDepth); if (!plan) return false;
+// opts＝{ budgetN, deadline }（求解時限制運算量與時間；互動式喬課不帶＝沿用預設）
+function placeWithChain(spec, maxDepth, opts) {
+  const plan = findRelocationPlan(spec, maxDepth, opts); if (!plan) return false;
   plan.moves.forEach(m => { delete state.slots[m.from]; delete state.slotTeachers[m.from]; state.slots[m.to] = m.sid; });
   if (plan.kind === 'coteach') { const [c, d, p] = plan.targetCells[0].split('|'); placeSubject(c, d, p, spec.sid, null); }
   else plan.targetCells.forEach(k => { const [c, d, p] = k.split('|'); placeSubject(c, d, p, spec.sid, spec.teacherId); });
