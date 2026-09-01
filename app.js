@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v10.18';
+const APP_VERSION = 'v11.00';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -121,7 +121,7 @@ function defaultState() {
   return {
     schema: SCHEMA,
     version: APP_VERSION,
-    settings: { days, periods, reportSchool: '臺東縣成功鎮三民國民小學', reportYear: '113', schoolCode: 'msd9', subjectMap: {} },
+    settings: { days, periods, reportSchool: '', reportYear: '', schoolCode: 'msd9', subjectMap: {} },
     domains: defaultDomains(),
     subjects: [],
     rooms: [],
@@ -144,6 +144,7 @@ function defaultState() {
     substDeleted: [],     // v10.12 已刪除代課記錄 id 墓碑：收回時略過，避免線上殘留資料被再度合併回來
     substShare: null,     // v10.01 線上代課填報分享：{ fileId, link, domain, openedAt }
     helpSeen: false,
+    setupSeen: false,   // v10.19 全新安裝初次設定精靈（校名/學年度/學校代號）是否已出現過
   };
 }
 
@@ -231,7 +232,7 @@ function closeModal() { $('#modalRoot').innerHTML = ''; modalOnSave = null; }
 /* ==========================================================================
    Router
    ========================================================================== */
-let currentTab = 'subjects';
+let currentTab = 'home';
 let selectedGradeId = null;
 let subjDomainOpen = false;   // ① 科目頁：領域節數摺疊區是否展開（runtime，不持久化）
 let gradeFoldOpen = true;     // ② 年級與班級頁：年級設定摺疊區是否展開（runtime，預設展開）
@@ -783,6 +784,7 @@ function render() {
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === currentTab));
   const view = $('#view');
   switch (currentTab) {
+    case 'home': view.innerHTML = viewHome(); break;
     case 'subjects': view.innerHTML = viewSubjects(); break;
     case 'grades': case 'classes': view.innerHTML = viewGradesClasses(); break;
     case 'teachers': view.innerHTML = viewTeachers(); break;
@@ -794,12 +796,142 @@ function render() {
   }
 }
 
+// 子頁頂端導覽（v10.19）：品牌區已移除，導覽改放各子頁頂端。
+// 回首頁按鈕（kiosk 模式不提供，教師不得進入系統）。
+const NAV_SECTIONS = [
+  { tab: 'subjects', label: '科目' },
+  { tab: 'grades', label: '年級與班級' },
+  { tab: 'teachers', label: '教師配課' },
+  { tab: 'schedule', label: '排課' },
+];
+const homeBtn = () => (kioskFill || substKiosk) ? '' : `<button class="pn-home" data-action="goto" data-goto="home">← 回首頁</button>`;
+// 4 個核心頁：頂端導覽列「取代」子頁標題（當前頁以 active pill 標示），右側可帶頁面動作鈕
+function coreHead(current, actions = '') {
+  const links = NAV_SECTIONS.map(s =>
+    `<button class="pn-link${s.tab === current ? ' active' : ''}" data-action="goto" data-goto="${s.tab}"${s.tab === current ? ' aria-current="page"' : ''}>${s.label}</button>`
+  ).join('');
+  const home = homeBtn();
+  return `<div class="page-nav core">${home}${home ? '<span class="pn-sep"></span>' : ''}${links}${actions ? `<div class="pn-actions">${actions}</div>` : ''}</div>`;
+}
+// 其餘子頁：保留標題，「回首頁」放在標題同一列
+function subHead(title, actions = '', cls = '') {
+  return `<div class="page-head ${cls}"><div class="ph-left">${homeBtn()}<h2>${title}</h2></div>${actions ? `<div class="ph-actions">${actions}</div>` : ''}</div>`;
+}
+
+/* ==========================================================================
+   🏠 首頁儀表板（v10.19）— 各步驟完成度、待辦、快速入口
+   純彙整既有訊號，不動資料。
+   ========================================================================== */
+function homeStats() {
+  const subjectsDone = !!state.domainsConfirmed && state.subjects.length > 0;
+  const classesDone = state.classes.length > 0;
+  const staffProblems = checkStaffing();
+  const noHr = unsetHomerooms();
+  const staffDone = staffingConfirmed();
+
+  let required = 0;
+  state.classes.forEach(c => { required += classWeeklyHours(c); });
+  const placed = Object.keys(state.slots).length;
+  const locked = !!state.lockFinalized;
+  const schedPct = required > 0 ? Math.min(100, Math.round(placed / required * 100)) : 0;
+
+  const cloudOn = !!cloudState.enabled;
+  const lastSync = cloudState.lastSyncedAt || '';
+  let backupDays = null;
+  if (lastSync) { const t = new Date(lastSync).getTime(); if (!isNaN(t)) backupDays = Math.floor((Date.now() - t) / 86400000); }
+  const backupFailed = !!cloudState.backupFailed;
+
+  return { subjectsDone, classesDone, staffProblems, noHr, staffDone, required, placed, locked, schedPct, cloudOn, lastSync, backupDays, backupFailed };
+}
+
+function viewHome() {
+  const st = homeStats();
+  const s = state.settings || {};
+  const brandNew = state.subjects.length === 0 && state.classes.length === 0;
+
+  // 抬頭識別條
+  const header = `<div class="home-hero card">
+    <div class="card-body">
+      <div class="hh-info">
+        <div class="hh-school">${esc(s.reportSchool || '- - - - - - - - - - - -')}</div>
+        <div class="hh-sub">${esc(s.reportYear || '- - -')} 學年度　·　課務編排 ${APP_VERSION}</div>
+      </div>
+      <button class="hh-backup" data-action="backup" title="匯出 / 匯入備份">💾 備份</button>
+    </div></div>`;
+
+  // 全新使用者：引導從①開始
+  if (brandNew) {
+    return `${header}
+      <div class="card"><div class="card-body" style="text-align:center;padding:36px 16px">
+        <div style="font-size:44px;line-height:1">📘</div>
+        <h3 style="margin:12px 0 6px">歡迎使用課務編排</h3>
+        <p style="color:var(--muted);max-width:520px;margin:0 auto 18px">依序完成 <b>①科目 → ②年級與班級 → ③教師配課 → ④排課</b>，即可輸出全校課表。先從設定科目開始吧。</p>
+        <button class="btn" data-action="goto" data-goto="subjects">① 開始設定科目 →</button>
+      </div></div>`;
+  }
+
+  // 步驟完成度
+  const stepCard = (num, name, done, tab, note) => `
+    <button class="home-step ${done ? 'done' : 'todo'}" data-action="goto" data-goto="${tab}">
+      <div class="hs-badge">${done ? '✓' : '⚠'}</div>
+      <div class="hs-body"><div class="hs-name">${num} ${name}</div>
+        <div class="hs-note">${note}</div></div>
+    </button>`;
+  const step1 = stepCard('①', '科目', st.subjectsDone, 'subjects', st.subjectsDone ? `${state.subjects.length} 科` : '尚未完成領域／科目');
+  const step2 = stepCard('②', '年級與班級', st.classesDone, 'grades', st.classesDone ? `${state.classes.length} 班` : '尚未建立班級');
+  const staffNote = st.staffDone ? '配課完成 ✓'
+    : (st.staffProblems.length || st.noHr.length)
+      ? `${st.staffProblems.length ? `${st.staffProblems.length} 處配課待處理` : ''}${st.staffProblems.length && st.noHr.length ? '、' : ''}${st.noHr.length ? `${st.noHr.length} 班缺導師` : ''}`
+      : '尚未按「檢查全校配課」';
+  const step3 = stepCard('③', '教師配課', st.staffDone, 'teachers', staffNote);
+  const step4 = stepCard('④', '排課', st.locked, 'schedule', st.locked ? '已鎖定 ✓' : (st.required ? `已排 ${st.placed}/${st.required} 節` : '尚未可排課'));
+  const steps = `<div class="home-steps">${step1}${step2}${step3}${step4}</div>`;
+
+  // 排課完成度進度條
+  const progress = st.required ? `<div class="card"><div class="card-body">
+      <div class="hp-row"><span>排課完成度</span><b>${st.placed} / ${st.required} 節（${st.schedPct}%）</b></div>
+      <div class="hp-bar"><div class="hp-fill" style="width:${st.schedPct}%"></div></div>
+    </div></div>` : '';
+
+  // 待辦清單
+  const todos = [];
+  if (st.staffProblems.length) todos.push({ t: `配課有 ${st.staffProblems.length} 處待處理（缺漏／超額／未指派）`, tab: 'teachers' });
+  if (st.noHr.length) todos.push({ t: `${st.noHr.length} 個班級尚未指定級任導師（${st.noHr.slice(0, 3).map(esc).join('、')}${st.noHr.length > 3 ? '…' : ''}）`, tab: 'teachers' });
+  if (st.required && st.placed < st.required) todos.push({ t: `課表尚有 ${st.required - st.placed} 節未排`, tab: 'schedule' });
+  if (st.placed > 0 && !st.locked) todos.push({ t: '課表尚未鎖定（鎖定後才能開放導師線上填課）', tab: 'schedule' });
+  // 久未備份提醒
+  if (!st.cloudOn) todos.push({ t: '尚未連結雲端備份，換裝置有遺失風險', tab: 'settings' });
+  else if (st.backupFailed) todos.push({ t: '有變更尚未備份成功，請到設定按「立即備份」', tab: 'settings' });
+  else if (st.backupDays === null) todos.push({ t: '已連結雲端但尚未備份過', tab: 'settings' });
+  else if (st.backupDays >= 7) todos.push({ t: `已 ${st.backupDays} 天未備份，建議立即備份`, tab: 'settings' });
+
+  const todoCard = `<div class="card"><div class="card-body">
+    <h3 style="margin:0 0 10px">📋 待辦</h3>
+    ${todos.length
+      ? `<div class="home-todos">${todos.map(x => `<button class="home-todo" data-action="goto" data-goto="${x.tab}"><span class="ht-dot">●</span><span>${x.t}</span><span class="ht-arrow">→</span></button>`).join('')}</div>`
+      : '<p style="color:var(--ok);margin:0">✓ 一切就緒，沒有待辦事項。</p>'}
+  </div></div>`;
+
+  // 快速入口
+  const quick = `<div class="card"><div class="card-body">
+    <h3 style="margin:0 0 10px">⚡ 快速入口</h3>
+    <div class="home-quick">
+      <button class="btn" data-action="goto" data-goto="output">🖨 課表輸出</button>
+      <button class="btn ghost" data-action="goto" data-goto="subst">🔁 代課 / 線上填報</button>
+      <button class="btn ghost" data-action="goto" data-goto="settings">⚙️ 設定</button>
+      <button class="btn ghost" data-action="help">❓ 使用說明</button>
+    </div>
+  </div></div>`;
+
+  return `${header}${steps}${progress}${todoCard}${quick}`;
+}
+
 /* ==========================================================================
    ① 科目
    ========================================================================== */
 function viewSubjects() {
   const confirmed = !!state.domainsConfirmed;
-  const head = `<div class="page-head"><h2>① 科目</h2>${confirmed ? '<button class="btn" data-action="add-subject">＋ 新增科目</button>' : ''}</div>`;
+  const head = coreHead('subjects', confirmed ? '<button class="btn" data-action="add-subject">＋ 新增科目</button>' : '');
   return head + subjDomainFold(confirmed) + subjBody(confirmed);
 }
 // ① 科目：領域節數摺疊區（需先完成才能新增科目）
@@ -945,8 +1077,8 @@ function delSubject(id) {
 // ② 年級與班級（年級設定摺疊 + 班級卡片）
 function viewGradesClasses() {
   if (state.subjects.length === 0)
-    return `<div class="page-head"><h2>② 年級與班級</h2></div>` + emptyCard('請先設定科目', '需先到「① 科目」建立科目，年級才能勾選開課科目並配節數。');
-  return `<div class="page-head"><h2>② 年級與班級</h2></div>` + gradeFold() + classCards();
+    return coreHead('grades') + emptyCard('請先設定科目', '需先到「① 科目」建立科目，年級才能勾選開課科目並配節數。');
+  return coreHead('grades') + gradeFold() + classCards();
 }
 // 年級設定（節次表＋科目節數）— 可摺疊
 function gradeFold() {
@@ -1254,8 +1386,8 @@ function viewTeachers() {
         </div>
         <button class="${confirmed ? 'ghost' : 'btn'}" data-action="check-staffing">檢查全校配課</button>
       </div></div>`;
-  const head = `<div class="page-head"><h2>③ 教師</h2><button class="btn" data-action="add-teacher">＋ 新增教師</button></div>
-    <div class="hint" style="margin-bottom:12px;color:var(--muted)">填入教師基本資料與不排課時段，並設定其配課（教哪個班的哪一科幾節）。每位教師配課合計須等於其每周授課時數才可儲存。</div>`;
+  const head = coreHead('teachers', '<button class="btn" data-action="add-teacher">＋ 新增教師</button>') +
+    `<div class="hint" style="margin-bottom:12px;color:var(--muted)">填入教師基本資料與不排課時段，並設定其配課（教哪個班的哪一科幾節）。每位教師配課合計須等於其每周授課時數才可儲存。</div>`;
   if (state.teachers.length === 0) return head + statusCard + emptyCard('尚無教師', '點右上「＋ 新增教師」建立並設定配課。');
   const cards = state.teachers.map(t => {
     const sum = teacherLoadSum(t); const match = sum === (t.weeklyHours || 0);
@@ -1498,7 +1630,7 @@ function staffingReportModal() {
    領域節數參考（v06.00）：建議節數參考表（可編輯）＋ 各年級實配對照
    ========================================================================== */
 function viewDomains() {
-  const head = `<div class="page-head"><h2>領域節數</h2><button class="btn" data-action="add-domain">＋ 新增領域</button></div>
+  const head = subHead('領域節數', '<button class="btn" data-action="add-domain">＋ 新增領域</button>') + `
     <div class="hint" style="margin-bottom:12px;color:var(--muted)">各領域每年級的<b>建議節數</b>（可編輯）與<b>目前實配</b>對照。實配＝「② 年級與班級」已設科目節數，依「① 科目」所選「所屬領域」加總。<b style="color:var(--warn)">下方預設數字為 108 課綱起點，請務必依課綱／貴校實況校對。</b></div>`;
   return head + domainRefAndCmp();
 }
@@ -2106,14 +2238,14 @@ function flexOverviewModal() {
 }
 
 function viewSchedule() {
-  if (state.classes.length === 0) return emptyState('尚未建立班級', '請先完成 ①科目 ②年級與班級 ③教師，再來排課。');
+  if (state.classes.length === 0) return coreHead('schedule') + emptyState('尚未建立班級', '請先完成 ①科目 ②年級與班級 ③教師，再來排課。');
   if (!staffingConfirmed()) {
     const problems = checkStaffing();
     const noHr = unsetHomerooms();
     const detail = staffingClear()
       ? '資料已齊，但尚未在「③ 教師」按過「檢查全校配課」完成確認。'
       : `${problems.length ? `配課問題 ${problems.length} 項；` : ''}${noHr.length ? `未設導師班級 ${noHr.length} 個（${esc(noHr.join('、'))}）；` : ''}請修正後在「③ 教師」按「檢查全校配課」。`;
-    return `<div class="page-head"><h2>④ 排課</h2></div>
+    return coreHead('schedule') + `
     <div class="card"><div class="card-body">
       <div class="conflict-banner">⚠ 尚未通過全校檢查，無法開始排課。<div style="font-weight:400;margin-top:4px">${detail}</div></div>
       <button class="btn" data-action="goto-teachers">前往 ③ 教師 檢查全校配課</button>
@@ -2147,8 +2279,8 @@ function viewSchedule() {
   const toolbarBtns = selecting ? '' : finalized ? '' :
     `<button class="ghost" data-action="lock-schedule" style="margin-left:auto" title="整表一次鎖定">🔒 一鍵鎖定</button><button class="ghost" data-action="lockcell-mode" title="逐格點選要鎖的格">🎯 單格鎖定</button><button class="btn" data-action="auto-schedule">🪄 自動排課</button>`;
   const loadHtml = teacherLoadHTML();   // 教師已排/應排：拆成獨立卡片
-  return `
-    <div class="page-head no-print"><h2>④ 排課</h2><div class="hint">${hint}</div></div>
+  return coreHead('schedule') + `
+    <div class="page-head no-print" style="margin-top:-4px"><div class="hint">${hint}</div></div>
     ${banner}
     ${totalConf ? `<div class="conflict-banner no-print">⚠ 全校目前有 ${totalConf} 個需注意的格子（教師衝堂／不排課／協同未同步／連堂未相鄰）。</div>` : ''}
     <div class="board-toolbar no-print"><label>班級：</label><select id="scheduleClass" data-change="schedule-class">${classOpts}</select>
@@ -2260,7 +2392,7 @@ function teacherLoadHTML() {
 }
 
 function viewOutput() {
-  if (state.classes.length === 0) return emptyState('尚無資料', '請先完成前面步驟並排課。');
+  if (state.classes.length === 0) return subHead('課表輸出', '', 'no-print') + emptyState('尚無資料', '請先完成前面步驟並排課。');
   const conflicts = computeConflicts();
   const isMaster = outputMode === 'school' || outputMode === 'schoolTeacher';
   if (outputMode === 'class') { if (!outputClassId || !classById(outputClassId)) outputClassId = state.classes[0].id; }
@@ -2285,7 +2417,7 @@ function viewOutput() {
   const grid = outputMode === 'class' ? classTimetableHTML(outputClassId, conflicts, false)
     : outputMode === 'teacher' ? teacherTimetableHTML(outputTeacherId, conflicts)
     : masterTableHTML(outputMode);
-  return `<div class="page-head no-print"><h2>課表輸出</h2></div>${modeSel}<div class="card"><div class="card-body"><div class="grid-wrap">${grid}</div></div></div>`;
+  return subHead('課表輸出', '', 'no-print') + `${modeSel}<div class="card"><div class="card-body"><div class="grid-wrap">${grid}</div></div></div>`;
 }
 function teacherTimetableHTML(teacherId, conflicts) {
   const days = activeDays(); const t = teacherById(teacherId);
@@ -2519,7 +2651,7 @@ function substCellInScope(rec, key) {
 
 function viewSubst() {
   if (state.teachers.length === 0)
-    return `<div class="page-head"><h2>🔄 代課</h2></div>` + emptyCard('尚無教師', '請先到「③ 教師」建立教師與配課，才能安排代課。');
+    return subHead('🔄 代課') + emptyCard('尚無教師', '請先到「③ 教師」建立教師與配課，才能安排代課。');
   const rec = substOpenId ? substById(substOpenId) : null;
   if (rec && teacherById(rec.absentTeacherId)) return substEditor(rec);
   if (rec) substOpenId = null;   // 被代課教師已被刪除 → 回清單
@@ -2530,8 +2662,8 @@ function substList() {
   const shareBtn = substKiosk ? '' : `<button class="ghost" data-action="subst-share-manage">☁️ 線上代課填報${state.substShare ? '（已開放）' : ''}</button>`;
   const masterBtn = substKiosk ? '' : `<button class="ghost" data-action="subst-submaster">🧑‍🏫 代課老師合併總表</button>`;
   const addLabel = substKiosk ? '＋ 新增我的代課' : '＋ 新增代課';
-  const head = `<div class="page-head"><h2>🔄 ${substKiosk ? '我的代課' : '代課'}</h2><div style="display:flex;gap:8px;flex-wrap:wrap">${masterBtn}${shareBtn}<button class="btn" data-action="subst-add">${addLabel}</button></div></div>
-    <div class="hint" style="margin-bottom:12px;color:var(--muted)">${substKiosk
+  const head = subHead(`🔄 ${substKiosk ? '我的代課' : '代課'}`, `${masterBtn}${shareBtn}<button class="btn" data-action="subst-add">${addLabel}</button>`) +
+    `<div class="hint" style="margin-bottom:12px;color:var(--muted)">${substKiosk
       ? `以下是<b>你（${esc(teacherName(substMyTeacherId) || substMyName)}）</b>的代課安排。按「＋ 新增我的代課」設定請假日期，即可調出<b>你自己的課表</b>為當週有課的格子指派代課老師，最後送出到雲端。<b>不同日期的請假請各按一次「＋ 新增我的代課」，會各自成一筆</b>；點既有的一筆是「編輯／重送」那一筆。`
       : '選一位<b>被代課（請假）教師</b>，調出其課表，點<b>有課的格子</b>指派當節<b>空堂</b>的代課教師，最後列印／存 PDF。記錄會保存、可多筆。'}</div>`;
   let list = state.substitutions || [];
@@ -2585,9 +2717,8 @@ function substEditor(rec) {
     <div class="hint no-print" style="color:var(--muted);margin:2px 0 10px">${substWeekTab == null
       ? '「<b>全部週</b>」是基礎指派、套用到每一週。若某週的某節要換不同代課老師，切到<b>該週</b>單獨指派（會蓋過全部週；其餘格子仍沿用全部週）。'
       : `目前編輯<b>第${substWeekTab + 1}週</b>（${esc(wk.start)}～${esc(wk.end)}）：在此指派＝<b>本週單獨</b>（蓋過全部週）；未單獨指派的格子沿用全部週。`}</div>` : '';
-  const head = `<div class="page-head no-print"><h2>🔄 代課 — ${esc(t.name)}</h2>
-    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">${dateBtn}${btns}</div></div>
-    <div class="hint no-print" style="margin-bottom:10px;color:var(--muted)">${hint} ${wk ? `第${substWeekTab + 1}週` : ''}已指派 <b>${done}</b> / 共 <b>${total}</b> 節。</div>`;
+  const head = subHead(`🔄 代課 — ${esc(t.name)}`, `${dateBtn}${btns}`, 'no-print') +
+    `<div class="hint no-print" style="margin-bottom:10px;color:var(--muted)">${hint} ${wk ? `第${substWeekTab + 1}週` : ''}已指派 <b>${done}</b> / 共 <b>${total}</b> 節。</div>`;
   return head + weekTabs + `<div class="card"><div class="card-body"><div class="grid-wrap">${substTimetableHTML(rec, editable, substWeekTab)}</div></div></div>`;
 }
 
@@ -3360,7 +3491,7 @@ function viewSettings() {
       <button class="icon-btn" data-action="del-period" data-pid="${p.id}">🗑️</button>
     </td></tr>`).join('');
   return `
-    <div class="page-head"><h2>設定</h2></div>
+    ${subHead('設定')}
     <div class="card"><div class="card-body"><h4 style="margin-top:0">上課日</h4><div>${dayToggles}</div></div></div>
     <div class="card"><div class="card-body">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
@@ -3389,8 +3520,8 @@ function viewSettings() {
     <div class="card"><div class="card-body"><h4 style="margin-top:0">課表輸出格式（Word .docx）</h4>
       <p class="hint" style="color:var(--muted);margin:0 0 10px">「課表輸出」的📄一鍵輸出所有班級／教師課表會用到以下設定。</p>
       <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px">
-        <label class="field"><span>校名</span><input type="text" data-change="report-field" data-field="reportSchool" value="${esc(state.settings.reportSchool || '')}" style="min-width:260px"></label>
-        <label class="field"><span>學年度</span><input type="text" data-change="report-field" data-field="reportYear" value="${esc(state.settings.reportYear || '')}" style="width:90px"></label>
+        <label class="field"><span>校名</span><input type="text" data-change="report-field" data-field="reportSchool" value="${esc(state.settings.reportSchool || '')}" placeholder="請輸入貴校校名" style="min-width:260px"></label>
+        <label class="field"><span>學年度</span><input type="text" data-change="report-field" data-field="reportYear" value="${esc(state.settings.reportYear || '')}" placeholder="如 114" style="width:90px"></label>
         <label class="field"><span>學校代號</span><input type="text" data-change="report-field" data-field="schoolCode" value="${esc(state.settings.schoolCode || '')}" placeholder="msd9" style="width:110px" title="導師線上填課的檔名前綴（class-<代號><學年><年級><班代號>），多校共用時各校自填以區隔"></label>
       </div>
       <p class="hint" style="color:var(--muted);margin:0 0 12px;font-size:12px">「學校代號」用於「導師線上填課」的檔名前綴（<code>class-代號學年年級班代號</code>）；不同學校共用本系統時，各校填不同代號即可區隔、檔名不撞。</p>
@@ -3500,66 +3631,73 @@ function movePeriod(pid, dir) {
    使用說明
    ========================================================================== */
 function helpModal() {
+  const sec = (title, inner) => `<details class="help-sec"><summary>${title}</summary><div class="sec-body">${inner}</div></details>`;
   openModal({
     title: '使用說明　·　' + APP_VERSION, wide: true, body: `<div class="help">
-    <div class="help-note">📌 <b>三個重點：</b>①免安裝，用瀏覽器開網址就能用；<b>基本排課免登入</b>（只有「雲端同步」與「導師線上填課」才需 Google 登入）。②資料只存<b>你這台裝置</b>的瀏覽器，各自獨立。③換裝置或清瀏覽器前，先用右上「備份」匯出，或開啟雲端同步。</div>
-    <h4>操作順序（有前後關係，請照號碼走）</h4>
-    <p class="help-flow">①科目 ▸ ②年級與班級 ▸ ③教師 ▸ ④排課 ▸ 課表輸出</p>
-    <h4>① 科目</h4>
-    <ul><li>建立全校科目、選顏色，並可指定<b>所屬領域</b>（供「領域節數」頁對照，可留未分類）。</li>
-      <li><b>教學型態</b>三選一：<b>單一教師</b>整科一位老師上；<b>👥 分組教學</b>（如英語）同班多師「同一節」平行分組上、不算衝堂；<b>✂️ 分節上課</b>多師分攤節數、各上「不同節」（如生活 6 節＝A 上 4＋B 上 2）。</li>
-      <li>⏱ <b>需連堂</b>：兩節相鄰接續上。可另填「<b>連堂次數（對）</b>」：留空＝盡量成對；奇數節（如自然/社會 3 節）填 <b>1</b> ＝ 排 1 次連堂（2 節）＋剩 1 節單獨排，<b>那 1 節單獨不算錯</b>。</li>
-      <li>🔒 <b>排課限制</b>（給自動排課用）：可勾「只排在某些上課日／某些節次」。例：母語只勾週四、彈性在地勾週五＋第1節、體育只勾第2/3/6/7節。不勾＝不限；手動排課不受此限。</li>
-      <li><b>🪄 自動排課偏好</b>（摺疊區，皆軟性、只影響自動排課、可留空）：<b>偏好節次</b>（勾指定節盡量排在那，如國語偏好第1節；可用「上午/下午」快捷鈕一鍵勾選）；<b>多節分散</b>（下拉：不限／每天最多1節／隔天以上，如體育）；<b>主科不排末節</b>（把每天最後一節留給輕科）；<b>連堂剩餘單堂與連堂不同天</b>（如社會/自然 3 節設「連堂×1」＝1 連堂＋1 單堂，讓單堂另擇一天）；<b>不列入教師單日上限</b>（如母語）。教師單日節數上限在「設定」設全域、「③教師」可個別覆寫。</li></ul>
-    <h4>② 年級與班級 ─ 年級設定（一~六年級各一張）</h4>
-    <ul><li><b>2.1 節次表</b>：每個年級逐格勾「哪節×哪個上課日有課」（例：週三下午不上課就取消那幾格）。</li>
-      <li><b>2.2 科目節數</b>：勾該年級開的科目、填一周節數。<b>科目節數總和＝節次表可用節數</b>時，年級才算完成（分頁顯示 ✓）。</li></ul>
-    <h4>② 年級與班級 ─ 班級</h4>
-    <ul><li>新增班級並選年級；課程（科目＋節數）<b>自動沿用該年級</b>設定、不需重填。</li>
-      <li>可填<b>數字代號</b>（如 01）：供「導師線上填課」組成檔名用，由你編排。</li>
-      <li>點「科目 / 協同」可為每一科勾選<b>協同教學</b>的同年級其他班（同時段一起上）。</li></ul>
-    <h4>③ 教師</h4>
-    <ul><li>填姓名、身分、<b>每周授課時數</b>、不排課時段。可填<b>Google Email</b>（學校或個人 Gmail 皆可）——供「導師線上填課」「線上代課填報」逐位分享用；無校帳號的臨時代課老師填其 Gmail 即可。身分選<b>級任</b>時另設<b>擔任導師的班級</b>。</li>
-      <li><b>教師配課</b>：逐筆「班級 → 科目 → 節數 → 教室（可留空）」。該師配課合計<b>必須等於每周授課時數</b>才能儲存。專科教室先在「設定」建立。</li>
-      <li>✂️ <b>分節上課</b>科目：直接把節數拆給不同老師（如生活給 A 4 節、B 2 節），下拉會顯示各科<b>剩餘節數</b>、填的節數不超過剩餘。</li>
-      <li>⚠ <b>檢查全校配課（進入 ④ 排課的關卡）</b>：頁面上方按「<b>檢查全校配課</b>」，通過條件＝<b>每班每科節數都配齊</b>（分組每師足額、分節多師加總＝需求）<b>且每個班級都已指定級任導師</b>。通過後才會<b>解鎖 ④ 排課</b>；之後只要改動配課、導師、科目型態或年級節數，就需<b>再按一次</b>檢查。（此關卡為防呆——排課人員不一定是你。）</li>
-      <li>🧮 <b>配課矩陣（班 × 科）</b>：頁面下方可展開，用一張表看每班每科由誰配課與「已配 / 應排」：<b>綠＝配足、紅＝缺／不足、橘＝超額</b>，空白＝該班無此科；一眼抓出缺口，配課更快更少漏。</li></ul>
-    <h4>④ 排課</h4>
-    <ul><li>選班級 → 左側點科目 → 點課表空格放課；點已排格移除。灰色格＝該班該節不上課。</li>
-      <li>💡 <b>空格建議</b>：未選科目時直接點空格，會列出「這一格可以放哪些課」（合法、不衝堂），點一項即放入。</li>
-      <li>🔧 <b>喬課（調課建議）</b>：某科排不下時，調色盤該科會出現「🔧 喬課」，按下會建議「把哪幾堂挪去哪，就能空出位置」（含多步連鎖），可一鍵套用、保證不產生衝堂。</li>
-      <li>🧭 <b>教師可調總覽</b>：工具列按鈕，選一位教師，逐格列出他的每一節「可移到幾處」或「⛔ 卡死（無其他合法空格）」，快速看出誰的課卡死、哪裡有彈性。只分析、不會更動課表（分組/協同/分節/連堂標 ⚠，數字僅供參考）。</li>
-      <li>🪄 <b>自動排課</b>（選用）：右上按鈕一鍵把各班每科排滿，會遵守科目的排課限制、進階限制（分散不同天/隔天）、教師配課、不排課時段、教師單日上限、並避開所有衝堂；還會多次嘗試取較佳解（教師每日節數較平均、偏好時段盡量滿足）。可選「清空重排」或「只補空格（保留已排）」。排不下的課會列出讓你手動處理；排完仍可自由手動微調。</li>
-      <li>✂️ <b>分節上課</b>科目：左側每位老師各一個色塊，先點「要放哪位老師」再點格，該格就記下由誰上（各上不同節）。</li>
-      <li>分組科目自動多師同格；協同科目放一班自動同步其他班；連堂自動成對。</li>
-      <li>↶ <b>復原／重做</b>：手動放課、移除、喬課、自動排課都可用工具列「復原／重做」或 <b>Ctrl+Z／Ctrl+Y</b> 回上一步（鎖定/解鎖為分界、不跨越）。</li>
-      <li>🔴 紅框代表需注意：教師衝堂／教室衝堂／不排課時段／協同未同步／連堂未相鄰（移到格上看原因）。</li></ul>
-    <h4>🔒 鎖定課表與導師自編（④ 排課定稿後）</h4>
-    <ul><li><b>鎖定兩種</b>：<b>🔒 一鍵鎖定</b>整表一次鎖；<b>🎯 單格鎖定</b>逐格點選要鎖的格再按「完成鎖定」（未鎖的格仍可調）。</li>
-      <li>鎖定時系統<b>自動判定自編格</b>＝「本班級任導師任課」的格（協同須全為同年級級任導師），這些格<b>釋放為空白</b>供導師選課；其餘鎖定格唯讀。</li>
-      <li><b>導師選課</b>：點自編格 → 從<b>本班導師的配課科目</b>挑一科（顯示 已選／應選，達應選即不可再加；<b>協同科會連動夥伴班同格</b>）。</li>
-      <li><b>✅ 導師自編完成</b>（本班）：選完按此鎖定本班自編（<b>有空格或衝堂會拒絕</b>）；若含協同科會<b>一併鎖夥伴班該格</b>，但夥伴班導師仍須各自按自己班的完成。要重選由排課者按 <b>🔓 解鎖導師自編</b>。</li>
-      <li><b>🔓 解除鎖定</b>（整表）：回到自由編輯，已釋放的自編格會<b>還原成鎖定前的原排課</b>（導師這一輪的自選將捨棄）。</li></ul>
-    <h4>🧑‍🏫 導師線上填課（各班導師自己線上填自編格）</h4>
-    <ul><li><b>用途</b>：課表鎖定後，把每班「自編格選課」開放給該班導師線上填，排課者再收回合併。免後端，走 Google Drive（需登入）。</li>
-      <li><b>排課者（你）</b>：先在 ③教師 填好各班<b>導師 Email</b>、②年級與班級 填好<b>數字代號</b> → ④排課<b>鎖定課表</b> → 橫幅「<b>☁️ 線上填課</b>」→「<b>開放線上填課</b>」：系統在你的雲端硬碟建資料夾＋每班一個填課檔（檔名 <code>class-學校代號學年年級班代號</code>，學校代號在「設定」填），逐位分享給導師 Email，並給你一條<b>填課連結</b>可寄給導師。</li>
-      <li><b>導師</b>：開排課者寄來的<b>填課連結（?fill=1）</b>→ 用學校 Google 帳號登入 → <b>Picker 選自己班的檔</b>（依檔名辨識）→ 進入<b>整張課表</b>，直接點 🧩 自編格選課（🔒 為已固定課、可看上下節）→ <b>儲存到雲端</b>，再通知排課者。<b>系統會核對登入帳號，只能開自己班的檔</b>；此畫面為導師專用、看不到其他設定頁與其他班級。</li>
-      <li>📊 <b>填課進度總覽</b>：分享視窗按「<b>讀取進度</b>」，逐班查看<b>已填格數與狀態</b>（⏳未交／✏️填寫中／⚠已回傳但缺／✅已完成），並統計「完成 X · 待催 Y」。按「<b>📋 複製未交名單</b>」可複製尚未完成班級的「班名＋導師 Email＋進度」，貼到信件催交。</li>
-      <li><b>排課者收回</b>：④排課 →「☁️ 線上填課」→「<b>收回填課</b>」：讀回各班導師選課、合併進課表，並顯示每班「填入／清空／衝堂」摘要。</li>
-      <li><b>重新開放</b>：改了自編格想重來可「重新開放」重建填課檔（舊檔仍留在你雲端硬碟，可自行刪除）。</li></ul>
-    <h4>領域節數</h4>
-    <ul><li><b>建議節數參考表</b>：各領域每年級每周建議節數，可自行改名稱／節數、新增或刪除領域。內建 108 課綱國小起始值，<b>請務必依課綱／貴校校對</b>。</li>
-      <li><b>各年級實配對照</b>：把「② 年級與班級」設定的科目節數依「① 科目」的所屬領域加總，和建議並排（實配 / 建議）；相符綠、不符紅底，方便檢查各領域節數是否到位。未指定領域的科目會列在「未分類」。</li></ul>
-    <h4>課表輸出 / 備份</h4>
-    <p>類型可選<b>班級表、教師表、全校總表（各班）、全校教師總表</b>：</p>
-    <ul><li><b>班級／教師表</b>：列印或存 PDF、匯出 CSV，或<b>一鍵匯出 Word（.docx）</b>——「所有班級課表」「所有教師課表」。</li>
-      <li>🗂️ <b>全校總表（各班）</b>：所有班級排在同一張大表（列＝星期×節次、欄＝各班、格＝科目），供公告張貼／校長核章。</li>
-      <li>🧑‍🏫 <b>全校教師總表</b>：所有教師排在同一張大表（列＝星期×節次、欄＝各師、格＝該師該節在哪個班），一眼看全校老師的動向、找代課空堂。</li>
-      <li>兩種全校總表都可<b>橫向列印／存 PDF</b>，或<b>下載 PNG</b> 圖檔直接貼進公告或群組。右上「備份」可匯出/匯入 JSON（換裝置用）。</li></ul>
-    <h4>☁️ 雲端同步（設定頁）</h4>
-    <ul><li>連結 Google 帳號後，排課資料會自動備份到<b>你自己的雲端硬碟</b>（App 專屬隱藏資料夾、無伺服器）。</li>
-      <li><b>多裝置接續</b>：在另一台開啟 App 時，若雲端有較新的備份會詢問是否還原，筆電／桌機可接續同一份資料。</li>
-      <li><b>還原版本</b>：可從「最新版本」或每日保留的<b>歷史版本（最多 7 份）</b>挑一個還原。可隨時「更換帳號」或「解除連結」。</li></ul>
+    <div class="help-note">📌 <b>三個重點：</b>①免安裝，開網址就能用；基本操作免登入（只有<b>雲端同步、導師線上填課、線上代課填報</b>才需 Google 登入）。②資料只存<b>你這台裝置</b>的瀏覽器。③換裝置／清瀏覽器前，先用首頁「💾 備份」匯出或開啟雲端同步。</div>
+    <p class="help-flow">①科目 ▸ ②年級與班級 ▸ ③教師配課 ▸ ④排課 ▸ 課表輸出</p>
+    <p style="color:var(--muted);font-size:13px;margin:2px 0 10px">點各段標題展開／收合。</p>
+
+    ${sec('🏠 首頁與導覽', `<ul>
+      <li>開啟 App 落在<b>首頁</b>：顯示各步驟<b>完成度</b>、<b>待辦</b>（缺配課／缺導師／未排滿／未鎖定／久未備份）與<b>快速入口</b>；點卡片或待辦可直接跳到對應位置。</li>
+      <li>首次使用會跳「<b>初次設定</b>」，填<b>校名／學年度／學校代號</b>，立即顯示在首頁抬頭；日後可在「⚙️ 設定」修改。</li>
+      <li>每個子頁頂端有<b>導覽列</b>：核心四頁（科目／年級與班級／教師配課／排課）可互相切換，其餘頁有「← 回首頁」。</li>
+      <li><b>💾 備份</b>在首頁抬頭；<b>❓ 使用說明</b>在首頁快速入口。</li></ul>`)}
+
+    ${sec('① 科目', `<ul>
+      <li>建立科目、選顏色，可指定<b>所屬領域</b>（供「領域節數」對照，可留未分類）。</li>
+      <li><b>教學型態</b>三選一：<b>單一教師</b>；<b>👥 分組教學</b>（同班多師「同一節」平行、不算衝堂，如英語）；<b>✂️ 分節上課</b>（多師分攤節數、各上「不同節」，如生活 6 節＝A 4＋B 2）。</li>
+      <li>⏱ <b>需連堂</b>：兩節相鄰。奇數節可填「連堂次數」，剩 1 節單獨排<b>不算錯</b>。</li>
+      <li>🔒 <b>排課限制</b>＋🪄 <b>自動排課偏好</b>（皆只影響自動排課、手動不受限）：限定上課日／節次、偏好節次、多節分散、主科不排末節、不列入教師單日上限等。</li></ul>`)}
+
+    ${sec('② 年級與班級', `<ul>
+      <li><b>年級設定</b>：<b>節次表</b>（逐格勾哪節×哪天有課）＋<b>科目節數</b>（勾科目填節數；總和＝可用節數時該年級才算完成 ✓）。</li>
+      <li><b>班級</b>：新增並選年級，課程<b>自動沿用該年級</b>；可填<b>數字代號</b>（線上填課檔名用）；點「科目／協同」可設<b>協同教學</b>的同年級其他班（同時段一起上）。</li></ul>`)}
+
+    ${sec('③ 教師配課', `<ul>
+      <li>填姓名、身分、<b>每周授課時數</b>、不排課時段、<b>Google Email</b>（線上分享用，學校或個人 Gmail 皆可）；<b>級任</b>另設<b>導師班級</b>。</li>
+      <li><b>配課</b>：逐筆「班級 → 科目 → 節數 → 教室（可留空）」，合計<b>須等於授課時數</b>才能存。✂️ 分節科目可把節數拆給不同老師。</li>
+      <li>⚠ <b>檢查全校配課</b>（進 ④ 排課的關卡）：<b>每班每科配齊＋每班都有導師</b>才通過，通過才解鎖排課；資料一改需<b>再按一次</b>。</li>
+      <li>🧮 <b>配課矩陣</b>：一張表看每班每科誰配、已配／應排（<b>綠足、紅缺、橘超額</b>）。</li></ul>`)}
+
+    ${sec('④ 排課', `<ul>
+      <li>選班 → 點科目 → 點空格放課；點已排格移除；灰格＝不上課。</li>
+      <li>💡 <b>空格建議</b>（未選科目點空格看可放什麼）、🔧 <b>喬課</b>（調課連鎖、保證不衝堂）、🧭 <b>教師可調總覽</b>（看某師每節可移到幾處）。</li>
+      <li>🪄 <b>自動排課</b>：一鍵排滿，遵守所有限制並避開衝堂；可「清空重排」或「只補空格」；排不下的會列出。</li>
+      <li>✂️ 分節先選老師再點格；分組自動多師同格；協同放一班自動同步；連堂自動成對。</li>
+      <li>↶ <b>復原／重做</b>（Ctrl+Z／Ctrl+Y）；🔴 紅框＝需注意（衝堂／不排課／協同未同步／連堂未相鄰）。</li></ul>`)}
+
+    ${sec('🔒 鎖定與導師自編（排課定稿後）', `<ul>
+      <li><b>🔒 一鍵鎖定</b>整表，或 <b>🎯 單格鎖定</b>逐格選；鎖定時系統自動把<b>本班導師任課格</b>釋放為空白供導師選課，其餘唯讀。</li>
+      <li><b>導師選課</b>：點自編格從導師配課科目挑（協同連動夥伴班）；<b>✅ 導師自編完成</b>鎖本班（有空格或衝堂會拒絕）；<b>🔓 解鎖導師自編</b>可重選。</li>
+      <li><b>🔓 解除鎖定</b>（整表）：自編格<b>還原成鎖定前的原排課</b>。</li></ul>`)}
+
+    ${sec('🧑‍🏫 導師線上填課', `<ul>
+      <li><b>用途</b>：鎖定後把各班「自編格選課」開放給該班導師線上填，再收回合併（走 Google Drive、需登入）。</li>
+      <li><b>排課者</b>：先填好各班<b>導師 Email</b>＋<b>班級代號</b> → 鎖定 → ④排課橫幅「<b>☁️ 線上填課</b>」開放（系統建各班填課檔、逐位分享、給你一條<b>填課連結</b>）。</li>
+      <li><b>導師</b>：開連結登入 → 選自己班的檔 → 點 🧩 自編格選課 → 存雲端。系統<b>核對帳號、只能開自己班</b>。</li>
+      <li>📊 <b>進度總覽</b>：可看各班狀態、複製未交名單催交；排課者按「<b>收回填課</b>」合併並顯示每班摘要。</li></ul>`)}
+
+    ${sec('🔄 代課（分頁「代課」）', `<ul>
+      <li><b>用途</b>：某老師請假時安排代課、印出相關課表；<b>不會更動原排課</b>。</li>
+      <li><b>流程</b>：＋新增代課 → 選<b>請假老師</b>＋<b>起訖日期</b>（可跨多天／半天／指定節次）→ 調出其課表，點<b>有課的格子</b>指派當節<b>空堂</b>的老師 → 列印／存 PDF。可多筆、可刪除。</li>
+      <li><b>長假分週指派</b>：以「全部週」為底，某週要換人就切到<b>該週</b>單獨指派（其餘週仍沿用）。</li>
+      <li><b>防呆</b>：同一時段已被指派、或請假日期重疊會擋。</li>
+      <li>🧑‍🏫 <b>代課老師合併總表</b>：一次看每位代課老師的所有代課。</li>
+      <li>☁️ <b>線上代課填報</b>：把填報開放給老師線上自己填——排課者按「☁️ 線上代課填報」開放（逐位 Email 分享、給連結）；老師開連結登入，系統用 Email 對應本人，<b>只能新增自己的代課</b>並送出雲端；排課者「<b>收回</b>」合併。</li></ul>`)}
+
+    ${sec('領域節數', `<ul>
+      <li><b>建議節數參考表</b>：可改名稱／節數、新增或刪除領域；內建 108 課綱起始值，<b>請務必校對</b>。</li>
+      <li><b>實配／建議對照</b>：把年級科目節數依所屬領域加總與建議並排，<b>相符綠、不符紅</b>；未指定領域者列「未分類」。</li></ul>`)}
+
+    ${sec('課表輸出 / 備份', `<ul>
+      <li>類型：<b>班級表、教師表、全校總表（各班）、全校教師總表</b>。</li>
+      <li>可<b>列印／存 PDF／匯出 CSV／一鍵 Word（.docx）</b>；兩種全校總表可<b>橫向列印</b>或<b>下載 PNG</b> 直接貼公告。</li>
+      <li>首頁「💾 備份」可匯出／匯入 JSON（換裝置用）。</li></ul>`)}
+
+    ${sec('☁️ 雲端同步（設定頁）', `<ul>
+      <li>連結 Google 後自動備份到<b>你自己的雲端硬碟</b>（App 專屬隱藏資料夾、無伺服器）。</li>
+      <li><b>多裝置接續</b>：另一台開啟時若雲端較新會問是否還原；可挑<b>歷史版本（最多 7 份）</b>；可更換帳號／解除連結。</li></ul>`)}
     </div>`,
   });
 }
@@ -3956,7 +4094,7 @@ async function cloudReconcileOnConnect() {
 
 async function clearAllLocalData() {
   suppressCloud = true;
-  try { state = defaultState(); await idbSet(STATE_KEY, state); selectedGradeId = null; currentTab = 'subjects'; render(); }
+  try { state = defaultState(); await idbSet(STATE_KEY, state); selectedGradeId = null; currentTab = 'home'; render(); }
   finally { suppressCloud = false; }
 }
 
@@ -4094,6 +4232,9 @@ const clickHandlers = {
   'check-staffing': () => staffingReportModal(),
   'toggle-matrix': () => { showLoadMatrix = !showLoadMatrix; render(); },
   'goto-teachers': () => { currentTab = 'teachers'; render(); },
+  'goto': el => { const t = el.dataset.goto; if (t) { currentTab = t; render(); } },
+  'help': () => helpModal(),
+  'backup': () => backupMenu(),
   'toggle-avail': el => { el.classList.toggle('off'); el.textContent = el.classList.contains('off') ? '✕' : ''; },
   'add-load-row': () => { syncLoadFromDOM(); const cid = state.classes[0] ? state.classes[0].id : ''; const idx = modalLoad.length; modalLoad.push({ classId: cid, subjectId: firstAvailableSubject(cid, idx), hours: 0 }); refreshLoadEditor(); updateLoadSum(); },
   'del-load-row': el => { syncLoadFromDOM(); modalLoad.splice(parseInt(el.dataset.idx, 10), 1); refreshLoadEditor(); updateLoadSum(); },
@@ -4415,9 +4556,6 @@ const changeHandlers = {
 };
 
 function bindGlobal() {
-  $('#tabs').addEventListener('click', e => { const b = e.target.closest('button[data-tab]'); if (!b) return; currentTab = b.dataset.tab; render(); });
-  $('#backupBtn').addEventListener('click', backupMenu);
-  const help = $('#helpBtn'); if (help) help.addEventListener('click', helpModal);
   document.addEventListener('click', e => { const el = e.target.closest('[data-action]'); if (!el) return; const fn = clickHandlers[el.dataset.action]; if (fn) fn(el, e); });
   // 追蹤摺疊區展開狀態（toggle 不會冒泡 → 用捕獲階段），讓重繪後保持使用者的展開/收合
   document.addEventListener('toggle', e => {
@@ -4434,11 +4572,37 @@ function bindGlobal() {
     if (k === 'z' && !e.shiftKey) { e.preventDefault(); doUndo(); }
     else if (k === 'y' || (k === 'z' && e.shiftKey)) { e.preventDefault(); doRedo(); }
   });
-  $('#versionTag').textContent = APP_VERSION;
+  const vt = $('#versionTag'); if (vt) vt.textContent = APP_VERSION;
 }
 
 function upgradeNoticeModal() {
   openModal({ title: '系統改版通知', body: `<div class="help-note" style="margin:0">課務編排系統全面改版，先前的設定內容無法相容，改版後所有資料將會清除。已開啟使用過的同仁，請重新整理網頁，重新開始建置。</div>` });
+}
+
+// v10.19 全新安裝初次設定精靈：填入貴校基本資料 → 立即套用到首頁抬頭與課表輸出（日後仍可於「設定」修改）
+function setupModal() {
+  const s = state.settings || {};
+  openModal({
+    title: '歡迎使用課務編排 · 初次設定',
+    saveLabel: '開始使用',
+    body: `<div class="help-note" style="margin:0 0 16px">先填入貴校基本資料，<b>首頁抬頭與課表輸出會立即套用</b>；日後可在「設定」隨時修改。</div>
+      <div class="setup-fields">
+        <label class="field"><span>校名</span><input type="text" id="setupSchool" value="${esc(s.reportSchool || '')}" placeholder="請輸入貴校校名"></label>
+        <label class="field"><span>學年度</span><input type="text" id="setupYear" value="${esc(s.reportYear || '')}" placeholder="如 114"></label>
+        <label class="field"><span>學校代號</span><input type="text" id="setupCode" value="${esc(s.schoolCode || '')}" placeholder="msd9" title="導師線上填課的雲端檔名前綴；多校共用雲端時各校自填以區隔，單校可留預設"></label>
+      </div>
+      <div class="hint" style="margin-top:10px;color:var(--muted)">學校代號僅用於「導師線上填課」的雲端檔名前綴，單一學校可沿用預設。</div>`,
+    onSave: () => {
+      state.settings.reportSchool = ($('#setupSchool').value || '').trim();
+      state.settings.reportYear = ($('#setupYear').value || '').trim();
+      const code = ($('#setupCode').value || '').trim();
+      if (code) state.settings.schoolCode = code;
+      save(); render();
+      toast('已套用貴校資料，可隨時在「設定」修改');
+      if (!state.helpSeen) { state.helpSeen = true; save(); setTimeout(helpModal, 0); }   // 設定完成後接著顯示使用說明（一次）
+      return true;
+    }
+  });
 }
 
 /* ---------- Init ---------- */
@@ -4463,9 +4627,11 @@ async function init() {
   if (typeof state.domainsConfirmed !== 'boolean') state.domainsConfirmed = state.subjects.length > 0; // v09.20 領域→科目整合閘門（既有已建科目者視為已完成，不擋）
   state.subjects.forEach(s => { if (s.selfDesigned) delete s.selfDesigned; });                // v08.03 移除舊手動自編旗標
   // v03.00 課表輸出格式欄位 guard（舊資料補預設）
-  if (!state.settings.reportSchool) state.settings.reportSchool = '臺東縣成功鎮三民國民小學';
-  if (!state.settings.reportYear) state.settings.reportYear = '113';
-  if (!state.settings.schoolCode) state.settings.schoolCode = 'msd9';                        // v09.09 學校代號（填課檔名前綴）
+  // 校名／學年度不再預填任何校別（v10.19 通用化）：留白由排課者於「設定」填入，首頁抬頭以佔位符提示。
+  if (typeof state.settings.reportSchool !== 'string') state.settings.reportSchool = '';
+  if (typeof state.settings.reportYear !== 'string') state.settings.reportYear = '';
+  if (!state.settings.schoolCode) state.settings.schoolCode = 'msd9';                        // v09.09 學校代號（填課檔名前綴，僅內部用於雲端檔名）
+  if (typeof state.setupSeen !== 'boolean') state.setupSeen = !!state.settings.reportSchool; // v10.19 既有已填校名者視為已設定過、不再跳精靈
   if (!state.settings.subjectMap || typeof state.settings.subjectMap !== 'object') state.settings.subjectMap = {};
   if (!Array.isArray(state.domains)) state.domains = defaultDomains();                 // v06.00 領域節數參考表
   bindGlobal();
@@ -4476,6 +4642,7 @@ async function init() {
   if (fillMode) { fillLinkMode = true; setKiosk(true); }                    // v09.05/07 導師 kiosk：只顯示填課介面；連結進入者離開＝結束、不進系統
   else if (substMode) { substLinkMode = true; setSubstKiosk(true); }        // v10.01 代課 kiosk：只顯示代課填報；離開＝結束、不進系統
   else if (hadOldData) upgradeNoticeModal();                              // 舊版同仁：改版通知
+  else if (!state.setupSeen) { state.setupSeen = true; save(); setupModal(); } // 全新安裝：初次設定精靈（校名/學年度/代號）→ 內部再串使用說明
   else if (!state.helpSeen) { helpModal(); state.helpSeen = true; save(); } // 新同仁：使用說明
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => { });
   // v07.00 雲端同步：開 App 若雲端較新則詢問還原；回前景再檢查一次

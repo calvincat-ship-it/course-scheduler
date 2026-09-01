@@ -3,10 +3,19 @@
 > 收工時 Claude 更新這裡；開工時 Claude 先讀這裡。跟程式碼一起 git 同步。
 
 ## 最後更新
-- 時間：2026-08-31 收工
+- 時間：2026-09-01
 - 機器：（本次 session 的機器；Desktop\claude code）
-- 版本：**main = v10.18（已上線、GH Pages 已部署）**。schema 仍為 2、向下相容（新欄位皆 optional、缺省安全）。
-- 狀態：全部本機（node --check + 預覽 DOM/JS 邏輯實測）通過、無 console error、已 push main。**線上代課填報 + Android PWA 授權迴圈 + Picker 金鑰皆已使用者實機驗證通過**。
+- 版本：**main = v11.00（已上線、GH Pages 已部署）**。schema 仍為 2、向下相容（新欄位皆 optional、缺省安全）。
+- 狀態：全部本機（node --check + 預覽 DOM/JS 邏輯實測）通過、無 console error、已 push main。使用者已於本機逐項確認。
+
+## 本次區間做了什麼（v10.19 開發 → v11.00 上線）＝**首頁儀表板改版 + 導覽重構 + 通用化 + 使用說明重整**
+- **🏠 首頁儀表板**（新分頁、預設落點）：抬頭識別條（校名/學年度/版本）＋四步驟完成度卡（點跳轉，重用 domainsConfirmed/classes/staffingConfirmed/lockFinalized）＋排課完成度進度條（placed/Σ classWeeklyHours）＋待辦卡（checkStaffing/unsetHomerooms/未排滿/未鎖定/久未備份 cloudState.lastSyncedAt≥7天）＋快速入口。全新用戶顯示歡迎引導。`viewHome()`/`homeStats()`。
+- **導覽重構**：**移除整條頂端 topbar（品牌區＋分頁列全拿掉）**。4 核心頁（科目/年級與班級/教師配課/排課）頂端用 `coreHead(current,actions)`＝**導覽列取代子頁標題**（active pill、動作鈕在右）；其餘頁（課表輸出/代課/設定/領域）用 `subHead(title,actions,cls)`＝標題同列加「← 回首頁」。`NAV_SECTIONS`/`homeBtn()`（kiosk 不給回首頁）。動作 `goto`（data-goto）。⚠ 各子頁**空狀態的提前 return 也要記得帶 coreHead/subHead**（曾漏排課/課表輸出空狀態）。
+- **備份鈕移入首頁 hero 藍色色塊**（data-action="backup"→backupMenu）；使用說明移入首頁快速入口（data-action="help"）。setKioskNav 現為 no-op（無 topbar），無害。
+- **校名/學年度通用化**：defaultState 改空字串、**移除載入時強制回填三民/113 的 guard**；首頁抬頭空值顯示佔位符（校名 `- - - - - - - - - - - -`、學年度 `- - -`）；設定欄加 placeholder。schoolCode 仍預設 msd9（僅內部雲端檔名 fallback）。既有已存校名的裝置不受影響。
+- **初次設定精靈 `setupModal()`**：全新安裝跳浮動視窗填校名/學年度/學校代號→即時套用首頁抬頭→接續顯示使用說明一次。旗標 `state.setupSeen`（既有已填校名者視為 true 不跳）。
+- **使用說明重整 `helpModal()`**：改 `<details class="help-sec">` **折疊式（預設收合、點標題展開）**、大幅精簡、依現況更新，新增「🏠 首頁與導覽」與「🔄 代課」兩段（代課含 in-app＋線上代課填報）。共 11 段。
+- 版本：APP_VERSION + sw CACHE_NAME 同步 v11.00。
 
 ## 本次區間做了什麼（v10.05 → v10.18）＝**PWA/雲端修復 + 代課功能全面擴充**
 - **v10.05 Android PWA「請稍候」授權無限迴圈修復**：根因＝`cloudCheckOnOpen` 沒設 `cloudBusy`→`visibilitychange` 回前景重入；Android 3p cookie 受限下連靜默 token 都跳轉 accounts.google.com 再跳回→迴圈。修：`cloudCheckInFlight`＋`cloudAutoDisabledThisSession`(失敗即停)＋前景 5 分節流；`getAccessToken`/`getFillToken` 加 25s 逾時。**救援**：設定頁「🧹 只重設本 App」＋`?reset=1`（只清 course_scheduler IDB＋course_cloud_v1＋本 App SW/快取，不動同 origin 其他 App）。
