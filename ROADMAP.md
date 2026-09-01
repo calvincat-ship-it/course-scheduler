@@ -56,11 +56,12 @@
 - ~~**久未備份提醒**~~：✅ 已完成（v11.00，併入首頁待辦卡）。
 - **範例資料/快速開始**：🟡 部分完成（v11.00 已有全新用戶歡迎引導＋初次設定精靈填校名/學年度/代號）；**仍未做**：一鍵載入「示範學校（含科目/年級/班級/教師/配課範例）」降低導入門檻。
 - ~~**自動排課局部重排**：只重排選定班/科、保留其餘。~~ ✅ 已完成（v12.00，`runAutoSchedule` scope）。
-- **連堂進階 pattern**：奇數單堂「不與連堂對排相鄰天」等（＝ROADMAP E 一項；v09.10 已先做「奇數不算錯」）。
+- ~~**連堂進階 pattern**：奇數單堂「不與連堂對排相鄰天」~~ ✅ 已完成（v12.01，見已完成區）。
 - **docx 領域合併 legend**：健康+體育→健體、音樂+美勞→藝文（＝ROADMAP D）。
 - **平板適配檢視**：格子點觸/大小順手。
 
 ## 已完成（封存，供參考）
+- **v12.01 連堂進階 pattern：單堂不與連堂對相鄰天**：把原「連堂剩餘單堂**不同天**」升級為「**不相鄰天**」（連堂對在週二→單堂避開週一~週三，Δ≤1 皆罰；不相鄰天本就涵蓋不同天，故不另留舊選項）。沿用既有欄位 `subject.singleApartFromPair`（無資料遷移），改 `cellSoftScore`（同科同天/相鄰天已有課再放→+3）與 `scoreSolution`（單堂距任一連堂對所在天 Δ≤1→+2）。軟性約束、只影響有勾選的科目。UI 單一 checkbox 改文案。
 - **v12.00 A 組自動排課進階（排課引擎進階，ROADMAP A/E 大部分收掉）**：①**共用移動搜尋核心**（把一堂課抽象成可移動單元：單純/協同/連堂/分節；`findRelocationPlan`/`tryPlace`/`relocateOffering`/`blockersFor`/`tentativePlaceSpec`；`canPlaceAt` 最終硬約束閘門＝保證零新衝堂）②**喬課升級**：`swapSuggestModal` 去除「僅單純科目」限制→分組/協同/分節/連堂皆可、連鎖**可跨班**（步驟標「跨班」）③**科目優先權分層** `unitPriorityRank`（排課限制▸自動排課偏好▸需協同▸科任▸級任本班）④**連鎖修復 pass**（`placeWithChain`：排不下者搬移已排單純課挪空間、零衝堂、連堂跳過）⑤**局部重排** `runAutoSchedule(clearFirst, scope)`（只清/重排指定班、其餘凍結；`autoRelocScope`/`coteachFullyInScope`）。**順手修**：刪班/刪師後孤兒格致 ④排課 render 崩潰（看似鎖死）→`classGrade` null 防呆＋載入 `pruneOrphanData()` 自癒＋`delClass/delTeacher` 刪後呼叫。🔴 A/E 唯一剩項：更強求解（回溯/局部搜尋）。
 - **v11.00 首頁儀表板改版＋導覽重構＋通用化＋使用說明重整**：①**🏠 首頁儀表板**（預設落點：步驟完成度、待辦〔缺配課/缺導師/未排滿/未鎖定/**久未備份 ≥7 天**〕、排課進度條、快速入口；`viewHome`/`homeStats`）②**導覽重構**（移除頂端 topbar；4 核心頁 `coreHead` 導覽列取代標題、其餘頁 `subHead` 標題同列加回首頁）③**備份鈕移入首頁 hero、使用說明入快速入口**④**校名/學年度通用化**（預設留白＋佔位符、移除強制回填三民/113）⑤**初次設定精靈** `setupModal`（校名/學年度/學校代號、`setupSeen`）⑥**使用說明改折疊式並精簡**、新增「🏠 首頁與導覽」「🔄 代課」兩段。
 - **v09.13 ROADMAP A/E 低風險四項**：①**偏好指定節**（`subject.preferPeriods`，比上午/下午 band 更細，軟性）②**主科避末節**（`subject.avoidLastPeriod`＝第七節排輕科；末節依各年級節次表動態判定 `isLastPeriodOfDay`）③**連堂剩餘單堂與連堂不同天**（`subject.singleApartFromPair`，社會/自然 2連堂+1獨立；軟罰同日同時有連堂對＋單堂）④**教師可調總覽**（A7，唯讀：選教師逐格「可移到 N 處／⛔卡死」，`teacherFlexOverview`/`flexOverviewModal`，⑤排課工具列🧭；分組/協同/分節/連堂標⚠需連動）。①②③接進 `cellSoftScore`+`scoreSolution`。**順手修 bug**：`greedyRun` 對奇數連堂科目溢排（每連堂單元都成對→3節排4節），改為尊重 `consecutiveTarget` 連堂次數上限、達標後剩餘當單堂（也讓「2連堂+1獨立」的單堂真正存在）。🔴 A/E 剩三大改留下一期：跨班調課連鎖、多型態調課建議、更強求解（回溯/局部搜尋）。

@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v12.00';
+const APP_VERSION = 'v12.01';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -1042,7 +1042,7 @@ function subjectModal(existing) {
             <option value="gap" ${spread === 'gap' ? 'selected' : ''}>隔天以上（兩節不排相鄰兩天，如體育）</option>
           </select></label>
         <label class="checkbox" style="margin-top:10px"><input type="checkbox" id="sAvoidLast" ${s.avoidLastPeriod ? 'checked' : ''}> 主科：盡量<b>不排在每天最後一節</b>（末節優先給輕科）</label>
-        <label class="checkbox" style="margin-top:6px"><input type="checkbox" id="sSingleApart" ${s.singleApartFromPair ? 'checked' : ''}> 連堂剩餘的<b>單堂與連堂不同天</b>（如社會/自然 2連堂+1獨立）</label>
+        <label class="checkbox" style="margin-top:6px"><input type="checkbox" id="sSingleApart" ${s.singleApartFromPair ? 'checked' : ''}> 連堂剩餘的<b>單堂不與連堂對相鄰天</b>（如社會/自然 2連堂+1獨立；連堂在週二→單堂避開週一~週三）</label>
         <label class="checkbox" style="margin-top:6px"><input type="checkbox" id="sExCap" ${s.excludeDailyCap ? 'checked' : ''}> 不列入教師單日節數上限（如母語課）</label>
         <div class="hint" style="color:var(--muted);font-size:12px">「多節分散」與「需連堂」互斥（連堂本就同日兩節），設連堂時自動忽略。</div>
       </details>`,
@@ -1978,7 +1978,8 @@ function cellSoftScore(classId, day, period, sid, teacherId) {
   if ((s.preferPeriods || []).length && !s.preferPeriods.includes(period)) sc += 4;   // v09.13 偏好指定節
   if (s.avoidLastPeriod && isLastPeriodOfDay(classId, day, period)) sc += 5;            // v09.13 主科避末節（第七節排輕科）
   // v09.13 連堂剩餘單堂與連堂不同天：放同科已有課的當天再多一節→加罰（引導單堂另擇一天）
-  if (s.consecutive && s.singleApartFromPair) { for (const key in state.slots) { if (state.slots[key] === sid) { const p = key.split('|'); if (p[0] === classId && parseInt(p[1], 10) === day) { sc += 3; break; } } } }
+  // v12.01 連堂剩餘單堂不與連堂對相鄰天：同科已有課的同天或相鄰天(Δ≤1)再放一節→加罰（引導單堂離連堂對更遠）
+  if (s.consecutive && s.singleApartFromPair) { for (const key in state.slots) { if (state.slots[key] === sid) { const p = key.split('|'); if (p[0] === classId && Math.abs(parseInt(p[1], 10) - day) <= 1) { sc += 3; break; } } } }
   if (!s.consecutive) { for (const key in state.slots) { if (state.slots[key] === sid) { const p = key.split('|'); if (p[0] === classId && parseInt(p[1], 10) === day) { sc += 3; break; } } } }
   const tids = s.splitTeachers ? [teacherId] : loadsForClassSubject(classId, sid).map(x => x.teacher.id);
   tids.forEach(tid => { if (tid) sc += teacherDayLoad(tid, day) * 0.5; });
@@ -2003,12 +2004,13 @@ function scoreSolution() {
   const cg = {};
   for (const key in state.slots) { const sid = state.slots[key]; const s = subjectById(sid); if (!s || !s.consecutive || !s.singleApartFromPair) continue; const p = key.split('|'); (cg[p[0] + '|' + sid] = cg[p[0] + '|' + sid] || []).push({ day: parseInt(p[1], 10), period: p[2], classId: p[0], sid }); }
   for (const gk in cg) { const cells = cg[gk]; const classId = cells[0].classId; const sid = cells[0].sid; const g = classGrade(classById(classId)); if (!g) continue;
-    const byDay = {}; cells.forEach(c => (byDay[c.day] = byDay[c.day] || []).push(c.period));
     cells.forEach(c => {
       const prev = adjacentOpenPeriod(g, c.period, c.day, -1), next = adjacentOpenPeriod(g, c.period, c.day, +1);
       c.paired = (prev && state.slots[slotKey(classId, c.day, prev)] === sid) || (next && state.slots[slotKey(classId, c.day, next)] === sid);
     });
-    for (const d in byDay) { const dayCells = cells.filter(c => c.day === +d); const hasPaired = dayCells.some(c => c.paired); const hasSingle = dayCells.some(c => !c.paired); if (hasPaired && hasSingle) pen += 2; }
+    // v12.01 單堂不與連堂對相鄰天：連堂對所在天的同天或相鄰天(Δ≤1)有未成對單堂→罰
+    const pairDays = [...new Set(cells.filter(c => c.paired).map(c => c.day))];
+    cells.forEach(c => { if (!c.paired && pairDays.some(pd => Math.abs(pd - c.day) <= 1)) pen += 2; });
   }
   return pen;
 }
