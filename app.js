@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v11.00';
+const APP_VERSION = 'v12.00';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -1149,7 +1149,7 @@ function gradeFold() {
 /* ==========================================================================
    ② 年級與班級（選年級 → 課程強制沿用年級；協同教學）
    ========================================================================== */
-const classGrade = c => gradeById(c.gradeId);
+const classGrade = c => c ? gradeById(c.gradeId) : null;   // null-guard：殘留孤兒格(已刪班級)不得讓整頁崩潰
 // v09.12 依年級順序、再依班級代號/名稱排序（全校總表、配課矩陣共用）
 function sortedClasses() {
   return state.classes.slice().sort((a, b) => {
@@ -1312,9 +1312,10 @@ function delClass(id) {
   const c = classById(id); if (!c) return;
   confirmDelete(`刪除班級「${c.name}」？`, () => {
     removeClassFromAllCoteach(id);
-    for (const k in state.slots) if (k.startsWith(id + '|')) delete state.slots[k];
+    for (const k in state.slots) if (k.startsWith(id + '|')) { delete state.slots[k]; delete state.slotTeachers[k]; if (state.slotContent) delete state.slotContent[k]; }
     state.teachers.forEach(t => { if (t.homeroomClassId === id) t.homeroomClassId = ''; }); // 清除指向此班的導師設定
     state.classes = state.classes.filter(x => x.id !== id);
+    pruneOrphanData();   // 一併清掉配課/鎖定/自編/代課等指向此班的殘留，避免孤兒資料
   });
 }
 
@@ -1601,7 +1602,37 @@ function delTeacher(id) {
     state.teachers = state.teachers.filter(x => x.id !== id);
     // 清掉分節上課中指派給此師的格子（該節課因老師移除而清空）
     for (const k in state.slotTeachers) { if (state.slotTeachers[k] === id) { delete state.slotTeachers[k]; delete state.slots[k]; } }
+    pruneOrphanData();
   });
+}
+// v11 資料自癒：清除「指向已刪除班級/科目/教師」的殘留（曾造成刪班後排課頁 computeConflicts 崩潰＝看似鎖死）。
+// 冪等；回傳清除筆數。載入時與刪除後都會呼叫。
+function pruneOrphanData() {
+  const cls = new Set(state.classes.map(c => c.id));
+  const subj = new Set(state.subjects.map(s => s.id));
+  const tch = new Set(state.teachers.map(t => t.id));
+  let removed = 0;
+  // 1) 孤兒課格：班級或科目已不存在；分節格的指定老師已不存在
+  for (const k in state.slots) {
+    const cId = k.split('|')[0]; const sid = state.slots[k];
+    const splitOrphan = state.slotTeachers[k] && !tch.has(state.slotTeachers[k]);
+    if (!cls.has(cId) || !subj.has(sid) || splitOrphan) { delete state.slots[k]; delete state.slotTeachers[k]; if (state.slotContent) delete state.slotContent[k]; removed++; }
+  }
+  // 2) 依附課格的清單/備份，只保留仍存在的格
+  if (Array.isArray(state.lockedCells)) state.lockedCells = state.lockedCells.filter(k => state.slots[k]);
+  if (Array.isArray(state.selfCells)) state.selfCells = state.selfCells.filter(k => cls.has(k.split('|')[0]));
+  if (state.selfBackup) for (const k in state.selfBackup) { if (!cls.has(k.split('|')[0]) || !subj.has((state.selfBackup[k] || {}).sid)) delete state.selfBackup[k]; }
+  if (state.selfDone) for (const cId in state.selfDone) if (!cls.has(cId)) delete state.selfDone[cId];
+  // 3) 教師配課中指向已刪班級/科目的殘留條目
+  state.teachers.forEach(t => { if (Array.isArray(t.load)) { const before = t.load.length; t.load = t.load.filter(L => cls.has(L.classId) && subj.has(L.subjectId)); removed += before - t.load.length; } });
+  // 4) 班級協同設定中指向已刪科目的殘留
+  state.classes.forEach(c => { if (c.coteach) for (const sid in c.coteach) if (!subj.has(sid)) delete c.coteach[sid]; });
+  // 5) 代課記錄中指向已刪班級的指派/週覆蓋（保留記錄本身）；assignments 鍵＝班|天|節、weekOverrides 鍵＝週|班|天|節
+  (state.substitutions || []).forEach(r => {
+    if (r.assignments) for (const k in r.assignments) { if (!cls.has(k.split('|')[0])) delete r.assignments[k]; }
+    if (r.weekOverrides) for (const k in r.weekOverrides) { if (!cls.has(k.split('|')[1])) delete r.weekOverrides[k]; }
+  });
+  return removed;
 }
 function staffingReportModal() {
   const problems = checkStaffing();
@@ -1902,6 +1933,17 @@ function staticLooseness(classId, sid) {
   }
   return n;
 }
+// v11 自動排課「科目優先權分層」：越受限越先排、導師教本班的課最後
+//  1 有排課限制 ▸ 2 有自動排課偏好 ▸ 3 需協同 ▸ 4 科任（含級任教其他班）▸ 5 級任教本班
+function unitPriorityRank(classId, sid, teacherId) {
+  const s = subjectById(sid); if (!s) return 4;
+  if ((s.lockDays || []).length || (s.lockPeriods || []).length) return 1;
+  if (s.preferBand || (s.preferPeriods || []).length || s.avoidLastPeriod || s.singleApartFromPair || s.gapDays || s.distinctDays) return 2;
+  const c = classById(classId); if (c && c.coteach && c.coteach[sid]) return 3;
+  const hr = homeroomTeacher(classId);
+  if (hr) { const tids = s.splitTeachers ? [teacherId] : loadsForClassSubject(classId, sid).map(x => x.teacher.id); if (tids.includes(hr.id)) return 5; }
+  return 4;
+}
 // 建置待排單元（每單元＝一節課）；協同科目只由一個 leader 班代表（placeSubject 會同步夥伴班）
 function buildAutoUnits() {
   const units = []; const seenCoteach = new Set();
@@ -1914,16 +1956,18 @@ function buildAutoUnits() {
       if (s.splitTeachers) {
         loadsForClassSubject(c.id, sid).forEach(L => {
           const need = L.hours - placedByTeacher(c.id, sid, L.teacher.id);
-          for (let i = 0; i < need; i++) units.push({ classId: c.id, sid, teacherId: L.teacher.id, consec: !!s.consecutive, loose });
+          const rank = unitPriorityRank(c.id, sid, L.teacher.id);
+          for (let i = 0; i < need; i++) units.push({ classId: c.id, sid, teacherId: L.teacher.id, consec: !!s.consecutive, loose, rank });
         });
       } else {
         const need = sh.hours - subjectPlaced(c.id, sid);
-        for (let i = 0; i < need; i++) units.push({ classId: c.id, sid, teacherId: null, consec: !!s.consecutive, loose });
+        const rank = unitPriorityRank(c.id, sid, null);
+        for (let i = 0; i < need; i++) units.push({ classId: c.id, sid, teacherId: null, consec: !!s.consecutive, loose, rank });
       }
     });
   });
-  // 緊度小的先排；同緊度連堂先排
-  units.sort((a, b) => (a.loose - b.loose) || (b.consec - a.consec));
+  // 優先權分層先 → 同層緊度小的先 → 同緊度連堂先
+  units.sort((a, b) => (a.rank - b.rank) || (a.loose - b.loose) || (b.consec - a.consec));
   return units;
 }
 // 單格軟性評分（越低越好）：偏好時段、同科分散不同天、教師每日平衡、上午避免湊滿
@@ -1999,40 +2043,83 @@ function greedyRun(units, rnd) {
   }
   return unplaced;
 }
+// 某協同課格的整個協同群組是否全在重排範圍內（否則不可清、以免拆散凍結的夥伴班）
+function coteachFullyInScope(key, scopeSet) {
+  const sid = state.slots[key]; const cId = key.split('|')[0]; const c = classById(cId);
+  const gid = c && c.coteach && c.coteach[sid]; if (!gid) return true;
+  return state.classes.filter(x => x.coteach && x.coteach[sid] === gid).every(x => scopeSet.has(x.id));
+}
 // 隨機重啟求解：多趟貪婪，保留「排最多、其次罰分最低」的最佳解
-function runAutoSchedule(clearFirst) {
-  const baseSlots = clearFirst ? {} : { ...state.slots };
-  const baseST = clearFirst ? {} : { ...state.slotTeachers };
+//  scope＝null → 全校（clearFirst 決定清空重排或只補空格）；scope＝班級id陣列 → 只重排這些班、其餘凍結
+function runAutoSchedule(clearFirst, scope) {
+  const scopeSet = (scope && scope.length) ? new Set(scope) : null;
+  let baseSlots, baseST;
+  if (scopeSet) {
+    // 凍結範圍外全部；範圍內「可清的格」（非跨範圍協同）清掉重排
+    baseSlots = {}; baseST = {};
+    for (const k in state.slots) {
+      const clearable = scopeSet.has(k.split('|')[0]) && coteachFullyInScope(k, scopeSet);
+      if (!clearable) { baseSlots[k] = state.slots[k]; if (state.slotTeachers[k]) baseST[k] = state.slotTeachers[k]; }
+    }
+  } else {
+    baseSlots = clearFirst ? {} : { ...state.slots };
+    baseST = clearFirst ? {} : { ...state.slotTeachers };
+  }
   let seed = 20260804; const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
   let best = null, runs = 0; const t0 = performance.now(); const BUDGET = 2500;
   do {
     state.slots = { ...baseSlots }; state.slotTeachers = { ...baseST };
-    const units = buildAutoUnits();
+    let units = buildAutoUnits();
+    if (scopeSet) units = units.filter(u => scopeSet.has(u.classId));   // 局部重排：只排範圍內班級的單元
     units.forEach(u => (u._r = rnd()));
-    units.sort((a, b) => (a.loose - b.loose) || (b.consec - a.consec) || (a._r - b._r));
+    units.sort((a, b) => (a.rank - b.rank) || (a.loose - b.loose) || (b.consec - a.consec) || (a._r - b._r));
     const unplaced = greedyRun(units, rnd);
     const placed = Object.keys(state.slots).length; const penalty = scoreSolution();
     const key = placed * 100000 - penalty;
     if (!best || key > best.key) best = { key, slots: { ...state.slots }, slotTeachers: { ...state.slotTeachers }, unplaced, placed, penalty };
     runs++;
   } while (performance.now() - t0 < BUDGET && runs < 300);
-  state.slots = best.slots; state.slotTeachers = best.slotTeachers; save();
-  return { unplaced: best.unplaced, runs, ms: Math.round(performance.now() - t0), penalty: best.penalty };
+  state.slots = best.slots; state.slotTeachers = best.slotTeachers;
+  // v11 增量2「更強求解」：對貪婪排不下者做連鎖修復 pass——用調課核心搬移已排的單純課挪出空間（零衝堂）。
+  // 連堂科目跳過（避免成對插入造成節數溢排）；已達應排節數者也跳過。
+  const beforeRepair = best.unplaced.length; let repaired = 0; const stillUnplaced = [];
+  autoRelocScope = scopeSet;   // 局部重排：連鎖修復不得搬動範圍外（凍結）的課
+  for (const u of best.unplaced) {
+    const s = subjectById(u.sid); const spec = { classId: u.classId, sid: u.sid, teacherId: u.teacherId || null };
+    if (s && s.consecutive) { stillUnplaced.push(u); continue; }
+    if (specRemaining(spec) <= 0) continue;                 // 已被其他修復填滿
+    if (placeWithChain(spec, 3)) repaired++; else stillUnplaced.push(u);
+  }
+  autoRelocScope = null;
+  save();
+  return { unplaced: stillUnplaced, runs, ms: Math.round(performance.now() - t0), penalty: scoreSolution(), repaired, beforeRepair };
 }
 function autoScheduleModal() {
   if (state.lockFinalized) { toast('課表已鎖定，請先解除鎖定再自動排課'); return; }
   const problems = checkStaffing();
   if (problems.length) { toast('尚有配課問題，請先在「③ 教師」把各班每科節數配齊'); return; }
+  const clsChecks = state.classes.map(c => `<label class="checkbox" style="margin-right:14px;white-space:nowrap"><input type="checkbox" class="auto-scope-cls" value="${c.id}"> ${esc(c.name)}</label>`).join('');
   openModal({
-    title: '🪄 自動排課（全校）',
-    body: `<p style="margin-top:0">依科目的教學型態與排課限制、教師配課、不排課時段與教師單日上限，自動把各班每科排滿，並避開教師/教室衝堂。會多次嘗試取較佳解（教師每日節數較平均、偏好時段盡量滿足）。</p>
-      <p style="color:var(--muted);font-size:13px">這是輔助工具：能排的先排滿，排不下的會列出讓你手動處理。排完仍可自由手動微調。</p>
-      <label class="checkbox" style="margin-top:8px"><input type="checkbox" id="autoClear" checked> 清空現有排課，全部重排（取消則只補空格、保留已排）</label>`,
+    title: '🪄 自動排課',
+    body: `<p style="margin-top:0">依科目的教學型態與排課限制、教師配課、不排課時段與教師單日上限，自動把每科排滿，並避開教師/教室衝堂；排不下者會嘗試<b>連鎖調課</b>挪出空間。多次嘗試取較佳解。</p>
+      <p style="color:var(--muted);font-size:13px">輔助工具：能排的先排滿，排不下的會列出讓你手動處理；排完仍可自由微調。</p>
+      <div class="card" style="margin-top:8px"><div class="card-body">
+        <label class="checkbox" style="display:block;margin-bottom:6px"><input type="radio" name="autoScope" value="all" checked> <b>全校</b></label>
+        <label class="checkbox" style="display:block;margin:0 0 12px 22px"><input type="checkbox" id="autoClear" checked> 清空現有排課，全部重排（取消則只補空格、保留已排）</label>
+        <label class="checkbox" style="display:block;margin-bottom:6px"><input type="radio" name="autoScope" value="classes"> <b>只重排指定班級</b>（其餘班級<b>凍結不動</b>；勾選的班級會先清空再重排）</label>
+        <div style="margin-left:22px;display:flex;flex-wrap:wrap;gap:2px 0">${clsChecks || '<span style="color:var(--muted)">尚無班級</span>'}</div>
+      </div></div>`,
     saveLabel: '開始排課',
     onSave: () => {
+      const mode = (document.querySelector('input[name="autoScope"]:checked') || {}).value;
+      let scope = null;
+      if (mode === 'classes') {
+        scope = [...document.querySelectorAll('.auto-scope-cls:checked')].map(el => el.value);
+        if (!scope.length) { toast('請至少勾選一個要重排的班級'); return false; }
+      }
       const clear = $('#autoClear').checked;
       pushUndo();
-      const r = runAutoSchedule(clear);
+      const r = runAutoSchedule(clear, scope);
       render();
       setTimeout(() => autoResultModal(r.unplaced, r), 0); // 等 modal-save 關掉設定 modal 後再開結果 modal
       return true;
@@ -2043,7 +2130,7 @@ function autoResultModal(unplaced, r) {
   const total = Object.keys(state.slots).length;
   const conf = Object.keys(computeConflicts()).length;
   let body = `<div class="total-badge ${unplaced.length ? 'bad' : 'ok'}">${unplaced.length ? `⚠ 有 ${unplaced.length} 節排不下（其餘已排）` : '✓ 全部排滿'}　·　已排 ${total} 格　·　衝堂 ${conf}</div>
-    <p style="color:var(--muted);font-size:12px;margin:6px 0 0">嘗試 ${r.runs} 種排法取最佳（品質分 ${r.penalty}，越低越好）·　${r.ms}ms</p>`;
+    <p style="color:var(--muted);font-size:12px;margin:6px 0 0">嘗試 ${r.runs} 種排法取最佳（品質分 ${r.penalty}，越低越好）·　${r.ms}ms${r.repaired ? `　·　🔧 連鎖修復再塞入 ${r.repaired} 節` : ''}</p>`;
   if (unplaced.length) {
     const agg = {};
     unplaced.forEach(u => { const k = u.classId + '|' + u.sid + '|' + (u.teacherId || ''); agg[k] = agg[k] || { u, n: 0 }; agg[k].n++; });
@@ -2093,35 +2180,169 @@ function suggestionsForCell(classId, day, period) {
   });
   return out;
 }
-// 找調課連鎖：搬動班內「單純」課讓 (sid,teacher) 能排進 classId。回傳 {cell, moves:[{from,to,sid}]} 或 null。state-preserving。
-function findEvictionChain(classId, sid, teacherId, maxDepth) {
-  const savedSlots = { ...state.slots }, savedST = { ...state.slotTeachers };
-  const budget = { n: 4000 };
-  function dfs(curSid, curTeacher, depth, avoid) {
-    if (budget.n-- <= 0) return null;
-    for (const c of candidateCells(classId, curSid, curTeacher)) { const k = slotKey(classId, c.day, c.period); if (!avoid.has(k)) return { cell: k, moves: [] }; }
-    if (depth <= 0) return null;
-    for (const cell of openGridCells(classId)) {
-      const k = slotKey(classId, cell.day, cell.period); if (avoid.has(k)) continue;
-      const occSid = state.slots[k]; if (!occSid) continue;
-      if (!isSimpleSubject(occSid, classId)) continue;
-      delete state.slots[k]; const occT = state.slotTeachers[k]; if (occT) delete state.slotTeachers[k];
-      let ret = null;
-      if (canPlaceAt(classId, cell.day, cell.period, curSid, curTeacher)) {
-        const nav = new Set(avoid); nav.add(k);
-        const sub = dfs(occSid, null, depth - 1, nav);
-        if (sub) ret = { cell: k, moves: [...sub.moves, { from: k, to: sub.cell, sid: occSid }] };
-      }
-      state.slots[k] = occSid; if (occT) state.slotTeachers[k] = occT;
-      if (ret) return ret;
-    }
-    return null;
-  }
-  let result = null;
-  try { result = dfs(sid, teacherId, maxDepth, new Set()); }
-  finally { state.slots = savedSlots; state.slotTeachers = savedST; }
-  return result;
+/* ==========================================================================
+   共用移動搜尋核心（A 組增量 1）
+   —— 把「一堂課」抽象成可移動單元，在假想 grid 上做約束檢查與多步（跨班）連鎖，
+      供「喬課」與日後「調課（公布後請假限期對調）」共用。
+   spec = { classId, sid, teacherId }（teacherId 僅分節有意義；其餘 null）。
+   保證：所有落點皆過 canPlaceAt（硬約束），套用後不產生任何新衝堂。
+   本增量：目標課可為任意型態（單純/分組/協同/分節/連堂）；被搬移的「占用課」僅限單純科（單格、屬自己班），
+           但連鎖可跨班（因某格的阻礙常是老師/教室在別班被占用）。搬移非單純占用課留待後續增量。
+   ========================================================================== */
+function snapshotGrid() { return { slots: { ...state.slots }, slotTeachers: { ...state.slotTeachers } }; }
+function restoreGrid(s) { state.slots = s.slots; state.slotTeachers = s.slotTeachers; }
+
+// spec 在某格會用到的授課指派（老師/教室）
+function specAssignmentsAt(spec, cellKey) {
+  const cId = cellKey.split('|')[0]; const s = subjectById(spec.sid);
+  if (s && s.splitTeachers) { const L = loadsForClassSubject(cId, spec.sid).find(x => x.teacher.id === spec.teacherId); return [{ teacherId: spec.teacherId, roomId: L ? (L.roomId || '') : '' }]; }
+  return loadsForClassSubject(cId, spec.sid).map(x => ({ teacherId: x.teacher.id, roomId: x.roomId || '' }));
 }
+// 某(day,period) 目前所有已排格的授課（含 key，供辨識要搬哪一格）
+function offeringsAtDP(day, period) {
+  const out = [];
+  for (const key in state.slots) { const p = key.split('|'); if (parseInt(p[1], 10) !== day || p[2] !== period) continue; slotAssignments(key).forEach(x => out.push({ key, classId: p[0], subjectId: state.slots[key], teacherId: x.teacherId, roomId: x.roomId })); }
+  return out;
+}
+// spec 在該格的靜態可行性（不看占用/外部衝堂，那些是可搬阻礙）：日/節限制、老師不排課
+function specStaticOK(spec, cellKey) {
+  const [, dStr, period] = cellKey.split('|'); const day = parseInt(dStr, 10); const s = subjectById(spec.sid);
+  if ((s.lockDays || []).length && !s.lockDays.includes(day)) return false;
+  if ((s.lockPeriods || []).length && !s.lockPeriods.includes(period)) return false;
+  for (const a of specAssignmentsAt(spec, cellKey)) { const t = teacherById(a.teacherId); if (t && (t.unavailable || []).includes(dStr + '|' + period)) return false; }
+  return true;
+}
+// 列出 spec 的候選落點（依型態回不同結構的 cells）；avoid 內的格不用
+function targetPlacements(spec, avoid) {
+  const { classId, sid } = spec; const s = subjectById(sid); const c = classById(classId); const g = classGrade(c);
+  if (!g) return [];
+  const coteach = !!(c.coteach && c.coteach[sid]);
+  const opens = openGridCells(classId).filter(x => !avoid.has(slotKey(classId, x.day, x.period)));
+  const res = [];
+  if (s.consecutive && coteach) return res;                       // 連堂＋協同組合，本增量不支援
+  if (s.consecutive) {                                            // 連堂：相鄰兩格
+    for (const x of opens) {
+      const nb = adjacentOpenPeriod(g, x.period, x.day, +1); if (!nb) continue;
+      const k1 = slotKey(classId, x.day, x.period), k2 = slotKey(classId, x.day, nb);
+      if (avoid.has(k2)) continue;
+      res.push({ kind: 'consec', cells: [k1, k2] });
+    }
+  } else if (coteach) {                                           // 協同：本班＋夥伴班同(day,period)
+    const gid = c.coteach[sid];
+    for (const x of opens) {
+      const cells = [slotKey(classId, x.day, x.period)];
+      state.classes.forEach(p => { if (p.id !== classId && p.coteach && p.coteach[sid] === gid) { const pg = classGrade(p); if (pg && gradePeriodHasDay(pg, x.period, x.day)) cells.push(slotKey(p.id, x.day, x.period)); } });
+      res.push({ kind: 'coteach', cells });
+    }
+  } else {                                                        // 單純／分組／分節：單格
+    for (const x of opens) res.push({ kind: 'single', cells: [slotKey(classId, x.day, x.period)] });
+  }
+  return res;
+}
+// 某落點的阻礙格集合（占用格＋外部師/室衝堂來源）；回 Set(keys)，或 null＝此落點不可行（格不可用／有非單純阻礙）
+function blockersFor(placement, spec) {
+  const blockers = new Set();
+  for (const cell of placement.cells) {
+    const [cId, dStr, period] = cell.split('|'); const day = parseInt(dStr, 10);
+    const g = classGrade(classById(cId)); if (!g || !gradePeriodHasDay(g, period, day)) return null;
+    if (!specStaticOK(spec, cell)) return null;
+    if (state.slots[cell]) { if (!isSimpleSubject(state.slots[cell], cId)) return null; blockers.add(cell); }
+    const news = specAssignmentsAt(spec, cell);
+    for (const e of offeringsAtDP(day, period)) {
+      if (placement.cells.includes(e.key)) continue;             // 自己的落點格（占用已另計）
+      for (const a of news) {
+        const coTogether = e.subjectId === spec.sid && e.classId !== cId && classesCoteachTogether(e.classId, cId, spec.sid);
+        const teacherClash = a.teacherId && a.teacherId === e.teacherId && !coTogether;
+        const roomClash = a.roomId && a.roomId === e.roomId && !(e.classId === cId && e.subjectId === spec.sid) && !coTogether;
+        if (teacherClash || roomClash) { if (!isSimpleSubject(e.subjectId, e.classId)) return null; blockers.add(e.key); }
+      }
+    }
+  }
+  return blockers;
+}
+// 實際把 spec 放到落點（回傳成功與否；失敗會自清）；用 canPlaceAt 當最終硬約束閘門
+function tentativePlaceSpec(spec, placement) {
+  const s = subjectById(spec.sid);
+  if (placement.kind === 'consec') {
+    const [k1, k2] = placement.cells; const [c, d, p1] = k1.split('|'); const p2 = k2.split('|')[2];
+    if (!canPlaceAt(c, d, p1, spec.sid, spec.teacherId)) return false;
+    placeSubject(c, d, p1, spec.sid, spec.teacherId);
+    if (!canPlaceAt(c, d, p2, spec.sid, spec.teacherId)) { delete state.slots[k1]; delete state.slotTeachers[k1]; return false; }
+    placeSubject(c, d, p2, spec.sid, spec.teacherId);
+    return true;
+  }
+  if (placement.kind === 'coteach') {
+    for (const cell of placement.cells) { const [c, d, p] = cell.split('|'); if (!canPlaceAt(c, d, p, spec.sid, null)) return false; }
+    const [lc, ld, lp] = placement.cells[0].split('|'); placeSubject(lc, ld, lp, spec.sid, null);
+    for (const cell of placement.cells) if (state.slots[cell] !== spec.sid) { placement.cells.forEach(k => { if (state.slots[k] === spec.sid) delete state.slots[k]; }); return false; }
+    return true;
+  }
+  const [c, d, p] = placement.cells[0].split('|');
+  if (!canPlaceAt(c, d, p, spec.sid, spec.teacherId)) return false;
+  placeSubject(c, d, p, spec.sid, spec.teacherId);
+  return true;
+}
+// 搜尋把 spec 排入的方案（含跨班連鎖）。回 {placement, moves:[{from,to,sid}]} 或 null。mutating（外層負責快照還原）。
+function tryPlace(spec, depth, avoid, budget) {
+  for (const placement of targetPlacements(spec, avoid)) {
+    if (budget.n-- <= 0) return null;
+    const blk = blockersFor(placement, spec); if (blk === null) continue;
+    if (blk.size === 0) {
+      const snap = snapshotGrid();
+      if (tentativePlaceSpec(spec, placement)) return { placement, moves: [] };
+      restoreGrid(snap); continue;
+    }
+    if (depth <= 0) continue;
+    const snap = snapshotGrid(); const moves = []; const newAvoid = new Set(avoid); placement.cells.forEach(k => newAvoid.add(k));
+    let ok = true;
+    for (const bkey of blk) {
+      const r = relocateOffering(bkey, depth - 1, newAvoid, budget);
+      if (!r) { ok = false; break; }
+      moves.push(...r.moves); newAvoid.add(r.toKey);
+    }
+    if (ok && tentativePlaceSpec(spec, placement)) return { placement, moves };
+    restoreGrid(snap);
+  }
+  return null;
+}
+// 局部重排時限制連鎖修復只可搬動「範圍內班級」的課（null＝不限，喬課/全校用）
+let autoRelocScope = null;
+// 把某格的「單純占用課」搬到本班其他合法格（可再連鎖）。回 {moves, toKey} 或 null。mutating。
+function relocateOffering(key, depth, avoid, budget) {
+  const sid = state.slots[key]; const cId = key.split('|')[0];
+  if (!sid || !isSimpleSubject(sid, cId)) return null;
+  if (autoRelocScope && !autoRelocScope.has(cId)) return null;   // 局部重排：不得搬動範圍外（凍結）的課
+  const snap = snapshotGrid();
+  delete state.slots[key]; delete state.slotTeachers[key];
+  const av = new Set(avoid); av.add(key);
+  const r = tryPlace({ classId: cId, sid, teacherId: null }, depth, av, budget);
+  if (!r) { restoreGrid(snap); return null; }
+  return { moves: [...r.moves, { from: key, to: r.placement.cells[0], sid }], toKey: r.placement.cells[0] };
+}
+// 對外：找調課方案（state-preserving）。回 {targetCells, kind, moves} 或 null。
+function findRelocationPlan(spec, maxDepth) {
+  const snap = snapshotGrid(); const budget = { n: 8000 }; let r = null;
+  try { r = tryPlace(spec, maxDepth, new Set(), budget); } finally { restoreGrid(snap); }
+  return r ? { targetCells: r.placement.cells, kind: r.placement.kind, moves: r.moves } : null;
+}
+// 求解用：直接把 spec 以連鎖方式排入（會實際搬移已排的單純課）；成功回 true。不進 undo/render/save。
+function placeWithChain(spec, maxDepth) {
+  const plan = findRelocationPlan(spec, maxDepth); if (!plan) return false;
+  plan.moves.forEach(m => { delete state.slots[m.from]; delete state.slotTeachers[m.from]; state.slots[m.to] = m.sid; });
+  if (plan.kind === 'coteach') { const [c, d, p] = plan.targetCells[0].split('|'); placeSubject(c, d, p, spec.sid, null); }
+  else plan.targetCells.forEach(k => { const [c, d, p] = k.split('|'); placeSubject(c, d, p, spec.sid, spec.teacherId); });
+  return true;
+}
+// spec 是否有直接（免搬移）落點——供調色盤判定「卡住」與是否顯示喬課
+function canPlaceDirect(spec) {
+  for (const pl of targetPlacements(spec, new Set())) { const b = blockersFor(pl, spec); if (b && b.size === 0) return true; }
+  return false;
+}
+function specRemaining(spec) {
+  const s = subjectById(spec.sid);
+  return (s && s.splitTeachers) ? subjectRemaining(spec.classId, spec.sid, spec.teacherId) : subjectRemaining(spec.classId, spec.sid, null);
+}
+function isSpecStuck(spec) { return specRemaining(spec) > 0 && !canPlaceDirect(spec); }
 // 放課共用邏輯（協同同步 + 連堂成對），回傳提示；供手動點格與建議放入共用
 function placeWithExtras(classId, day, period, sid, tid) {
   pushUndo();
@@ -2173,25 +2394,41 @@ function cellSuggestModal(classId, day, period) {
     </button>`).join('');
   openModal({ title: '空格建議 · 點一項放入', body: head + `<div class="suggest-list">${rows}</div>` });
 }
+// 一格的簡短座標描述（含班名，供跨班調課步驟閱讀）
+function cellLabel(key, withClass) {
+  const [cId, d, p] = key.split('|');
+  return `${withClass ? esc((classById(cId) || {}).name || '') + ' ' : ''}${DAY_LABELS[+d]}${esc(periodLabel(p))}`;
+}
+// 套用調課方案：依序重放搬移，再放入目標課（協同/連堂自動同步／成對）
+function applyRelocationPlan(spec, plan) {
+  pushUndo();
+  plan.moves.forEach(m => { delete state.slots[m.from]; delete state.slotTeachers[m.from]; state.slots[m.to] = m.sid; });
+  if (plan.kind === 'coteach') { const [c, d, p] = plan.targetCells[0].split('|'); placeSubject(c, d, p, spec.sid, null); }
+  else plan.targetCells.forEach(k => { const [c, d, p] = k.split('|'); placeSubject(c, d, p, spec.sid, spec.teacherId); });
+  save(); render();
+}
 function swapSuggestModal(classId, sid, teacherId) {
-  if (!isSimpleSubject(sid, classId)) { toast('此科為分組/協同/分節/連堂，暫不支援自動調課建議，請手動處理'); return; }
-  const chain = findEvictionChain(classId, sid, teacherId, 3);
-  const clsName = (classById(classId) || {}).name || '';
-  if (!chain) { openModal({ title: '調課建議', body: `<p style="margin-top:0">找不到 3 步內的調課方式，讓「${esc(subjectName(sid))}」排進「${esc(clsName)}」。</p><p style="color:var(--muted)">建議：放寬該科的排課限制、調整教師不排課時段或單日上限，或先手動挪動更多課後再試。</p>` }); return; }
-  const stepHtml = chain.moves.map((m, i) => { const a = m.from.split('|'), b = m.to.split('|');
-    return `<li>把「<b>${esc(subjectName(m.sid))}</b>」從 ${DAY_LABELS[+a[1]]}${esc(periodLabel(a[2]))} → 移到 ${DAY_LABELS[+b[1]]}${esc(periodLabel(b[2]))}</li>`; }).join('');
-  const t = chain.cell.split('|');
-  const finalHtml = `<li>再把「<b>${esc(subjectName(sid))}</b>」放到 ${DAY_LABELS[+t[1]]}${esc(periodLabel(t[2]))}</li>`;
-  const body = `<p style="margin-top:0">要讓「<b>${esc(subjectName(sid))}</b>」排進「${esc(clsName)}」，建議這樣調（${chain.moves.length ? chain.moves.length + ' 步移動' : '直接放入'}）：</p>
+  const spec = { classId, sid, teacherId: teacherId || null };
+  const s = subjectById(sid); const clsName = (classById(classId) || {}).name || '';
+  const c = classById(classId);
+  if (s.consecutive && c.coteach && c.coteach[sid]) { openModal({ title: '調課建議', body: `<p style="margin-top:0">「${esc(subjectName(sid))}」同時是連堂＋協同，這種組合的自動調課較複雜，暫請手動處理。</p>` }); return; }
+  const plan = findRelocationPlan(spec, 3);
+  if (!plan) { openModal({ title: '調課建議', body: `<p style="margin-top:0">找不到 3 步內的調課方式，讓「${esc(subjectName(sid))}」排進「${esc(clsName)}」。</p><p style="color:var(--muted)">建議：放寬該科的排課限制、調整教師不排課時段或單日上限、或先手動挪動更多課後再試。</p>` }); return; }
+  const stepHtml = plan.moves.map(m => {
+    const crossClass = m.from.split('|')[0] !== classId;
+    return `<li>把「<b>${esc(subjectName(m.sid))}</b>」從 ${cellLabel(m.from, true)} → 移到 ${cellLabel(m.to, true)}${crossClass ? '　<span style="color:var(--warn)">（跨班）</span>' : ''}</li>`;
+  }).join('');
+  const targetDesc = plan.kind === 'coteach'
+    ? `${cellLabel(plan.targetCells[0], false)}（協同同步 ${plan.targetCells.length} 班）`
+    : plan.kind === 'consec'
+      ? `${cellLabel(plan.targetCells[0], false)} + ${cellLabel(plan.targetCells[1], false)}（連堂相鄰兩節）`
+      : cellLabel(plan.targetCells[0], false);
+  const finalHtml = `<li>再把「<b>${esc(subjectName(sid))}</b>」放到 ${targetDesc}</li>`;
+  const crossNote = plan.moves.some(m => m.from.split('|')[0] !== classId) ? '　本方案含<b>跨班</b>調整（因老師/教室在別班被占用）。' : '';
+  const body = `<p style="margin-top:0">要讓「<b>${esc(subjectName(sid))}</b>」排進「${esc(clsName)}」，建議這樣調（${plan.moves.length ? plan.moves.length + ' 步移動' : '直接放入'}）：</p>
     <ol style="line-height:1.9">${stepHtml}${finalHtml}</ol>
-    <p style="color:var(--muted);font-size:12px">套用後不會產生任何衝堂；若不滿意可手動移除再重排。</p>`;
-  openModal({ title: '調課建議', wide: true, body, saveLabel: '套用建議', onSave: () => {
-    pushUndo();
-    chain.moves.forEach(m => { delete state.slots[m.from]; delete state.slotTeachers[m.from]; state.slots[m.to] = m.sid; });
-    placeSubject(classId, t[1], t[2], sid, teacherId);
-    save(); render(); toast('已套用調課建議');
-    return true;
-  } });
+    <p style="color:var(--muted);font-size:12px">套用後不會產生任何衝堂；若不滿意可用「復原」還原。${crossNote}</p>`;
+  openModal({ title: '調課建議', wide: true, body, saveLabel: '套用建議', onSave: () => { applyRelocationPlan(spec, plan); toast('已套用調課建議'); return true; } });
 }
 
 /* ---------- A7 教師視角「哪幾格可調」總覽（唯讀分析，不動資料） ---------- */
@@ -2312,9 +2549,11 @@ function paletteHTML(classId) {
         const done = placed >= L.hours, over = placed > L.hours;
         const seld = sid === selectedSubjectId && tid === selectedTeacherId;
         const room = L.roomId ? ' · ' + esc(roomName(L.roomId)) : '';
+        const stuck = !done && isSpecStuck({ classId, sid, teacherId: tid });
         chips.push(`<div class="chip ${seld ? 'selected' : ''} ${done && !over ? 'done' : ''}" style="border-left-color:${s.color}" data-action="select-subject" data-id="${sid}" data-teacher="${tid}">
           <div><div class="chip-name">✂️${s.consecutive ? '⏱' : ''}${esc(s.name)}</div>
             <div class="chip-sub">${esc(L.teacher.name)}${room}</div></div>
+          ${stuck ? `<button class="ghost mini" data-action="suggest-swap" data-id="${sid}" data-teacher="${tid}" title="這科排不下，看調課建議">🔧 喬課</button>` : ''}
           <span class="chip-count" style="color:${over ? 'var(--danger)' : done ? 'var(--ok)' : 'var(--muted)'}">${placed}/${L.hours}</span>
         </div>`);
       });
@@ -2323,7 +2562,7 @@ function paletteHTML(classId) {
     const placed = subjectPlaced(classId, sid); const done = placed >= sh.hours, over = placed > sh.hours;
     const partners = classCoteachPartners(c, sid);
     const seld = sid === selectedSubjectId && !selectedTeacherId;
-    const stuck = !done && isSimpleSubject(sid, classId) && candidateCells(classId, sid, null).length === 0;
+    const stuck = !done && isSpecStuck({ classId, sid, teacherId: null });
     chips.push(`<div class="chip ${seld ? 'selected' : ''} ${done && !over ? 'done' : ''}" style="border-left-color:${s.color}" data-action="select-subject" data-id="${sid}">
       <div><div class="chip-name">${s.allowGrouping ? '👥' : ''}${s.consecutive ? '⏱' : ''}${esc(s.name)}</div>
         <div class="chip-sub">${esc(subjectTeachersLabel(classId, sid))}${roomsLabelCS(classId, sid) ? ' · ' + esc(roomsLabelCS(classId, sid)) : ''}${partners.length ? ' · 🔗協同' : ''}</div></div>
@@ -4634,6 +4873,8 @@ async function init() {
   if (typeof state.setupSeen !== 'boolean') state.setupSeen = !!state.settings.reportSchool; // v10.19 既有已填校名者視為已設定過、不再跳精靈
   if (!state.settings.subjectMap || typeof state.settings.subjectMap !== 'object') state.settings.subjectMap = {};
   if (!Array.isArray(state.domains)) state.domains = defaultDomains();                 // v06.00 領域節數參考表
+  const pruned = pruneOrphanData();                                                    // v11 自癒：清除已刪班級/科目/教師的殘留（曾致刪班後排課頁崩潰＝看似鎖死）
+  if (pruned) { save(); }
   bindGlobal();
   render();
   const params = new URLSearchParams(location.search);

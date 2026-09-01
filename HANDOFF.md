@@ -5,8 +5,16 @@
 ## 最後更新
 - 時間：2026-09-01
 - 機器：（本次 session 的機器；Desktop\claude code）
-- 版本：**main = v11.00（已上線、GH Pages 已部署）**。schema 仍為 2、向下相容（新欄位皆 optional、缺省安全）。
-- 狀態：全部本機（node --check + 預覽 DOM/JS 邏輯實測）通過、無 console error、已 push main。使用者已於本機逐項確認。
+- 版本：**main = v12.00（已上線、GH Pages 已部署）**。schema 仍為 2、向下相容。
+- 狀態：全部本機（node --check + 預覽合成情境實測）通過、無 console error、已 push main。
+
+## 本次區間做了什麼（v11.00 → v12.00）＝**A 組自動排課進階 + 刪班崩潰修復**
+- **共用移動搜尋核心（增量 1，日後「調課」共用）**：把一堂課抽象成可移動單元（單純=1格／協同=夥伴班同節組／連堂=相鄰對／分節=該師格）；`canPlaceAt` 為最終硬約束閘門＝**保證零新衝堂**。核心函式：`snapshotGrid/restoreGrid`、`specAssignmentsAt`、`offeringsAtDP`、`specStaticOK`、`targetPlacements`、`blockersFor`、`tentativePlaceSpec`、`tryPlace`、`relocateOffering`、`findRelocationPlan`、`canPlaceDirect`、`specRemaining`、`isSpecStuck`。
+- **喬課升級**：`swapSuggestModal` 去掉「僅單純科目」限制→分組/協同/分節/連堂皆可；連鎖**可跨班**（步驟標「跨班」）；`applyRelocationPlan` 依序重放＋協同/連堂同步。調色盤卡住判定改 `isSpecStuck`（分節逐師顯示喬課鈕）。**保守**：被搬移的「占用課」仍限單純科（跨班可，但不搬別班的協同/連堂整組）。
+- **自動排課科目優先權分層**（`unitPriorityRank`）：1 有排課限制 ▸ 2 有自動排課偏好 ▸ 3 需協同 ▸ 4 科任(含級任教他班) ▸ 5 級任教本班；同層再依緊度/連堂/隨機。`buildAutoUnits` 與 `runAutoSchedule` 排序皆 rank 優先。
+- **增量 2 更強求解**：`runAutoSchedule` 挑到最佳解後跑「連鎖修復 pass」＝對排不下者 `placeWithChain`（搬移已排單純課挪空間、零衝堂）；**連堂跳過**避免成對溢排、已達應排跳過。結果視窗顯示「🔧 連鎖修復再塞入 N 節」。
+- **增量 3 局部重排**：`runAutoSchedule(clearFirst, scope)`；scope=班級id陣列→只清/重排這些班、其餘凍結；`autoRelocScope` 限制修復不得搬動範圍外課；跨範圍協同課 `coteachFullyInScope` 保留不清。自動排課視窗加「全校／只重排指定班級」選項。
+- **⚠ 刪班/刪師崩潰（看似「鎖死」）修復（重要）**：真因＝刪班後 `state.slots` 殘留孤兒格(指向已刪班)，`computeConflicts` 呼叫 `classGrade(classById(...))` 對 undefined 崩潰→整個 ④排課 render 掛掉。修＝(1)`classGrade` 加 null 防呆；(2)載入時 `pruneOrphanData()` 自癒清除孤兒（課格/分節/鎖定/自編/配課/協同/代課指派，冪等）；(3)`delClass/delTeacher` 刪後即呼叫。使用者該檔已另出「_已修復.json」。
 
 ## 本次區間做了什麼（v10.19 開發 → v11.00 上線）＝**首頁儀表板改版 + 導覽重構 + 通用化 + 使用說明重整**
 - **🏠 首頁儀表板**（新分頁、預設落點）：抬頭識別條（校名/學年度/版本）＋四步驟完成度卡（點跳轉，重用 domainsConfirmed/classes/staffingConfirmed/lockFinalized）＋排課完成度進度條（placed/Σ classWeeklyHours）＋待辦卡（checkStaffing/unsetHomerooms/未排滿/未鎖定/久未備份 cloudState.lastSyncedAt≥7天）＋快速入口。全新用戶顯示歡迎引導。`viewHome()`/`homeStats()`。
@@ -97,24 +105,27 @@
 - **v09.04** 使用說明全面重整（後續版本持續同步）。
 </details>
 
-## 下一步（可挑）＝2026-08-31 已與使用者整理的待開發清單（13 項開發＋1 校對）
-- **A 代課小項**：①代課功能「使用說明」（使用者說暫不寫、等他提）②代課 kiosk 防呆指引（再遇 Picker「developer key invalid」等顯示自救步驟）。
-- **B 自動排課進階**（ROADMAP A/E）：③跨班調課連鎖 ④調課建議支援分組/協同/分節/連堂 ⑤更強求解(回溯/局部搜尋) ⑥自動排課局部重排。
-- **C 輸出強化**（ROADMAP D）：⑦PWA 圖示補 PNG（現只有 icon.svg）⑧docx 班級表「領域合併」legend（健體/藝文）。
-- **D 體驗/穩健**（ROADMAP G-Tier3）：⑨首頁儀表板 ⑩範例資料/快速開始 ⑪連堂進階 pattern ⑫平板適配 ⑬久未備份提醒。
+## 下一步（可挑）＝2026-09-01 更新（v11.00 上線後）
+**✅ v11.00 已完成（自上一版清單）**：⑨首頁儀表板、⑬久未備份提醒、①代課「使用說明」（已於 helpModal 補「🔄 代課」段，含線上代課填報）、⑩「快速開始」的入門引導部分（歡迎頁＋初次設定精靈）。
+
+**🔲 仍待開發**
+- **A 自動排課進階**（ROADMAP A/E）：跨班調課連鎖、調課建議支援分組/協同/分節/連堂、更強求解(回溯/局部搜尋)、自動排課局部重排。
+- **B 輸出強化**（ROADMAP D）：PWA 圖示補 PNG（現只有 icon.svg）、docx 班級表「領域合併」legend（健體/藝文）。
+- **C 體驗/穩健**（ROADMAP G-Tier3）：**範例資料**（一鍵載入示範學校，含科目/年級/班級/教師/配課；⑩剩下這半）、連堂進階 pattern（奇數單堂不與連堂對相鄰天）、平板適配（格子點觸/大小）。
+- **D 代課小項**：代課 kiosk 防呆指引（再遇 Picker「developer key invalid」等顯示自救步驟）。
 - **資料校對**：108 課綱領域節數（v06 內建起始值，尤其五六年級英語/綜合、彈性學習）。
-- 使用者投報率建議：先做 ①代課使用說明 / ⑨首頁儀表板 / ⑦PNG 圖示。
+- 投報率建議：先做 **PNG 圖示**（快、掃尾）或 **範例資料**（多校導入門檻）。
 
 ## 待決 / 卡住的問題
 - **（已清）線上代課填報 live**：2026-08-31 使用者實機驗證通過（含 Android PWA 授權迴圈修復後、Picker 金鑰設「無」後）。
 - **（已清）F³ live 與雲端同步 live**：2026-08-11 驗證通過；雲端修復（v09.43）亦確認 OK。
 - **列印多週逐週輸出未真機驗證**：v10.16 分週指派的列印（substPrintHTML 逐週各出一組）本機邏輯測過、但需真實配課資料真機列印確認排版。
 - **使用者資料需手動清**：截圖中已存在的重複代課筆（田凱臣 2026-09-01 兩筆）與疑似誤填的蔣美玲 5 個月那筆——防重複只擋未來，舊筆請使用者用清單 🗑️ 自行刪。
-- **代課功能未寫「使用說明」**：使用者暫不寫、等他提。
+- **（已清）代課「使用說明」**：v11.00 已於 helpModal 補「🔄 代課」折疊段（含 in-app 代課＋線上代課填報）。
 
 ## 注意事項（給另一台的 Claude）
 - 開工先 sync-start、收工必 sync-end；不要兩台同時改同一個檔。
-- 版本 vNN.MM：`APP_VERSION`(app.js)＋sw `CACHE_NAME` 必須同步。小改直接 bump minor、大改先確認。現 **v10.18**。
+- 版本 vNN.MM：`APP_VERSION`(app.js)＋sw `CACHE_NAME` 必須同步。小改直接 bump minor、大改先確認。現 **v12.00**。
 - ⚠️ **Picker 金鑰在 Cloud Console「應用程式限制」須維持「無」**（勿改回 HTTP referrer——會被隱私瀏覽器/擴充/WebView/PWA 清 Referer 而擋掉老師）；靠「只限 Google Picker API」保安全。app.js 常數區有註解。
 - ⚠️ **同 origin 三 App 共用儲存**：血壓/筆記本/課務同 `github.io`，別叫使用者「清除網站資料」（三個一起清）；用各 App 的「只重設本 App」/`?reset=1`。
 - **手機更新版本**：先用一般 Chrome 開 live 網址（network-first 抓新版更新 SW），別點卡住的 PWA 圖示（跑舊快取）。
