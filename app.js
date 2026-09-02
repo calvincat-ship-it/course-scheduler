@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v12.07';
+const APP_VERSION = 'v12.08';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -1044,6 +1044,7 @@ function subjectModal(existing) {
         <label class="checkbox" style="margin-top:10px"><input type="checkbox" id="sAvoidLast" ${s.avoidLastPeriod ? 'checked' : ''}> 主科：盡量<b>不排在每天最後一節</b>（末節優先給輕科）</label>
         <label class="checkbox" style="margin-top:6px"><input type="checkbox" id="sSingleApart" ${s.singleApartFromPair ? 'checked' : ''}> 連堂剩餘的<b>單堂不與連堂對相鄰天</b>（如社會/自然 2連堂+1獨立；連堂在週二→單堂避開週一~週三）</label>
         <label class="checkbox" style="margin-top:6px"><input type="checkbox" id="sExCap" ${s.excludeDailyCap ? 'checked' : ''}> 不列入教師單日節數上限（如母語課）</label>
+        <label class="checkbox" style="margin-top:6px"><input type="checkbox" id="sBandSync" ${s.bandSync ? 'checked' : ''}> <b>同學段排相同節次</b>（1·2／3·4／5·6 年級各自分組，該學段所有班同日同節上此科，如體育合班）— 硬性</label>
         <div class="hint" style="color:var(--muted);font-size:12px">「多節分散」與「需連堂」互斥（連堂本就同日兩節），設連堂時自動忽略。</div>
       </details>`,
     onSave: () => {
@@ -1057,9 +1058,9 @@ function subjectModal(existing) {
       const pairsRaw = ($('#sConsecPairs').value || '').trim();
       const consecutivePairs = consec && pairsRaw !== '' ? Math.max(0, parseInt(pairsRaw, 10) || 0) : null;
       const spreadV = $('#sSpread').value;   // none / distinct / gap（整併原兩個 checkbox）
-      const data = { name, color: $('#sColor').value, textColor: $('#sTextColor').value, domainId: $('#sDomain').value, allowGrouping: m === 'group', splitTeachers: m === 'split', consecutive: consec, consecutivePairs, lockDays: ld, lockPeriods: lp, distinctDays: spreadV === 'distinct', gapDays: spreadV === 'gap', preferBand: 'any', preferPeriods: pp, avoidLastPeriod: $('#sAvoidLast').checked, singleApartFromPair: $('#sSingleApart').checked, excludeDailyCap: $('#sExCap').checked };
+      const data = { name, color: $('#sColor').value, textColor: $('#sTextColor').value, domainId: $('#sDomain').value, allowGrouping: m === 'group', splitTeachers: m === 'split', consecutive: consec, consecutivePairs, lockDays: ld, lockPeriods: lp, distinctDays: spreadV === 'distinct', gapDays: spreadV === 'gap', preferBand: 'any', preferPeriods: pp, avoidLastPeriod: $('#sAvoidLast').checked, singleApartFromPair: $('#sSingleApart').checked, excludeDailyCap: $('#sExCap').checked, bandSync: $('#sBandSync').checked };
       if (existing) Object.assign(existing, data); else state.subjects.push({ id: uid(), ...data });
-      save(); render(); toast('已儲存科目');
+      applyBandSync(); save(); render(); toast('已儲存科目');
       return true;
     },
   });
@@ -1267,7 +1268,7 @@ function classModal(existing) {
           });
         }
       } else state.classes.push({ id: uid(), name, gradeId, code, coteach: {} });
-      save(); render(); toast('已儲存班級');
+      applyBandSync(); save(); render(); toast('已儲存班級');
       return true;
     },
   });
@@ -1303,7 +1304,7 @@ function classDetailModal(c) {
         const checked = Array.from(document.querySelectorAll(`#modalRoot input[data-coteach-subj][data-sid="${sh.subjectId}"]:checked`)).map(el => el.dataset.cid);
         setClassCoteach(sh.subjectId, c.id, checked);
       });
-      save(); render(); toast('已儲存協同設定');
+      applyBandSync(); save(); render(); toast('已儲存協同設定');
       return true;
     },
   });
@@ -1316,6 +1317,7 @@ function delClass(id) {
     state.teachers.forEach(t => { if (t.homeroomClassId === id) t.homeroomClassId = ''; }); // 清除指向此班的導師設定
     state.classes = state.classes.filter(x => x.id !== id);
     pruneOrphanData();   // 一併清掉配課/鎖定/自編/代課等指向此班的殘留，避免孤兒資料
+    applyBandSync();     // R13：刪班後重建學段體育同步群組（移除只剩單班的群組）
   });
 }
 
@@ -1746,6 +1748,18 @@ function slotTeachersLabel(key) {
   return subjectTeachersLabel(classId, sid);
 }
 const classesCoteachTogether = (a, b, sid) => { const ca = classById(a), cb = classById(b); return ca && cb && ca.coteach && cb.coteach && ca.coteach[sid] && ca.coteach[sid] === cb.coteach[sid]; };
+// R13（同學段體育同時段）：依學段(1·2/3·4/5·6)為勾了 bandSync 的科目建立「合成協同群組」，讓該學段所有班的此科同步排同節次。
+//   借用現有 coteach 整套引擎（placeSubject 同步/canPlaceAt/自動排課/衝堂檢查全免改）。群組 id 以 __band: 開頭以資識別。
+//   冪等：每次先清掉舊的 __band 群組再依現況重建；不動使用者手動設的協同。學段內只有 1 班時不建群組（無需同步）。
+function applyBandSync() {
+  state.classes.forEach(c => { if (c.coteach) for (const sid in c.coteach) if (String(c.coteach[sid]).startsWith('__band:')) delete c.coteach[sid]; });
+  (state.subjects || []).forEach(s => {
+    if (!s.bandSync) return;
+    const byBand = {};
+    state.classes.forEach(c => { const gn = classGradeNum(c); if (!gn) return; const g = classGrade(c); if (!g || !gradeSubjHours(g, s.id)) return; const band = Math.ceil(gn / 2); (byBand[band] = byBand[band] || []).push(c); });
+    for (const band in byBand) { const cs = byBand[band]; if (cs.length < 2) continue; const gid = '__band:' + s.id + ':' + band; cs.forEach(c => { c.coteach = c.coteach || {}; c.coteach[s.id] = gid; }); }
+  });
+}
 const timeToMin = t => { if (!t || typeof t !== 'string') return null; const m = t.match(/^(\d{1,2}):(\d{2})$/); return m ? (+m[1]) * 60 + (+m[2]) : null; };
 // 正常下課(節間)分鐘數＝時間表中相鄰兩上課節的最短間隔；供 R5 判定「大下課」用（各校自適應）
 function normalTransitionGap() {
@@ -1879,7 +1893,7 @@ function teacherDayLoad(teacherId, day) {
   return set.size;
 }
 // 這一格能否合法排入該科(該師)：格開放且空、符合科目日/節限制、老師不排課、無教師/教室衝堂、進階硬約束
-function canPlaceAt(classId, day, period, sid, teacherId) {
+function canPlaceAt(classId, day, period, sid, teacherId, skipCoteach) {
   day = parseInt(day, 10); // 正規化：格子鍵傳入是字串，年級 periodDays/lockDays 存數字，需一致
   const key = slotKey(classId, day, period);
   if (state.slots[key]) return false;
@@ -1922,6 +1936,15 @@ function canPlaceAt(classId, day, period, sid, teacherId) {
   // 教師單日節數上限
   if (!s.excludeDailyCap) {
     for (const a of news) { const cap = teacherDailyCap(a.teacherId); if (cap > 0 && teacherDayLoad(a.teacherId, day) + 1 > cap) return false; }
+  }
+  // 協同／R13 學段同步：同群組的所有夥伴班同格也必須可放（含該年級有此節、格空、夥伴老師/教室不衝堂、單日上限），
+  // 否則同步時會漏排某班或硬塞成衝堂。skipCoteach 防遞迴（檢查夥伴時不再往下檢查）。
+  if (!skipCoteach) {
+    const gid = c && c.coteach && c.coteach[sid];
+    if (gid) for (const p of state.classes) {
+      if (p.id === classId || !(p.coteach && p.coteach[sid] === gid)) continue;
+      if (!canPlaceAt(p.id, day, period, sid, null, true)) return false;
+    }
   }
   return true;
 }
@@ -2096,6 +2119,7 @@ function greedyRun(units, rnd) {
       if (wantPair) { partner = adjacentLegalCell(u.classId, u.sid, u.teacherId, cell.day, cell.period); if (!partner) sc += 5; }
       if (sc < bestScore) { bestScore = sc; best = cell; bestPartner = partner; }
     }
+    if (wantPair && !bestPartner) { unplaced.push(u); continue; }   // 連堂要成對卻找不到相鄰夥伴格→留空(交給連鎖修復找正確成對)，絕不拆成不相鄰單格
     placeSubject(u.classId, String(best.day), best.period, u.sid, u.teacherId);
     if (wantPair && bestPartner) {
       placeSubject(u.classId, String(bestPartner.day), bestPartner.period, u.sid, u.teacherId);
@@ -2225,6 +2249,7 @@ function finalChainRepair(scopeSet, maxDepth, deadline) {
 // 隨機重啟求解：多趟貪婪，保留「排最多、其次罰分最低」的最佳解
 //  scope＝null → 全校（clearFirst 決定清空重排或只補空格）；scope＝班級id陣列 → 只重排這些班、其餘凍結
 function runAutoSchedule(clearFirst, scope, opts) {
+  applyBandSync();                                             // R13：確保學段體育同步群組為最新（班級/科目可能剛改過）
   opts = opts || {};
   const stage = opts.stage || null;                            // 分階段模式：1硬限制/2科任/3級任本班
   const scopeSet = (scope && scope.length) ? new Set(scope) : null;
@@ -5215,6 +5240,7 @@ async function init() {
   if (!Array.isArray(state.domains)) state.domains = defaultDomains();                 // v06.00 領域節數參考表
   const pruned = pruneOrphanData();                                                    // v11 自癒：清除已刪班級/科目/教師的殘留（曾致刪班後排課頁崩潰＝看似鎖死）
   if (pruned) { save(); }
+  applyBandSync();                                                                     // R13：載入時重建學段體育同步的合成協同群組（冪等）
   bindGlobal();
   render();
   const params = new URLSearchParams(location.search);
