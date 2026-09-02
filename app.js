@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v12.06';
+const APP_VERSION = 'v12.07';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -1746,10 +1746,22 @@ function slotTeachersLabel(key) {
   return subjectTeachersLabel(classId, sid);
 }
 const classesCoteachTogether = (a, b, sid) => { const ca = classById(a), cb = classById(b); return ca && cb && ca.coteach && cb.coteach && ca.coteach[sid] && ca.coteach[sid] === cb.coteach[sid]; };
+const timeToMin = t => { if (!t || typeof t !== 'string') return null; const m = t.match(/^(\d{1,2}):(\d{2})$/); return m ? (+m[1]) * 60 + (+m[2]) : null; };
+// 正常下課(節間)分鐘數＝時間表中相鄰兩上課節的最短間隔；供 R5 判定「大下課」用（各校自適應）
+function normalTransitionGap() {
+  const arr = state.settings.periods || []; let min = null;
+  for (let i = 0; i < arr.length - 1; i++) { if (arr[i].isBreak || arr[i + 1].isBreak) continue; const e = timeToMin(arr[i].end), s = timeToMin(arr[i + 1].start); if (e != null && s != null) { const g = s - e; if (g > 0 && (min == null || g < min)) min = g; } }
+  return min;
+}
 function adjacentOpenPeriod(grade, periodId, day, dir) {
   const arr = state.settings.periods; const i = arr.findIndex(p => p.id === periodId);
   if (i < 0) return null; const nb = arr[i + dir];
   if (!nb || nb.isBreak || !gradePeriodHasDay(grade, nb.id, day)) return null;
+  // R5（既定機制）：連堂不得跨越明顯的下課（如大下課）。相鄰兩節時間間隔比「正常下課」多 ≥5 分即視為不相鄰、不可連堂。
+  const cur = arr[i], earlier = dir > 0 ? cur : nb, later = dir > 0 ? nb : cur;
+  const gap = (timeToMin(earlier.end) != null && timeToMin(later.start) != null) ? timeToMin(later.start) - timeToMin(earlier.end) : null;
+  const norm = normalTransitionGap();
+  if (gap != null && norm != null && gap - norm >= 5) return null;
   return nb.id;
 }
 function teacherScheduled(t) {
@@ -2005,6 +2017,14 @@ function cellSoftScore(classId, day, period, sid, teacherId) {
   const tids = s.splitTeachers ? [teacherId] : loadsForClassSubject(classId, sid).map(x => x.teacher.id);
   tids.forEach(tid => { if (tid) sc += teacherDayLoad(tid, day) * 0.5; });
   if (isMorningPeriod(period)) tids.forEach(tid => { if (!tid) return; let am = 0; for (const key in state.slots) { const p = key.split('|'); if (parseInt(p[1], 10) === day && isMorningPeriod(p[2])) slotAssignments(key).forEach(x => { if (x.teacherId === tid) am++; }); } if (am >= 3) sc += 2; });
+  // R11 引導：級任本班課，盡量讓導師當天上午/下午都有課——放在「已覆蓋的半天」而另一半天還空→加罰，鼓勵先補另一半
+  const hr = homeroomTeacher(classId);
+  if (hr && tids.includes(hr.id)) {
+    const inAm = isMorningPeriod(period); let hasAm = false, hasPm = false;
+    for (const key in state.slots) { const p = key.split('|'); if (parseInt(p[1], 10) !== day) continue; slotAssignments(key).forEach(x => { if (x.teacherId === hr.id) { if (isMorningPeriod(p[2])) hasAm = true; else hasPm = true; } }); }
+    if (inAm && hasAm && !hasPm) sc += 2;
+    if (!inAm && hasPm && !hasAm) sc += 2;
+  }
   return sc;
 }
 // 整體方案軟性罰分（越低越好）：教師每日節數離散、上午滿堂、偏好時段、同科同日重複
@@ -2013,6 +2033,19 @@ function scoreSolution() {
   for (const key in state.slots) { const p = key.split('|'); const d = parseInt(p[1], 10); slotAssignments(key).forEach(x => { if (!x.teacherId) return; (perTD[x.teacherId] = perTD[x.teacherId] || {}); (perTD[x.teacherId][d] = perTD[x.teacherId][d] || new Set()).add(p[2]); }); }
   for (const tid in perTD) { const dd = perTD[tid]; const sizes = Object.values(dd).map(s => s.size); if (sizes.length) pen += Math.max(...sizes) - Math.min(...sizes);
     for (const d in dd) { let am = 0; dd[d].forEach(pid => { if (isMorningPeriod(pid)) am++; }); if (am >= 4) pen += 2; } }
+  // R11（既定機制，軟性）：級任導師每個「有課的上課日」上午/下午各至少 1 節；某半天該年級無節次或該師整個半天被不排課擋掉時豁免。
+  { const { am, pm } = amPmPeriods(); const amSet = new Set(am), pmSet = new Set(pm);
+    state.teachers.forEach(t => {
+      if (!t.homeroomClassId) return; const c = classById(t.homeroomClassId); const g = c && classGrade(c); if (!g) return;
+      const dd = perTD[t.id]; if (!dd) return; const un = t.unavailable || [];
+      for (const dStr in dd) { const day = +dStr; const used = dd[day];
+        const amReq = am.some(pid => gradePeriodHasDay(g, pid, day) && !un.includes(day + '|' + pid));   // 該師該日上午可上課→需有課
+        const pmReq = pm.some(pid => gradePeriodHasDay(g, pid, day) && !un.includes(day + '|' + pid));
+        if (amReq && ![...used].some(pid => amSet.has(pid))) pen += 3;
+        if (pmReq && ![...used].some(pid => pmSet.has(pid))) pen += 3;
+      }
+    });
+  }
   const seen = {};
   for (const key in state.slots) { const sid = state.slots[key]; const s = subjectById(sid); const p = key.split('|');
     if (s.preferBand === 'am' && !isMorningPeriod(p[2])) pen += 1;
@@ -2114,6 +2147,41 @@ function recreateSimple(scopeSet, rnd) {
   units.sort((a, b) => (a.rank - b.rank) || (a.loose - b.loose) || (a._r - b._r));
   greedyRun(units, rnd);
 }
+// R11 針對性修復：把級任導師「某上課日有一半天無課、另半天卻有剩(≥2節)」的一節單純本班課，搬到缺的半天空格。
+// 只搬單純科(無連堂/協同/分節顧慮)、canPlaceAt 保證零衝堂、尊重硬鎖；每(師,日)最多修一處。回修復數。
+function repairR11(scopeSet) {
+  const { am, pm } = amPmPeriods(); const amSet = new Set(am), pmSet = new Set(pm); let fixed = 0;
+  const tryMove = (cId, day, g, fromCells, toHalf) => {
+    if (fromCells.length < 2) return false;
+    for (const src of fromCells) {
+      if (autoHardLocked && autoHardLocked.has(src.key)) continue;
+      for (const pid of toHalf) {
+        if (!gradePeriodHasDay(g, pid, day)) continue;
+        const tk = slotKey(cId, day, pid); if (state.slots[tk]) continue;
+        const snap = snapshotGrid();
+        delete state.slots[src.key]; delete state.slotTeachers[src.key];
+        if (canPlaceAt(cId, day, pid, src.sid, null)) { placeSubject(cId, String(day), pid, src.sid, null); return true; }
+        restoreGrid(snap);
+      }
+    }
+    return false;
+  };
+  for (const t of state.teachers) {
+    if (!t.homeroomClassId) continue; const cId = t.homeroomClassId; if (scopeSet && !scopeSet.has(cId)) continue;
+    const g = classGrade(classById(cId)); if (!g) continue; const un = t.unavailable || [];
+    for (const day of activeDays()) {
+      const mine = [];
+      for (const key in state.slots) { const p = key.split('|'); if (p[0] !== cId || +p[1] !== day) continue; const sid = state.slots[key]; if (!isSimpleSubject(sid, cId)) continue; if (!loadsForClassSubject(cId, sid).some(x => x.teacher.id === t.id)) continue; mine.push({ key, sid, am: amSet.has(p[2]) }); }
+      if (!mine.length) continue;
+      const amCells = mine.filter(c => c.am), pmCells = mine.filter(c => !c.am);
+      const amReq = am.some(pid => gradePeriodHasDay(g, pid, day) && !un.includes(day + '|' + pid));
+      const pmReq = pm.some(pid => gradePeriodHasDay(g, pid, day) && !un.includes(day + '|' + pid));
+      if (pmReq && !pmCells.length && amCells.length >= 2) { if (tryMove(cId, day, g, amCells, pm)) fixed++; }
+      else if (amReq && !amCells.length && pmCells.length >= 2) { if (tryMove(cId, day, g, pmCells, am)) fixed++; }
+    }
+  }
+  return fixed;
+}
 // LNS 大鄰域局部搜尋：ruin&recreate 單純層，單調接受（不變差），逃離貪婪局部最佳。回統計。
 function strongSolveLNS(scopeSet, deadline, rnd) {
   let curSlots = { ...state.slots }, curST = { ...state.slotTeachers };
@@ -2211,6 +2279,7 @@ function runAutoSchedule(clearFirst, scope, opts) {
     strong = strongSolveLNS(scopeSet, performance.now() + STRONG_BUDGET * 0.30, rnd2);
     stillUnplaced = finalChainRepair(scopeSet, 4, performance.now() + STRONG_BUDGET * 0.15);
   }
+  repairR11(scopeSet);   // R11：把級任缺半天者的一節單純課搬到缺的半天（零衝堂、尊重硬鎖）
   autoHardLocked = null; autoStage = null;   // 清除分階段狀態，避免影響後續互動式喬課
   save();
   return { unplaced: stillUnplaced, runs, ms: Math.round(performance.now() - t0), penalty: scoreSolution(), repaired: beforeRepair - stillUnplaced.length, beforeRepair, strong };
