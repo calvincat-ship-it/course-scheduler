@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v12.04';
+const APP_VERSION = 'v12.05';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -2347,6 +2347,49 @@ function runStage(stage) {
   render();
   setTimeout(() => stagedScheduleModal(), 0);
 }
+/* ---------- 一鍵清空排課（v12.05）：全校或指定班級；已鎖定（一鍵/單格）的格不清 ---------- */
+function clearSchedule(scopeSet) {
+  pushUndo();
+  let n = 0;
+  for (const key of Object.keys(state.slots)) {
+    if (scopeSet && !scopeSet.has(key.split('|')[0])) continue;
+    if (cellIsLocked(key)) continue;                    // 保留已鎖定格（一鍵全鎖／單格鎖定）
+    delete state.slots[key]; delete state.slotTeachers[key]; n++;
+  }
+  save();
+  return n;
+}
+function clearScheduleModal() {
+  if (lockMode) { toast('單格鎖定選取中，請先完成或取消鎖定'); return; }
+  if (!Object.keys(state.slots).length) { toast('目前沒有已排的課'); return; }
+  const lockedN = Object.keys(state.slots).filter(cellIsLocked).length;
+  const clsChecks = state.classes.map(c => `<label class="checkbox" style="margin-right:14px;white-space:nowrap"><input type="checkbox" class="clear-scope-cls" value="${c.id}"> ${esc(c.name)}</label>`).join('');
+  openModal({
+    title: '🧹 清空排課',
+    body: `<p style="margin-top:0">清除已排的課以便重排。<b>已鎖定的格（🔒一鍵鎖定／🎯單格鎖定）不會被清除</b>；科目偏好、配課、鎖定狀態一律保留。</p>
+      ${lockedN ? `<p style="color:var(--muted);font-size:13px">目前有 <b>${lockedN}</b> 格已鎖定，將自動略過不清。</p>` : ''}
+      <div class="card"><div class="card-body">
+        <label class="checkbox" style="display:block;margin-bottom:8px"><input type="radio" name="clearScope" value="all" checked> <b>全校</b>（清空所有班級未鎖定的課）</label>
+        <label class="checkbox" style="display:block;margin-bottom:6px"><input type="radio" name="clearScope" value="classes"> <b>指定班級</b></label>
+        <div style="margin-left:22px;display:flex;flex-wrap:wrap;gap:2px 0">${clsChecks || '<span style="color:var(--muted)">尚無班級</span>'}</div>
+      </div></div>
+      <p style="color:var(--muted);font-size:12px;margin-top:8px">清空後若後悔，可按工具列「↶ 復原」救回。</p>`,
+    saveLabel: '清空',
+    onSave: () => {
+      const mode = (document.querySelector('input[name="clearScope"]:checked') || {}).value;
+      let scopeSet = null;
+      if (mode === 'classes') {
+        const sel = [...document.querySelectorAll('.clear-scope-cls:checked')].map(el => el.value);
+        if (!sel.length) { toast('請至少勾選一個班級'); return false; }
+        scopeSet = new Set(sel);
+      }
+      const n = clearSchedule(scopeSet);
+      render();
+      toast(n ? `已清空 ${n} 節（保留鎖定格）` : '沒有可清空的課（可能都已鎖定或不在範圍內）');
+      return true;
+    },
+  });
+}
 
 /* ---------- 半自動排課建議（手排輔助）：空格建議 + 調課連鎖 ---------- */
 const periodLabel = pid => (byId(state.settings.periods, pid) || {}).label || pid;
@@ -2723,8 +2766,9 @@ function viewSchedule() {
     : finalized
       ? `<div class="lock-banner no-print"><span>🔒 課表已鎖定（${state.locked ? '一鍵全鎖' : '單格鎖定 ' + (state.lockedCells || []).length + ' 格'}）。自編格已釋放供導師選課${selfCellCount ? `；本班（${esc((classById(selCls) || {}).name || '')}）自編 ${selfDoneCls ? '已完成🔒' : selfCellCount + ' 格'}` : ''}；其餘鎖定格唯讀。</span>${selfBtn}<button class="ghost" data-action="fill-manage" title="開放/收回導師線上填課">☁️ 線上填課${state.fillShare ? '（已開放）' : ''}</button><button class="btn" data-action="unlock-schedule">🔓 解除鎖定</button></div>`
       : '';
-  const toolbarBtns = selecting ? '' : finalized ? '' :
-    `<button class="ghost" data-action="lock-schedule" style="margin-left:auto" title="整表一次鎖定">🔒 一鍵鎖定</button><button class="ghost" data-action="lockcell-mode" title="逐格點選要鎖的格">🎯 單格鎖定</button><button class="btn" data-action="auto-schedule">🪄 自動排課</button>`;
+  const clearBtn = `<button class="ghost" data-action="clear-schedule" title="清空排課（全校或指定班級；已鎖定的格不清）">🧹 清空</button>`;
+  const toolbarBtns = selecting ? '' : finalized ? clearBtn :
+    `${clearBtn}<button class="ghost" data-action="lock-schedule" title="整表一次鎖定">🔒 一鍵鎖定</button><button class="ghost" data-action="lockcell-mode" title="逐格點選要鎖的格">🎯 單格鎖定</button><button class="btn" data-action="auto-schedule">🪄 自動排課</button>`;
   const loadHtml = teacherLoadHTML();   // 教師已排/應排：拆成獨立卡片
   return coreHead('schedule') + `
     <div class="page-head no-print" style="margin-top:-4px"><div class="hint">${hint}</div></div>
@@ -4734,6 +4778,7 @@ const clickHandlers = {
   'auto-schedule': () => autoScheduleModal(),
   'staged-schedule': () => stagedScheduleModal(),
   'run-stage': (el) => runStage(el.dataset.stage),
+  'clear-schedule': () => clearScheduleModal(),
   'undo-schedule': () => doUndo(),
   'redo-schedule': () => doRedo(),
   'flex-overview': () => flexOverviewModal(),
