@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v12.05';
+const APP_VERSION = 'v12.06';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -1900,6 +1900,13 @@ function canPlaceAt(classId, day, period, sid, teacherId) {
     for (const k in state.slots) { if (state.slots[k] !== sid) continue; const kp = k.split('|'); if (kp[0] !== classId) continue; const ud = parseInt(kp[1], 10);
       if (s.gapDays) { if (Math.abs(ud - day) < 2) return false; } else if (ud === day) return false; }
   }
+  // v12.06 連堂剩餘單堂「完全不與連堂對同天」（硬約束）：此類科目每班同一天最多 2 節（＝一組連堂對），
+  // 故第 3 節（剩餘單堂）一定落到別天，連堂對本身（同日相鄰兩節）不受影響。
+  if (s.consecutive && s.singleApartFromPair) {
+    let onDay = 0;
+    for (const k in state.slots) { if (state.slots[k] !== sid) continue; const kp = k.split('|'); if (kp[0] === classId && parseInt(kp[1], 10) === day) onDay++; }
+    if (onDay >= 2) return false;
+  }
   // 教師單日節數上限
   if (!s.excludeDailyCap) {
     for (const a of news) { const cap = teacherDailyCap(a.teacherId); if (cap > 0 && teacherDayLoad(a.teacherId, day) + 1 > cap) return false; }
@@ -2033,7 +2040,7 @@ function greedyRun(units, rnd) {
   const unplaced = []; let guard = 0; const pairsDone = {};   // v09.13 每(班|科|師)已成對數，尊重「連堂次數」上限（修奇數連堂溢排）
   while (units.length && guard++ < 20000) {
     const u = units.shift();
-    const cands = candidateCells(u.classId, u.sid, u.teacherId);
+    let cands = candidateCells(u.classId, u.sid, u.teacherId);
     if (!cands.length) { unplaced.push(u); continue; }
     const gkey = u.classId + '|' + u.sid + '|' + (u.teacherId || '');
     let wantPair = false;                                     // 這節是否還要成連堂對（已達連堂次數就當單堂排）
@@ -2041,6 +2048,13 @@ function greedyRun(units, rnd) {
       const s = subjectById(u.sid);
       const N = s.splitTeachers ? ((loadsForClassSubject(u.classId, u.sid).find(x => x.teacher.id === u.teacherId) || {}).hours || 0) : classSubjectRequired(u.classId, u.sid);
       wantPair = (pairsDone[gkey] || 0) < consecutiveTarget(u.sid, N);
+      // v12.06 連堂剩餘單堂「不相鄰天」（半硬性偏好）：同天已由 canPlaceAt 硬性擋掉（候選皆為別天），
+      //   這裡再優先只在「離所有已排天 ≥2 天（不相鄰）」的格挑；沒有這種格才退用相鄰別天。
+      if (!wantPair && s.singleApartFromPair) {
+        const placedDays = new Set();
+        for (const key in state.slots) { if (state.slots[key] === u.sid) { const p = key.split('|'); if (p[0] === u.classId) placedDays.add(parseInt(p[1], 10)); } }
+        if (placedDays.size) { const pd = [...placedDays]; const far = cands.filter(c => !pd.some(d => Math.abs(d - c.day) <= 1)); if (far.length) cands = far; }
+      }
     }
     let best = null, bestScore = Infinity, bestPartner = null;
     for (const cell of cands) {
