@@ -7,3 +7,8 @@ tools/state.json
 tools/state_filled*.json
 tools/timetable.html
 tools/report.txt
+
+# 本機測試素材（含真實老師姓名/email 等個資，勿入 repo）
+# _diag.json＝目前固定測試檔（和平分校示範檔），供瀏覽器預覽 fetch 用
+_diag.json
+_test-fixture*.json
