@@ -2944,16 +2944,24 @@ function swapLegal(gradeId, a, b) {
     gradeClassList(gradeId).forEach(c => { affected.push(slotKey(c.id, a.day, a.period), slotKey(c.id, b.day, b.period)); });
     applySwapToGrid(gradeId, a, b);
     const after = computeConflicts();
-    // 對調後任何「新的」衝堂（原本沒有、現在有的 key）→ 不合法
-    for (const k in after) if (!before.has(k)) return { ok: false, reason: after[k][0] };
-    // lockDays / lockPeriods / 單日上限（computeConflicts 不查）
+    // 保留（擋下對調）：教師衝堂(1)/教室衝堂(2)/協同未同步(4)、限定星期 lockDays(5)。
+    // 放寬（允許、僅回報警告）：教師不排課時段(3)、限定節次 lockPeriods(6)、教師單日上限(7)、連堂拆散。
+    const BLOCK = /教師衝堂|教室衝堂|協同未同步/;
+    const warnings = [];
+    const addW = w => { if (w && !warnings.includes(w)) warnings.push(w); };
+    for (const k in after) {
+      if (before.has(k)) continue;
+      const blocking = after[k].find(r => BLOCK.test(r));
+      if (blocking) return { ok: false, reason: blocking };
+      after[k].forEach(r => { if (r.includes('連堂')) addW('會拆散連堂'); if (r.includes('不排課時段')) addW(r); });
+    }
     for (const k of affected) {
       const sid = state.slots[k]; if (!sid) continue; const s = subjectById(sid); const [, dS, p] = k.split('|'); const d = +dS;
-      if ((s.lockDays || []).length && !s.lockDays.includes(d)) return { ok: false, reason: subjectName(sid) + '：限定星期，不可移到此日' };
-      if ((s.lockPeriods || []).length && !s.lockPeriods.includes(p)) return { ok: false, reason: subjectName(sid) + '：限定節次，不可移到此節' };
-      if (!s.excludeDailyCap) for (const x of slotAssignments(k)) { const cap = teacherDailyCap(x.teacherId); if (cap > 0 && teacherDayLoad(x.teacherId, d) > cap) return { ok: false, reason: teacherName(x.teacherId) + '：單日超過 ' + cap + ' 節上限' }; }
+      if ((s.lockDays || []).length && !s.lockDays.includes(d)) return { ok: false, reason: subjectName(sid) + '：限定星期，不可移到此日' };   // 5 保留
+      if ((s.lockPeriods || []).length && !s.lockPeriods.includes(p)) addW(subjectName(sid) + '：不在限定節次');                          // 6 放寬→警告
+      if (!s.excludeDailyCap) for (const x of slotAssignments(k)) { const cap = teacherDailyCap(x.teacherId); if (cap > 0 && teacherDayLoad(x.teacherId, d) > cap) addW(teacherName(x.teacherId) + '：單日超過 ' + cap + ' 節'); }   // 7 放寬→警告
     }
-    return { ok: true };
+    return { ok: true, warnings };
   } finally { restoreGrid(snap); }
 }
 // 給定來源時段，列出同年級所有「合法對調」的目標時段（回 [{day,period,legal,reason,subjectAt}]，legal=false 者附原因）
@@ -2963,7 +2971,7 @@ function legalSwapTargets(gradeId, src) {
   const subjAt = (slot) => { const sid = state.slots[slotKey(repId, slot.day, slot.period)]; return sid ? subjectName(sid) : ''; };
   return gradeOccupiedSlots(gradeId)
     .filter(t => !(t.day === src.day && t.period === src.period))
-    .map(t => { const r = swapLegal(gradeId, src, t); return { day: t.day, period: t.period, legal: r.ok, reason: r.reason || '', subjectAt: subjAt(t) }; });
+    .map(t => { const r = swapLegal(gradeId, src, t); return { day: t.day, period: t.period, legal: r.ok, reason: r.reason || '', warnings: r.warnings || [], subjectAt: subjAt(t) }; });
 }
 
 /* ---------- A7 教師視角「哪幾格可調」總覽（唯讀分析，不動資料） ---------- */
