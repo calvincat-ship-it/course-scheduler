@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v12.09';
+const APP_VERSION = 'v12.10';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -1899,6 +1899,22 @@ function teacherExclusiveDays(teacherId) {
   (t.load || []).forEach(L => { const s = subjectById(L.subjectId); if (s && s.dayExclusive) (s.lockDays || []).forEach(d => days.add(d)); });
   return days;
 }
+// P3（級任跨科連堂每區塊≤3）：某格若由級任導師 hrId 任教，計算「同半天內連續由該導師任教的節次」區塊長度（含本格）。
+// 半天為界（午休不跨）：上午最長 p1–p4（連 4）、下午 p5–p7。用來硬性禁止上午 p1–p4 導師連 4。
+function homeroomOccupiesCell(classId, day, period, hrId) {
+  const key = slotKey(classId, day, period);
+  if (!state.slots[key]) return false;
+  return slotAssignments(key).some(a => a.teacherId === hrId);
+}
+function homeroomRunWith(classId, day, period, hrId) {
+  const g = classGrade(classById(classId)); if (!g) return 1;
+  const seq = lessonPeriods().filter(p => gradePeriodHasDay(g, p.id, day)).map(p => p.id);
+  const idx = seq.indexOf(period); if (idx < 0) return 1;
+  const half = isMorningPeriod(period); let run = 1;
+  for (let i = idx - 1; i >= 0; i--) { if (isMorningPeriod(seq[i]) !== half) break; if (homeroomOccupiesCell(classId, day, seq[i], hrId)) run++; else break; }
+  for (let i = idx + 1; i < seq.length; i++) { if (isMorningPeriod(seq[i]) !== half) break; if (homeroomOccupiesCell(classId, day, seq[i], hrId)) run++; else break; }
+  return run;
+}
 // 這一格能否合法排入該科(該師)：格開放且空、符合科目日/節限制、老師不排課、無教師/教室衝堂、進階硬約束
 function canPlaceAt(classId, day, period, sid, teacherId, skipCoteach) {
   day = parseInt(day, 10); // 正規化：格子鍵傳入是字串，年級 periodDays/lockDays 存數字，需一致
@@ -1948,6 +1964,8 @@ function canPlaceAt(classId, day, period, sid, teacherId, skipCoteach) {
   if (!s.dayExclusive) {
     for (const a of news) { if (teacherExclusiveDays(a.teacherId).has(day)) return false; }
   }
+  // P3（級任連堂每區塊≤3，硬性禁止上午連 4）：本格若由本班級任導師任教，且同半天連續導師節數會達 4→不可排
+  { const hr = homeroomTeacher(classId); if (hr && news.some(a => a.teacherId === hr.id) && homeroomRunWith(classId, day, period, hr.id) >= 4) return false; }
   // 協同／R13 學段同步：同群組的所有夥伴班同格也必須可放（含該年級有此節、格空、夥伴老師/教室不衝堂、單日上限），
   // 否則同步時會漏排某班或硬塞成衝堂。skipCoteach 防遞迴（檢查夥伴時不再往下檢查）。
   if (!skipCoteach) {
