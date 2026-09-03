@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v12.26';
+const APP_VERSION = 'v12.27';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -3475,12 +3475,15 @@ function substSubForDate(key, date) {
   }
   return null;
 }
-// 某(班,日期,day,period)是否已在既有調課的某端點（回 {r,sw,role,otherDate,other} 或 null）
-function reschedSwapForSlotDate(classId, date, day, period) {
-  for (const r of (state.reschedules || [])) for (const sw of (r.swaps || [])) {
-    if (!swapClassIds(sw, r).includes(classId)) continue;
-    if (sw.aDate === date && sw.a.day === day && String(sw.a.period) === String(period)) return { r, sw, role: 'a', otherDate: sw.bDate, other: sw.b };
-    if (sw.bDate === date && sw.b.day === day && String(sw.b.period) === String(period)) return { r, sw, role: 'b', otherDate: sw.aDate, other: sw.a };
+// 某(班,日期,day,period)是否已在既有調課的某端點（回 {r,sw,role,otherDate,other} 或 null）；excludeRecId＝排除編輯中的記錄
+function reschedSwapForSlotDate(classId, date, day, period, excludeRecId) {
+  for (const r of (state.reschedules || [])) {
+    if (excludeRecId && r.id === excludeRecId) continue;
+    for (const sw of (r.swaps || [])) {
+      if (!swapClassIds(sw, r).includes(classId)) continue;
+      if (sw.aDate === date && sw.a.day === day && String(sw.a.period) === String(period)) return { r, sw, role: 'a', otherDate: sw.bDate, other: sw.b };
+      if (sw.bDate === date && sw.b.day === day && String(sw.b.period) === String(period)) return { r, sw, role: 'b', otherDate: sw.aDate, other: sw.a };
+    }
   }
   return null;
 }
@@ -3524,7 +3527,7 @@ function reschedList() {
   const rows = list.map(r => {
     const who = r.teacherId ? teacherName(r.teacherId) : ((state.grades.find(x => x.id === r.gradeId) || {}).name || '');
     const swaps = (r.swaps || []).map(sw => sw.aDate ? `${fmtMD(sw.aDate)}(${DAY_LABELS[sw.a.day]})${periodLabel(sw.a.period)} ⇄ ${fmtMD(sw.bDate)}(${DAY_LABELS[sw.b.day]})${periodLabel(sw.b.period)}` : `${DAY_LABELS[sw.a.day]}${periodLabel(sw.a.period)} ⇄ ${DAY_LABELS[sw.b.day]}${periodLabel(sw.b.period)}`).join('、');
-    return `<div class="subst-item"><div style="flex:1"><b>${esc(who)}</b>　${esc(swaps)}${r.note ? `　<span style="color:var(--muted)">（${esc(r.note)}）</span>` : ''}</div><button class="ghost xs" data-action="resched-print" data-id="${r.id}" title="列印／存 PDF 調課後課表">🖨️ 調課後課表</button><button class="icon-btn" data-action="resched-del" data-id="${r.id}" title="刪除">🗑️</button></div>`;
+    return `<div class="subst-item"><div style="flex:1"><b>${esc(who)}</b>　${esc(swaps)}${r.note ? `　<span style="color:var(--muted)">（${esc(r.note)}）</span>` : ''}</div><button class="ghost xs" data-action="resched-edit" data-id="${r.id}" title="重新調整此調課">✏️ 調整</button><button class="ghost xs" data-action="resched-print" data-id="${r.id}" title="列印／存 PDF 調課後課表">🖨️ 調課後課表</button><button class="icon-btn" data-action="resched-del" data-id="${r.id}" title="刪除">🗑️</button></div>`;
   }).join('');
   return head + `<div class="subst-list">${rows}</div>`;
 }
@@ -3541,13 +3544,14 @@ function reschedEditor() {
   if (!d.teacherId) body = `<div class="resched-summary" style="color:var(--muted)">請先選擇<b>申請調課的教師</b>與<b>請假日期</b>，系統會列出該教師請假期間逐日的課。</div>`;
   else if (d.picking) body = reschedPickPanel(d);
   else body = reschedLessonsPanel(d);
+  const editing = reschedOpenId && reschedOpenId !== 'new';
   const canSave = d.swaps.length > 0 && d.teacherId && d.leaveStart && d.leaveEnd && d.leaveEnd >= d.leaveStart;
-  const head = subHead('🔀 新增調課', `<button class="ghost" data-action="resched-cancel">← 返回清單</button>`);
+  const head = subHead('🔀 ' + (editing ? '調整調課' : '新增調課'), `<button class="ghost" data-action="resched-cancel">← 返回清單</button>`);
   return head + `<div class="card"><div class="card-body">
       ${topFields}
       ${body}
       <div style="margin-top:14px;display:flex;gap:8px">
-        <button class="btn" data-action="resched-save" ${canSave ? '' : 'disabled'}>建立調課${d.swaps.length ? `（${d.swaps.length} 筆對調）` : ''}</button>
+        <button class="btn" data-action="resched-save" ${canSave ? '' : 'disabled'}>${editing ? '儲存調整' : '建立調課'}${d.swaps.length ? `（${d.swaps.length} 筆對調）` : ''}</button>
         <button class="ghost" data-action="resched-cancel">取消</button></div>
     </div></div>`;
 }
@@ -3560,7 +3564,7 @@ function reschedLessonsPanel(d) {
     const rows = g.lessons.map(L => {
       const cls = (classById(L.classId) || {}).name || '';
       const subId = substSubForDate(L.key, L.date);
-      const existing = reschedSwapForSlotDate(L.classId, L.date, L.day, L.period);
+      const existing = reschedSwapForSlotDate(L.classId, L.date, L.day, L.period, reschedOpenId !== 'new' ? reschedOpenId : null);
       const mine = swapBySrc[L.classId + '|' + L.date + '|' + L.period];
       let badge = subId ? `<span class="pill blue" title="此日已有代課">已代課：${esc(teacherName(subId))}</span> ` : '';
       let right;
@@ -5370,6 +5374,12 @@ const clickHandlers = {
   'goto': el => { const t = el.dataset.goto; if (t) { currentTab = t; render(); } },
   // 🔀 調課（v12.18）
   'resched-add': () => { reschedOpenId = 'new'; reschedDraft = null; render(); },
+  'resched-edit': el => {   // 重新調整既有調課記錄（被調課教師有意見時）
+    const rec = (state.reschedules || []).find(r => r.id === el.dataset.id); if (!rec) return;
+    reschedOpenId = rec.id;
+    reschedDraft = { teacherId: rec.teacherId, leaveStart: rec.leaveStart, leaveEnd: rec.leaveEnd, note: rec.note || '', swaps: rec.swaps.map(sw => ({ aDate: sw.aDate, a: { ...sw.a }, bDate: sw.bDate, b: { ...sw.b }, seedClassId: sw.seedClassId, classIds: [...sw.classIds] })), picking: null, pickWeek: 0 };
+    render();
+  },
   'resched-cancel': () => { reschedOpenId = null; reschedDraft = null; render(); },
   'resched-del': el => { const id = el.dataset.id; confirmDelete('刪除此調課記錄？', () => { state.reschedules = (state.reschedules || []).filter(r => r.id !== id); }); },
   'resched-print': el => reschedPrint(el.dataset.id),
@@ -5393,8 +5403,12 @@ const clickHandlers = {
     if (!d.teacherId) { toast('請選擇申請調課的教師'); return; }
     if (!d.leaveStart || !d.leaveEnd || d.leaveEnd < d.leaveStart) { toast('請確認請假日期'); return; }
     if (!d.swaps.length) { toast('請至少安排一筆對調'); return; }
-    const rec = { id: uid(), createdAt: new Date().toISOString(), teacherId: d.teacherId, leaveStart: d.leaveStart, leaveEnd: d.leaveEnd, note: (d.note || '').trim(), swaps: d.swaps.map(sw => ({ aDate: sw.aDate, a: sw.a, bDate: sw.bDate, b: sw.b, seedClassId: sw.seedClassId, classIds: sw.classIds })) };
-    const commit = () => { (state.reschedules = state.reschedules || []).push(rec); save(); reschedOpenId = null; reschedDraft = null; render(); toast('已建立調課'); };
+    const editing = reschedOpenId && reschedOpenId !== 'new' ? (state.reschedules || []).find(r => r.id === reschedOpenId) : null;
+    const rec = { id: editing ? editing.id : uid(), createdAt: editing ? editing.createdAt : new Date().toISOString(), teacherId: d.teacherId, leaveStart: d.leaveStart, leaveEnd: d.leaveEnd, note: (d.note || '').trim(), swaps: d.swaps.map(sw => ({ aDate: sw.aDate, a: sw.a, bDate: sw.bDate, b: sw.b, seedClassId: sw.seedClassId, classIds: sw.classIds })) };
+    const commit = () => {
+      if (editing) { Object.assign(editing, rec); } else { (state.reschedules = state.reschedules || []).push(rec); }
+      save(); reschedOpenId = null; reschedDraft = null; render(); toast(editing ? '已更新調課' : '已建立調課');
+    };
     const conf = [];
     rec.swaps.forEach(sw => [{ date: sw.aDate, pos: sw.a }, { date: sw.bDate, pos: sw.b }].forEach(({ date, pos }) => sw.classIds.forEach(cid => {
       const subId = substSubForDate(slotKey(cid, pos.day, pos.period), date);
