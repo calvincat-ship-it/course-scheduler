@@ -231,6 +231,8 @@ table.timetable tr.break-row td { background: #f8fafc; color: var(--muted); font
 .resched-warnmark { position: absolute; top: 1px; right: 3px; font-size: 11px; }
 .resched-summary { margin: 10px 0 2px; padding: 8px 12px; background: #f1f6fc; border: 1px solid var(--line); border-radius: 8px; font-size: 14px; }
 .resched-warn { margin-top: 6px; color: #b45309; font-size: 13px; }
+.cell-lesson.resched-moved { outline: 2px dashed rgba(255, 255, 255, .85); outline-offset: -3px; }
+.resched-swapmark { font-size: 11px; margin-right: 2px; }
 /* v09.12 全校總表 */
 .master-title { text-align: center; font-weight: 800; font-size: 17px; margin: 4px 0 12px; color: var(--ink); }
 table.master { border-collapse: collapse; width: 100%; }

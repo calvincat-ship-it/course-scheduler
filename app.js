@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v12.18';
+const APP_VERSION = 'v12.19';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -3456,7 +3456,7 @@ function reschedList() {
   const rows = list.map(r => {
     const g = (state.grades.find(x => x.id === r.gradeId) || {}).name || '';
     const swaps = (r.swaps || []).map(sw => `${DAY_LABELS[sw.a.day]}${periodLabel(sw.a.period)} ⇄ ${DAY_LABELS[sw.b.day]}${periodLabel(sw.b.period)}`).join('、');
-    return `<div class="subst-item"><div style="flex:1"><b>${esc(g)}</b>　${esc(swaps)}　<span style="color:var(--muted)">${esc(r.startDate || '')}~${esc(r.endDate || '')}</span>${r.note ? `　<span style="color:var(--muted)">（${esc(r.note)}）</span>` : ''}</div><button class="icon-btn" data-action="resched-del" data-id="${r.id}" title="刪除">🗑️</button></div>`;
+    return `<div class="subst-item"><div style="flex:1"><b>${esc(g)}</b>　${esc(swaps)}　<span style="color:var(--muted)">${esc(r.startDate || '')}~${esc(r.endDate || '')}</span>${r.note ? `　<span style="color:var(--muted)">（${esc(r.note)}）</span>` : ''}</div><button class="ghost xs" data-action="resched-print" data-id="${r.id}" title="列印／存 PDF 調課後課表">🖨️ 調課後課表</button><button class="icon-btn" data-action="resched-del" data-id="${r.id}" title="刪除">🗑️</button></div>`;
   }).join('');
   return head + `<div class="subst-list">${rows}</div>`;
 }
@@ -3519,6 +3519,102 @@ function reschedGridHTML(gradeId, src, targetsMap) {
   }
   return html + `</tbody></table>`;
 }
+
+/* ---------- 🔀 調課「調課後課表」列印（1d，比照代課列印，套用 reschedule overlay） ---------- */
+// rec 的位置對映（對稱對調）：回 {day,period,swapped,partner}。partner＝對調來的另一格。
+function reschedResolvePos(rec, day, period) {
+  for (const sw of (rec.swaps || [])) {
+    if (sw.a.day === day && String(sw.a.period) === String(period)) return { day: sw.b.day, period: sw.b.period, swapped: true, partner: sw.a };
+    if (sw.b.day === day && String(sw.b.period) === String(period)) return { day: sw.a.day, period: sw.a.period, swapped: true, partner: sw.b };
+  }
+  return { day, period, swapped: false, partner: null };
+}
+// 受此調課影響的教師 id（教到任一對調端點課的老師；依教師名單順序）
+function reschedAffectedTeacherIds(rec) {
+  const ids = new Set();
+  gradeClassList(rec.gradeId).forEach(c => (rec.swaps || []).forEach(sw => [sw.a, sw.b].forEach(pos => {
+    slotAssignments(slotKey(c.id, pos.day, pos.period)).forEach(x => ids.add(x.teacherId));
+  })));
+  return state.teachers.filter(t => ids.has(t.id)).map(t => t.id);
+}
+// 調課後·班級課表（對調格標 🔀，tooltip 顯示由哪個時段換來／原本科目）
+function reschedClassTimetableHTML(classId, rec) {
+  const days = activeDays(); const c = classById(classId); const g = classGrade(c);
+  let html = `<div class="print-only" style="text-align:center;font-weight:700;font-size:16px;margin-bottom:8px">${esc((c || {}).name || '')} 課表（調課後）　${esc(rec.startDate || '')}~${esc(rec.endDate || '')}${rec.note ? '　' + esc(rec.note) : ''}</div>`;
+  html += `<table class="timetable"><thead><tr><th class="period-th">節次</th>${days.map(d => `<th>${DAY_LABELS[d]}</th>`).join('')}</tr></thead><tbody>`;
+  for (const p of state.settings.periods) {
+    if (p.isBreak) { html += `<tr class="break-row"><td colspan="${days.length + 1}">${esc(p.label)}　${esc(p.start)}–${esc(p.end)}</td></tr>`; continue; }
+    html += `<tr><td class="period-th">${esc(p.label)}<small>${esc(p.start)}–${esc(p.end)}</small></td>`;
+    for (const d of days) {
+      const open = g && gradePeriodHasDay(g, p.id, d);
+      const rp = reschedResolvePos(rec, d, p.id);
+      const key = slotKey(classId, rp.day, rp.period); const sid = state.slots[key];
+      if (sid) {
+        const s = subjectById(sid); const color = s ? s.color : '#94a3b8';
+        const room = roomsLabelCS(classId, sid) ? '·' + roomsLabelCS(classId, sid) : '';
+        const origSid = rp.swapped ? state.slots[slotKey(classId, d, p.id)] : null;
+        const mark = rp.swapped ? `<span class="resched-swapmark" title="由 ${esc(DAY_LABELS[rp.day] + periodLabel(rp.period))} 對調而來${origSid ? '（原為 ' + esc(subjectName(origSid)) + '）' : ''}">🔀</span>` : '';
+        html += `<td class="cell"><div class="cell-lesson${rp.swapped ? ' resched-moved' : ''}" style="background:${color};color:${subjTextColor(s, color)}">${mark}${esc(subjectName(sid))}<small>${esc(slotTeachersLabel(key))}${esc(room)}</small></div></td>`;
+      } else if (open) { html += `<td class="cell"></td>`; }
+      else { html += `<td class="cell blocked" title="此節本日不上課"></td>`; }
+    }
+    html += `</tr>`;
+  }
+  return html + `</tbody></table>`;
+}
+// 調課後·教師課表（該年級的課依對調移位；標 🔀）
+function reschedTeacherTimetableHTML(teacherId, rec) {
+  const days = activeDays(); const t = teacherById(teacherId);
+  const teaches = new Set((t.load || []).map(L => L.classId + '|' + L.subjectId));
+  const gradeClassIds = new Set(gradeClassList(rec.gradeId).map(c => c.id));
+  const map = {};   // 顯示位置 day|period → [{classId,sid,swapped}]（對調＝對稱，內容存放格 → 顯示於夥伴格）
+  for (const key in state.slots) {
+    const sid = state.slots[key]; const [classId, dayStr, period] = key.split('|'); const day = +dayStr;
+    if (!teaches.has(classId + '|' + sid)) continue;
+    const s = subjectById(sid);
+    if (s && s.splitTeachers && state.slotTeachers[key] !== teacherId) continue;
+    let dd = day, dp = period, swapped = false;
+    if (gradeClassIds.has(classId)) { const rp = reschedResolvePos(rec, day, period); if (rp.swapped) { dd = rp.day; dp = rp.period; swapped = true; } }
+    (map[dd + '|' + dp] = map[dd + '|' + dp] || []).push({ classId, sid, swapped });
+  }
+  let html = `<div class="print-only" style="text-align:center;font-weight:700;font-size:16px;margin-bottom:8px">${esc((t || {}).name || '')} 教師課表（調課後）　${esc(rec.startDate || '')}~${esc(rec.endDate || '')}</div>`;
+  html += `<table class="timetable"><thead><tr><th class="period-th">節次</th>${days.map(d => `<th>${DAY_LABELS[d]}</th>`).join('')}</tr></thead><tbody>`;
+  for (const p of state.settings.periods) {
+    if (p.isBreak) { html += `<tr class="break-row"><td colspan="${days.length + 1}">${esc(p.label)}</td></tr>`; continue; }
+    html += `<tr><td class="period-th">${esc(p.label)}<small>${esc(p.start)}–${esc(p.end)}</small></td>`;
+    for (const d of days) {
+      const hits = map[d + '|' + p.id];
+      if (hits && hits.length) {
+        const s = subjectById(hits[0].sid); const color = s ? s.color : '#94a3b8';
+        const swapped = hits.some(h => h.swapped);
+        const label = hits.map(h => (classById(h.classId) || {}).name || '').join('、');
+        html += `<td class="cell"><div class="cell-lesson${swapped ? ' resched-moved' : ''}" style="background:${color};color:${subjTextColor(s, color)}">${swapped ? '<span class="resched-swapmark">🔀</span>' : ''}${esc(label)}<small>${esc(subjectName(hits[0].sid))}</small></div></td>`;
+      } else html += `<td class="cell"></td>`;
+    }
+    html += `</tr>`;
+  }
+  return html + `</tbody></table>`;
+}
+// 組合列印：該年級各班調課後課表 + 每位受影響教師調課後課表
+function reschedPrintHTML(rec) {
+  let html = '';
+  gradeClassList(rec.gradeId).forEach(c => { html += `<div class="subst-print-page">${reschedClassTimetableHTML(c.id, rec)}</div>`; });
+  reschedAffectedTeacherIds(rec).forEach(tid => { html += `<div class="subst-print-page">${reschedTeacherTimetableHTML(tid, rec)}</div>`; });
+  return html;
+}
+function reschedPrint(id) {
+  const rec = (state.reschedules || []).find(r => r.id === id); if (!rec) return;
+  if (!(rec.swaps || []).length) { toast('此調課記錄無對調內容'); return; }
+  const area = document.createElement('div'); area.className = 'subst-print-area';
+  area.innerHTML = reschedPrintHTML(rec);
+  document.body.appendChild(area);
+  document.body.classList.add('printing-subst');
+  const cleanup = () => { document.body.classList.remove('printing-subst'); area.remove(); };
+  window.addEventListener('afterprint', cleanup, { once: true });
+  window.print();
+  setTimeout(cleanup, 2000);
+}
+
 function viewSubst() {
   if (state.teachers.length === 0)
     return subHead('🔄 代課') + emptyCard('尚無教師', '請先到「③ 教師」建立教師與配課，才能安排代課。');
@@ -5114,6 +5210,7 @@ const clickHandlers = {
   'resched-add': () => { reschedOpenId = 'new'; reschedDraft = null; render(); },
   'resched-cancel': () => { reschedOpenId = null; reschedDraft = null; render(); },
   'resched-del': el => { const id = el.dataset.id; confirmDelete('刪除此調課記錄？', () => { state.reschedules = (state.reschedules || []).filter(r => r.id !== id); }); },
+  'resched-print': el => reschedPrint(el.dataset.id),
   'resched-clear-src': () => { if (reschedDraft) { reschedDraft.src = null; reschedDraft.target = null; render(); } },
   'resched-cell': el => {
     const day = +el.dataset.day, period = el.dataset.period; const d = reschedDraft; if (!d) return;
