@@ -3,10 +3,26 @@
 > 收工時 Claude 更新這裡；開工時 Claude 先讀這裡。跟程式碼一起 git 同步。
 
 ## 最後更新
-- 時間：2026-09-03
-- 機器：（本次 session 的機器；Desktop\claude code）
-- 版本：**main = v12.18（已 push；GH Pages 依常規部署）**。schema 仍為 2、向下相容。
-- 狀態：本機 node --check + 預覽實測（和平示範檔 / 使用者真實檔 `_test-fixture-real.json`）通過、無 console error、全部已 push main。
+- 時間：2026-09-04
+- 機器：Desktop\claude code
+- 版本：**main = v12.28（已 push；GH Pages 依常規部署）**。schema 仍為 2、向下相容。
+- 狀態：本機 node --check + 預覽實測（`_test-fixture-real.json` 12班）通過、無 console error、全部已 push main。
+
+## 本次區間做了什麼（v12.19 → v12.28）＝**🔀 調課功能大重構（教師導向＋日期式可跨週）**
+> 完整現況/函式全索引見記憶 [[project_course_scheduler_substitution_future]]（已整個改寫成現況）。以下依實機回饋逐步演進：
+- **v12.19 1d**：列印「調課後課表」(套 reschedule overlay，對調格標🔀)。**v12.20 1e**：代課↔調課互參(建調課檢查同期代課、調課後課表合成代課)。**v12.21 反向**：建代課檢查同期調課+代課列印標已調課、`substContextState()` 快照帶 reschedules(線上 kiosk 可參照)。
+- **v12.22 教師導向重構**：改「選教師→請假日→逐日列課→挑目標」，範圍改**協同群組**(swapScope，非整年級)，記錄加 seedClassId/classIds、逐班輸出。**v12.23** 修 data-change handler 放錯 map(選教師沒反應)。**v12.24** 日期驗證+本人任課目標鎖定(⏳)。
+- **v12.25 改日期式(可跨週)**：記錄改 `{teacherId,leaveStart,leaveEnd,swaps:[{aDate,a,bDate,b,seedClassId,classIds}]}`(**舊 weekday 式載入即清**)、逐日列課(標已代課/已調課)、overlay 改 `reschedResolveOnDate`(只在指定日生效)、輸出改**逐週**(reschedClassWeekHTML/reschedTeacherWeekHTML)、互參改日期式。
+- **v12.26 週選擇+視覺格**：可調課目標改「請假當週/下一~三週(最多4週)」+ 恢復點課表格。**v12.27 可編輯**既有調課記錄(✏️調整,更新原記錄不新增)。**v12.28 累積挑選**：多筆調課時後筆看得到前筆結果(reschedWeekPickGridHTML 帶 draftSwaps 套 reschedResolveOnDate)+擋已用格🔒。
+
+## ⚠️ 下次接續（使用者 2026-09-04 明確指定，2 項挑選微調 + Phase2）
+1. **請假範圍內多筆調課要能各自選不同週次**（確認/確保 pickWeek 多筆可各自指向不同週）。
+2. **多筆調課跨週選到同一節位置但時間已錯開(不同週)時不應被阻擋**（v12.28 usedSet 用 date|period 具體日期為鍵，理應不擋；實機確認沒過度阻擋，只擋真正同一天同一節）。
+3. **Phase 2 線上 ?swap kiosk**（老師自助調課，比照代課線上）。尚未做。
+
+---
+## （更早）本次區間做了什麼（v12.08 → v12.18）＝排課規則補完＋設計簡化＋調課 Phase 1 最初版
+> ⚠️ 調課在 v12.19-28 已大改，下段 Phase 1 敘述為最初版脈絡。
 
 ## 本次區間做了什麼（v12.08 → v12.18）＝排課規則補完＋設計簡化＋**調課功能 Phase 1**
 > 詳細架構/函式索引已寫入記憶 [[project_course_scheduler_architecture]]（v12.09-18 段）與 [[project_course_scheduler_substitution_future]]（調課完整狀態）。
