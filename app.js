@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v12.11';
+const APP_VERSION = 'v12.12';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -997,6 +997,7 @@ function subjectModal(existing) {
     : s.preferBand === 'pm' ? new Set(lessonPeriods().filter(p => !isMorningPeriod(p.id)).map(p => p.id))
     : new Set();
   const spread = s.gapDays ? 'gap' : s.distinctDays ? 'distinct' : 'none';   // 整併「每天最多1節」+「隔天以上」為單一下拉
+  const lastPref = s.lightSubject ? 'light' : s.avoidLastPeriod ? 'avoid' : 'none';   // 整併「主科避末節」+「輕科優先末節」為單一下拉（互斥）
   const dayChecks = activeDays().map(d => `<label class="checkbox chk-inline"><input type="checkbox" class="s-lockday" value="${d}" ${lockDays.has(d) ? 'checked' : ''}> ${DAY_LABELS[d]}</label>`).join('');
   const perChecks = lessonPeriods().map(p => `<label class="checkbox chk-inline"><input type="checkbox" class="s-lockper" value="${p.id}" ${lockPeriods.has(p.id) ? 'checked' : ''}> ${esc(p.label)}</label>`).join('');
   const prefPerChecks = lessonPeriods().map(p => `<label class="checkbox chk-inline"><input type="checkbox" class="s-prefper" value="${p.id}" ${prefSet.has(p.id) ? 'checked' : ''}> ${esc(p.label)}</label>`).join('');
@@ -1025,29 +1026,33 @@ function subjectModal(existing) {
         <span class="hint" style="color:var(--muted);font-size:12px">留空＝盡量成對；如自然 3 節填 <b>1</b>＝1 連堂＋1 節單獨</span>
       </div>
 
-      <details class="subj-adv"><summary>🔒 排課限制（硬性：勾了就<b>只</b>排在這裡；不勾＝不限，手動不受限）</summary>
+      <details class="subj-adv"><summary>🔒 排課限制（硬性：勾了就一定遵守，手動排課亦即時檢核）</summary>
         <div class="lock-group"><div class="lock-label">只排在這些<b>上課日</b>：</div><div class="chk-row">${dayChecks || '<span style="color:var(--muted)">尚無上課日</span>'}</div></div>
         <div class="lock-group"><div class="lock-label">只排在這些<b>節次</b>：</div><div class="chk-row">${perChecks}</div></div>
-        <div class="hint" style="color:var(--muted);font-size:12px">例：母語只勾「週四」；彈性在地勾「週五」＋「第1節」；體育只勾「第2/3/6/7節」。</div>
+        <div class="hint" style="color:var(--muted);font-size:12px">例：母語只勾「週四」；彈性在地勾「週五」＋「第1節」；體育只勾「第2/3/6/7節」。不勾＝不限。</div>
+        <label class="field" style="max-width:320px;margin-top:12px"><span>多節分散（同科多節如何散開）</span>
+          <select id="sSpread">
+            <option value="none" ${spread === 'none' ? 'selected' : ''}>不限</option>
+            <option value="distinct" ${spread === 'distinct' ? 'selected' : ''}>每天最多 1 節（分散不同天）</option>
+            <option value="gap" ${spread === 'gap' ? 'selected' : ''}>隔天以上（兩節不排相鄰兩天，如體育）</option>
+          </select><span class="hint" style="color:var(--muted);font-size:12px;margin-top:4px">「多節分散」與「需連堂」互斥，設連堂時自動忽略。</span></label>
+        <label class="checkbox" style="margin-top:10px"><input type="checkbox" id="sSingleApart" ${s.singleApartFromPair ? 'checked' : ''}> 連堂剩餘的<b>單堂不與連堂對相鄰天</b>（如社會/自然 2連堂+1獨立；連堂在週二→單堂避開週一~週三）</label>
+        <label class="checkbox" style="margin-top:6px"><input type="checkbox" id="sBandSync" ${s.bandSync ? 'checked' : ''}> <b>同學段排相同節次</b>（1·2／3·4／5·6 年級各自分組，該學段所有班同日同節上此科，如體育合班）</label>
+        <label class="checkbox" style="margin-top:6px"><input type="checkbox" id="sDayExclusive" ${s.dayExclusive ? 'checked' : ''}> <b>教師該科上課日不排其他課</b>（母語日淨空：教此科的老師，在此科的「只排在這些上課日」整天只上此科；需先設上方上課日）</label>
+        <label class="checkbox" style="margin-top:6px"><input type="checkbox" id="sExCap" ${s.excludeDailyCap ? 'checked' : ''}> 不列入教師單日節數上限（如母語課）</label>
       </details>
 
       <details class="subj-adv"><summary>🪄 自動排課偏好（軟性：只影響「自動排課」的取捨，手動排課不受限）</summary>
         <div class="lock-group"><div class="lock-label">偏好<b>節次</b>（盡量排在勾選的節，如國語偏好第1節）
           <span class="pref-quick"><button type="button" class="ghost xs" data-action="pref-am">上午</button><button type="button" class="ghost xs" data-action="pref-pm">下午</button><button type="button" class="ghost xs" data-action="pref-clear">清除</button></span></div>
           <div class="chk-row">${prefPerChecks}</div></div>
-        <label class="field" style="max-width:300px;margin-top:8px"><span>多節分散（同科多節如何散開）</span>
-          <select id="sSpread">
-            <option value="none" ${spread === 'none' ? 'selected' : ''}>不限</option>
-            <option value="distinct" ${spread === 'distinct' ? 'selected' : ''}>每天最多 1 節（分散不同天）</option>
-            <option value="gap" ${spread === 'gap' ? 'selected' : ''}>隔天以上（兩節不排相鄰兩天，如體育）</option>
+        <label class="field" style="max-width:360px;margin-top:12px"><span>末節傾向（每天最後一節的排課偏好）</span>
+          <select id="sLastPref">
+            <option value="none" ${lastPref === 'none' ? 'selected' : ''}>一般（不特別）</option>
+            <option value="avoid" ${lastPref === 'avoid' ? 'selected' : ''}>主科：盡量不排末節（末節留給輕科）</option>
+            <option value="light" ${lastPref === 'light' ? 'selected' : ''}>輕科：優先排末節（啟用 R1 末節頻率）</option>
           </select></label>
-        <label class="checkbox" style="margin-top:10px"><input type="checkbox" id="sAvoidLast" ${s.avoidLastPeriod ? 'checked' : ''}> 主科：盡量<b>不排在每天最後一節</b>（末節優先給輕科）</label>
-        <label class="checkbox" style="margin-top:6px"><input type="checkbox" id="sLight" ${s.lightSubject ? 'checked' : ''}> <b>輕科（可排第七節）</b>（體育／綜合／藝文／生活等；勾選後啟用 R1：末節優先排輕科，低年級每週≥1天、中高年級≥2天末節為輕科，其餘末節盡量給級任課而非科任專科）— 軟性引導</label>
-        <label class="checkbox" style="margin-top:6px"><input type="checkbox" id="sSingleApart" ${s.singleApartFromPair ? 'checked' : ''}> 連堂剩餘的<b>單堂不與連堂對相鄰天</b>（如社會/自然 2連堂+1獨立；連堂在週二→單堂避開週一~週三）</label>
-        <label class="checkbox" style="margin-top:6px"><input type="checkbox" id="sExCap" ${s.excludeDailyCap ? 'checked' : ''}> 不列入教師單日節數上限（如母語課）</label>
-        <label class="checkbox" style="margin-top:6px"><input type="checkbox" id="sDayExclusive" ${s.dayExclusive ? 'checked' : ''}> <b>教師該科上課日不排其他課</b>（母語日淨空：教此科的老師，在此科的「限定星期」整天只上此科）— 硬性；需先設上方「限定星期」</label>
-        <label class="checkbox" style="margin-top:6px"><input type="checkbox" id="sBandSync" ${s.bandSync ? 'checked' : ''}> <b>同學段排相同節次</b>（1·2／3·4／5·6 年級各自分組，該學段所有班同日同節上此科，如體育合班）— 硬性</label>
-        <div class="hint" style="color:var(--muted);font-size:12px">「多節分散」與「需連堂」互斥（連堂本就同日兩節），設連堂時自動忽略。</div>
+        <p class="hint" style="color:var(--muted);font-size:12px;margin-top:6px">「輕科」＝體育／綜合／藝文／生活等；設為輕科後：末節優先排輕科、低年級每週≥1天·中高≥2天末節為輕科、其餘末節盡量給級任課而非科任專科。</p>
       </details>`,
     onSave: () => {
       const name = $('#sName').value.trim();
@@ -1060,7 +1065,8 @@ function subjectModal(existing) {
       const pairsRaw = ($('#sConsecPairs').value || '').trim();
       const consecutivePairs = consec && pairsRaw !== '' ? Math.max(0, parseInt(pairsRaw, 10) || 0) : null;
       const spreadV = $('#sSpread').value;   // none / distinct / gap（整併原兩個 checkbox）
-      const data = { name, color: $('#sColor').value, textColor: $('#sTextColor').value, domainId: $('#sDomain').value, allowGrouping: m === 'group', splitTeachers: m === 'split', consecutive: consec, consecutivePairs, lockDays: ld, lockPeriods: lp, distinctDays: spreadV === 'distinct', gapDays: spreadV === 'gap', preferBand: 'any', preferPeriods: pp, avoidLastPeriod: $('#sAvoidLast').checked, lightSubject: $('#sLight').checked, singleApartFromPair: $('#sSingleApart').checked, excludeDailyCap: $('#sExCap').checked, dayExclusive: $('#sDayExclusive').checked, bandSync: $('#sBandSync').checked };
+      const lastPrefV = $('#sLastPref').value;   // none / avoid / light（整併「主科避末節」+「輕科優先末節」）
+      const data = { name, color: $('#sColor').value, textColor: $('#sTextColor').value, domainId: $('#sDomain').value, allowGrouping: m === 'group', splitTeachers: m === 'split', consecutive: consec, consecutivePairs, lockDays: ld, lockPeriods: lp, distinctDays: spreadV === 'distinct', gapDays: spreadV === 'gap', preferBand: 'any', preferPeriods: pp, avoidLastPeriod: lastPrefV === 'avoid', lightSubject: lastPrefV === 'light', singleApartFromPair: $('#sSingleApart').checked, excludeDailyCap: $('#sExCap').checked, dayExclusive: $('#sDayExclusive').checked, bandSync: $('#sBandSync').checked };
       if (existing) Object.assign(existing, data); else state.subjects.push({ id: uid(), ...data });
       applyBandSync(); save(); render(); toast('已儲存科目');
       return true;
