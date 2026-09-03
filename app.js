@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v12.15';
+const APP_VERSION = 'v12.16';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -4362,7 +4362,7 @@ function helpModal() {
 
     ${sec('🏠 首頁與導覽', `<ul>
       <li>開啟 App 落在<b>首頁</b>：顯示各步驟<b>完成度</b>、<b>待辦</b>（缺配課／缺導師／未排滿／未鎖定／久未備份）與<b>快速入口</b>；點卡片或待辦可直接跳到對應位置。</li>
-      <li>首次使用會跳「<b>初次設定</b>」，填<b>校名／學年度／學校代號</b>，立即顯示在首頁抬頭；日後可在「⚙️ 設定」修改。</li>
+      <li>首次使用會跳「<b>初次設定</b>」：填<b>校名／學年度／學校代號</b>，並提醒進入①科目前先到「⚙️ 設定」確認<b>上課日／節次時間／專科教室</b>（專科教室預設是空的，先建立才能在①科目指定「預設教室」）；日後皆可在「⚙️ 設定」修改。</li>
       <li>每個子頁頂端有<b>導覽列</b>：核心四頁（科目／年級與班級／教師配課／排課）可互相切換，其餘頁有「← 回首頁」。</li>
       <li><b>💾 備份</b>在首頁抬頭；<b>❓ 使用說明</b>在首頁快速入口。</li></ul>`)}
 
@@ -4956,6 +4956,15 @@ const clickHandlers = {
   'toggle-matrix': () => { showLoadMatrix = !showLoadMatrix; render(); },
   'goto-teachers': () => { currentTab = 'teachers'; render(); },
   'goto': el => { const t = el.dataset.goto; if (t) { currentTab = t; render(); } },
+  // 初次設定精靈的「前往設定」：先存已填的基本資料，再關 modal、切到設定頁（讓新手先建上課日/節次/專科教室）
+  'setup-goto-settings': () => {
+    const sc = $('#setupSchool'), sy = $('#setupYear'), scd = $('#setupCode');
+    if (sc) state.settings.reportSchool = (sc.value || '').trim();
+    if (sy) state.settings.reportYear = (sy.value || '').trim();
+    if (scd && scd.value.trim()) state.settings.schoolCode = scd.value.trim();
+    save(); closeModal(); currentTab = 'settings'; render();
+    toast('已到「設定」——確認上課日 / 節次時間，並視需要新增專科教室');
+  },
   'help': () => helpModal(),
   'backup': () => backupMenu(),
   'toggle-avail': el => { el.classList.toggle('off'); el.textContent = el.classList.contains('off') ? '✕' : ''; },
@@ -5311,13 +5320,22 @@ function setupModal() {
   openModal({
     title: '歡迎使用課務編排 · 初次設定',
     saveLabel: '開始使用',
-    body: `<div class="help-note" style="margin:0 0 16px">先填入貴校基本資料，<b>首頁抬頭與課表輸出會立即套用</b>；日後可在「設定」隨時修改。</div>
+    body: `<div class="help-note" style="margin:0 0 16px">歡迎！排課流程是 <b>①科目 ▸ ②年級與班級 ▸ ③教師配課 ▸ ④排課</b>。開始前先花一分鐘確認幾項<b>全校共用</b>的基礎設定，之後會更順。</div>
+      <h4 style="margin:0 0 8px">① 貴校基本資料</h4>
       <div class="setup-fields">
         <label class="field"><span>校名</span><input type="text" id="setupSchool" value="${esc(s.reportSchool || '')}" placeholder="請輸入貴校校名"></label>
         <label class="field"><span>學年度</span><input type="text" id="setupYear" value="${esc(s.reportYear || '')}" placeholder="如 114"></label>
         <label class="field"><span>學校代號</span><input type="text" id="setupCode" value="${esc(s.schoolCode || '')}" placeholder="msd9" title="導師線上填課的雲端檔名前綴；多校共用雲端時各校自填以區隔，單校可留預設"></label>
       </div>
-      <div class="hint" style="margin-top:10px;color:var(--muted)">學校代號僅用於「導師線上填課」的雲端檔名前綴，單一學校可沿用預設。</div>`,
+      <div class="hint" style="margin:8px 0 0;color:var(--muted)">首頁抬頭與課表輸出會立即套用；學校代號僅用於「導師線上填課」的雲端檔名前綴，單校可沿用預設。</div>
+      <h4 style="margin:18px 0 8px">② 進入「① 科目」前，先到「⚙️ 設定」確認這幾項全校基礎</h4>
+      <ul class="setup-prereq" style="margin:0;padding-left:20px;line-height:1.9">
+        <li><b>上課日</b>　<span style="color:var(--muted)">已預設週一～週五；若貴校不同再調整。</span></li>
+        <li><b>節次定義</b>（時間 / 午休 / 大下課）　<span style="color:var(--muted)">已有預設節次，建議核對節次<b>時間</b>是否與貴校鐘聲相符——這會影響「連堂」與「第七節排輕科」的判定。</span></li>
+        <li><b>專科教室</b>（自然 / 電腦 / 音樂教室…）　<span style="color:var(--danger)">預設是空的</span><span style="color:var(--muted)">。若貴校有專科教室，先在這裡建立；之後在「① 科目」即可直接指定各科的「預設教室」，排課會自動檢查同教室不衝堂。</span></li>
+      </ul>
+      <div style="margin-top:12px"><button class="btn ghost" type="button" data-action="setup-goto-settings">⚙️ 先前往「設定」確認 / 新增專科教室 →</button></div>
+      <div class="hint" style="margin-top:8px;color:var(--muted)">也可直接按「開始使用」（用預設值），日後隨時回「設定」調整。</div>`,
     onSave: () => {
       state.settings.reportSchool = ($('#setupSchool').value || '').trim();
       state.settings.reportYear = ($('#setupYear').value || '').trim();
