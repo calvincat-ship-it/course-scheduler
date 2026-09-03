@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v12.10';
+const APP_VERSION = 'v12.11';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -1042,6 +1042,7 @@ function subjectModal(existing) {
             <option value="gap" ${spread === 'gap' ? 'selected' : ''}>隔天以上（兩節不排相鄰兩天，如體育）</option>
           </select></label>
         <label class="checkbox" style="margin-top:10px"><input type="checkbox" id="sAvoidLast" ${s.avoidLastPeriod ? 'checked' : ''}> 主科：盡量<b>不排在每天最後一節</b>（末節優先給輕科）</label>
+        <label class="checkbox" style="margin-top:6px"><input type="checkbox" id="sLight" ${s.lightSubject ? 'checked' : ''}> <b>輕科（可排第七節）</b>（體育／綜合／藝文／生活等；勾選後啟用 R1：末節優先排輕科，低年級每週≥1天、中高年級≥2天末節為輕科，其餘末節盡量給級任課而非科任專科）— 軟性引導</label>
         <label class="checkbox" style="margin-top:6px"><input type="checkbox" id="sSingleApart" ${s.singleApartFromPair ? 'checked' : ''}> 連堂剩餘的<b>單堂不與連堂對相鄰天</b>（如社會/自然 2連堂+1獨立；連堂在週二→單堂避開週一~週三）</label>
         <label class="checkbox" style="margin-top:6px"><input type="checkbox" id="sExCap" ${s.excludeDailyCap ? 'checked' : ''}> 不列入教師單日節數上限（如母語課）</label>
         <label class="checkbox" style="margin-top:6px"><input type="checkbox" id="sDayExclusive" ${s.dayExclusive ? 'checked' : ''}> <b>教師該科上課日不排其他課</b>（母語日淨空：教此科的老師，在此科的「限定星期」整天只上此科）— 硬性；需先設上方「限定星期」</label>
@@ -1059,7 +1060,7 @@ function subjectModal(existing) {
       const pairsRaw = ($('#sConsecPairs').value || '').trim();
       const consecutivePairs = consec && pairsRaw !== '' ? Math.max(0, parseInt(pairsRaw, 10) || 0) : null;
       const spreadV = $('#sSpread').value;   // none / distinct / gap（整併原兩個 checkbox）
-      const data = { name, color: $('#sColor').value, textColor: $('#sTextColor').value, domainId: $('#sDomain').value, allowGrouping: m === 'group', splitTeachers: m === 'split', consecutive: consec, consecutivePairs, lockDays: ld, lockPeriods: lp, distinctDays: spreadV === 'distinct', gapDays: spreadV === 'gap', preferBand: 'any', preferPeriods: pp, avoidLastPeriod: $('#sAvoidLast').checked, singleApartFromPair: $('#sSingleApart').checked, excludeDailyCap: $('#sExCap').checked, dayExclusive: $('#sDayExclusive').checked, bandSync: $('#sBandSync').checked };
+      const data = { name, color: $('#sColor').value, textColor: $('#sTextColor').value, domainId: $('#sDomain').value, allowGrouping: m === 'group', splitTeachers: m === 'split', consecutive: consec, consecutivePairs, lockDays: ld, lockPeriods: lp, distinctDays: spreadV === 'distinct', gapDays: spreadV === 'gap', preferBand: 'any', preferPeriods: pp, avoidLastPeriod: $('#sAvoidLast').checked, lightSubject: $('#sLight').checked, singleApartFromPair: $('#sSingleApart').checked, excludeDailyCap: $('#sExCap').checked, dayExclusive: $('#sDayExclusive').checked, bandSync: $('#sBandSync').checked };
       if (existing) Object.assign(existing, data); else state.subjects.push({ id: uid(), ...data });
       applyBandSync(); save(); render(); toast('已儲存科目');
       return true;
@@ -1915,6 +1916,16 @@ function homeroomRunWith(classId, day, period, hrId) {
   for (let i = idx + 1; i < seq.length; i++) { if (isMorningPeriod(seq[i]) !== half) break; if (homeroomOccupiesCell(classId, day, seq[i], hrId)) run++; else break; }
   return run;
 }
+// R1/S3（第七節輕科天數頻率，軟性）：需先在科目勾「輕科」才啟用（否則所有末節都非輕科、規則失義）。
+function anyLightSubject() { return (state.subjects || []).some(s => s.lightSubject); }
+// 該班每週末節應為「輕科」的最少天數：低年級(1,2)≥1、中高年級(3-6)≥2；再受該班實際有末節的天數上限所限。
+function requiredLightDays(classId) { const gn = classGradeNum(classById(classId)); return gn && gn <= 2 ? 1 : 2; }
+// 該班某日的「末節」節次 id（該日最後一個有課的節次）；無則 null。
+function lastPeriodIdOfDay(classId, day) {
+  const g = classGrade(classById(classId)); if (!g) return null;
+  const seq = lessonPeriods().filter(p => gradePeriodHasDay(g, p.id, day)).map(p => p.id);
+  return seq.length ? seq[seq.length - 1] : null;
+}
 // 這一格能否合法排入該科(該師)：格開放且空、符合科目日/節限制、老師不排課、無教師/教室衝堂、進階硬約束
 function canPlaceAt(classId, day, period, sid, teacherId, skipCoteach) {
   day = parseInt(day, 10); // 正規化：格子鍵傳入是字串，年級 periodDays/lockDays 存數字，需一致
@@ -2077,6 +2088,11 @@ function cellSoftScore(classId, day, period, sid, teacherId) {
     if (inAm && hasAm && !hasPm) sc += 2;
     if (!inAm && hasPm && !hasAm) sc += 2;
   }
+  // R1（第七節輕科，軟性引導）：末節格→輕科小獎勵；非輕科且由科任(非導師)任教→加罰（末節盡量輕科或級任課，不排科任專科）
+  if (anyLightSubject() && isLastPeriodOfDay(classId, day, period)) {
+    if (s.lightSubject) sc -= 2;
+    else if (tids.length && !tids.every(t => hr && t === hr.id)) sc += 4;
+  }
   return sc;
 }
 // 整體方案軟性罰分（越低越好）：教師每日節數離散、上午滿堂、偏好時段、同科同日重複
@@ -2096,6 +2112,23 @@ function scoreSolution() {
         if (amReq && ![...used].some(pid => amSet.has(pid))) pen += 3;
         if (pmReq && ![...used].some(pid => pmSet.has(pid))) pen += 3;
       }
+    });
+  }
+  // R1/S3（第七節輕科天數頻率，軟性）：需先有科目勾「輕科」才計。逐班算末節為輕科的天數，未達門檻(低≥1/中高≥2)加罰；
+  //   另：末節排「科任專科」(非輕科且由非導師任教)→每格加罰，引導末節給輕科或級任課。
+  if (anyLightSubject()) {
+    state.classes.forEach(c => {
+      const g = classGrade(c); if (!g || !homeroomTeacher(c.id)) return; const hr = homeroomTeacher(c.id);
+      let lightDays = 0, lastDays = 0;
+      for (const day of activeDays()) {
+        const lastPid = lastPeriodIdOfDay(c.id, day); if (!lastPid) continue; lastDays++;
+        const key = slotKey(c.id, day, lastPid); const sid = state.slots[key]; if (!sid) continue;
+        const ls = subjectById(sid);
+        if (ls && ls.lightSubject) { lightDays++; }
+        else { const asn = slotAssignments(key); if (asn.length && !asn.every(a => a.teacherId === hr.id)) pen += 2; }   // 末節科任專科
+      }
+      const need = Math.min(requiredLightDays(c.id), lastDays);
+      if (lightDays < need) pen += (need - lightDays) * 3;
     });
   }
   const seen = {};
