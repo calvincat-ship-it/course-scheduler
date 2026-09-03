@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v12.08';
+const APP_VERSION = 'v12.09';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -1044,6 +1044,7 @@ function subjectModal(existing) {
         <label class="checkbox" style="margin-top:10px"><input type="checkbox" id="sAvoidLast" ${s.avoidLastPeriod ? 'checked' : ''}> 主科：盡量<b>不排在每天最後一節</b>（末節優先給輕科）</label>
         <label class="checkbox" style="margin-top:6px"><input type="checkbox" id="sSingleApart" ${s.singleApartFromPair ? 'checked' : ''}> 連堂剩餘的<b>單堂不與連堂對相鄰天</b>（如社會/自然 2連堂+1獨立；連堂在週二→單堂避開週一~週三）</label>
         <label class="checkbox" style="margin-top:6px"><input type="checkbox" id="sExCap" ${s.excludeDailyCap ? 'checked' : ''}> 不列入教師單日節數上限（如母語課）</label>
+        <label class="checkbox" style="margin-top:6px"><input type="checkbox" id="sDayExclusive" ${s.dayExclusive ? 'checked' : ''}> <b>教師該科上課日不排其他課</b>（母語日淨空：教此科的老師，在此科的「限定星期」整天只上此科）— 硬性；需先設上方「限定星期」</label>
         <label class="checkbox" style="margin-top:6px"><input type="checkbox" id="sBandSync" ${s.bandSync ? 'checked' : ''}> <b>同學段排相同節次</b>（1·2／3·4／5·6 年級各自分組，該學段所有班同日同節上此科，如體育合班）— 硬性</label>
         <div class="hint" style="color:var(--muted);font-size:12px">「多節分散」與「需連堂」互斥（連堂本就同日兩節），設連堂時自動忽略。</div>
       </details>`,
@@ -1058,7 +1059,7 @@ function subjectModal(existing) {
       const pairsRaw = ($('#sConsecPairs').value || '').trim();
       const consecutivePairs = consec && pairsRaw !== '' ? Math.max(0, parseInt(pairsRaw, 10) || 0) : null;
       const spreadV = $('#sSpread').value;   // none / distinct / gap（整併原兩個 checkbox）
-      const data = { name, color: $('#sColor').value, textColor: $('#sTextColor').value, domainId: $('#sDomain').value, allowGrouping: m === 'group', splitTeachers: m === 'split', consecutive: consec, consecutivePairs, lockDays: ld, lockPeriods: lp, distinctDays: spreadV === 'distinct', gapDays: spreadV === 'gap', preferBand: 'any', preferPeriods: pp, avoidLastPeriod: $('#sAvoidLast').checked, singleApartFromPair: $('#sSingleApart').checked, excludeDailyCap: $('#sExCap').checked, bandSync: $('#sBandSync').checked };
+      const data = { name, color: $('#sColor').value, textColor: $('#sTextColor').value, domainId: $('#sDomain').value, allowGrouping: m === 'group', splitTeachers: m === 'split', consecutive: consec, consecutivePairs, lockDays: ld, lockPeriods: lp, distinctDays: spreadV === 'distinct', gapDays: spreadV === 'gap', preferBand: 'any', preferPeriods: pp, avoidLastPeriod: $('#sAvoidLast').checked, singleApartFromPair: $('#sSingleApart').checked, excludeDailyCap: $('#sExCap').checked, dayExclusive: $('#sDayExclusive').checked, bandSync: $('#sBandSync').checked };
       if (existing) Object.assign(existing, data); else state.subjects.push({ id: uid(), ...data });
       applyBandSync(); save(); render(); toast('已儲存科目');
       return true;
@@ -1892,6 +1893,12 @@ function teacherDayLoad(teacherId, day) {
   for (const key in state.slots) { const parts = key.split('|'); if (parseInt(parts[1], 10) !== day) continue; const s = subjectById(state.slots[key]); if (s && s.excludeDailyCap) continue; slotAssignments(key).forEach(x => { if (x.teacherId === teacherId) set.add(parts[2]); }); }
   return set.size;
 }
+// R12（母語日淨空）：某教師有教「該科上課日不排他課」(dayExclusive)的科目時，該科的限定星期(lockDays)即為此師「淨空日」——當天只能排該類科目。回該師所有淨空日(數字集合)。
+function teacherExclusiveDays(teacherId) {
+  const days = new Set(); const t = teacherById(teacherId); if (!t) return days;
+  (t.load || []).forEach(L => { const s = subjectById(L.subjectId); if (s && s.dayExclusive) (s.lockDays || []).forEach(d => days.add(d)); });
+  return days;
+}
 // 這一格能否合法排入該科(該師)：格開放且空、符合科目日/節限制、老師不排課、無教師/教室衝堂、進階硬約束
 function canPlaceAt(classId, day, period, sid, teacherId, skipCoteach) {
   day = parseInt(day, 10); // 正規化：格子鍵傳入是字串，年級 periodDays/lockDays 存數字，需一致
@@ -1936,6 +1943,10 @@ function canPlaceAt(classId, day, period, sid, teacherId, skipCoteach) {
   // 教師單日節數上限
   if (!s.excludeDailyCap) {
     for (const a of news) { const cap = teacherDailyCap(a.teacherId); if (cap > 0 && teacherDayLoad(a.teacherId, day) + 1 > cap) return false; }
+  }
+  // R12（母語日淨空）：排的不是 dayExclusive 科目時，任一任課老師若當天是其淨空日→不可排（母語教師母語日只上母語）
+  if (!s.dayExclusive) {
+    for (const a of news) { if (teacherExclusiveDays(a.teacherId).has(day)) return false; }
   }
   // 協同／R13 學段同步：同群組的所有夥伴班同格也必須可放（含該年級有此節、格空、夥伴老師/教室不衝堂、單日上限），
   // 否則同步時會漏排某班或硬塞成衝堂。skipCoteach 防遞迴（檢查夥伴時不再往下檢查）。
@@ -2366,11 +2377,13 @@ function unplacedReason(spec) {
     }
   }
   if (!allowed.length) return '排課限制（指定上課日/節次）與該年級課表無交集，沒有任何可用格→請放寬此科的日/節限制';
-  const b = { unavail: 0, cap: 0, gap: 0, occupied: 0, tclash: 0, rclash: 0, free: 0 };
-  let capName = '', capDay = 0, capN = 0, unavailName = '';
+  const b = { unavail: 0, cap: 0, gap: 0, occupied: 0, tclash: 0, rclash: 0, excl: 0, free: 0 };
+  let capName = '', capDay = 0, capN = 0, unavailName = '', exclName = '', exclDay = 0;
   for (const { d, p } of allowed) {
     const un = loads.find(L => (teacherById(L.teacher.id).unavailable || []).includes(d + '|' + p));
     if (un) { b.unavail++; unavailName = un.teacher.name; continue; }
+    // R12（母語日淨空）：排的非 dayExclusive 科目、任課老師當天為淨空日→擋
+    if (!s.dayExclusive) { const exL = loads.find(L => teacherExclusiveDays(L.teacher.id).has(d)); if (exL) { b.excl++; exclName = exL.teacher.name; exclDay = d; continue; } }
     let capT = null;
     if (!s.excludeDailyCap) { for (const L of loads) { const cap = teacherDailyCap(L.teacher.id); if (cap > 0 && teacherDayLoad(L.teacher.id, d) + 1 > cap) { capT = { name: L.teacher.name, day: d, cap }; break; } } }
     if (capT) { b.cap++; capName = capT.name; capDay = capT.day; capN = capT.cap; continue; }
@@ -2388,6 +2401,7 @@ function unplacedReason(spec) {
   // 硬阻礙佔滿所有可用格 → 直接點名
   if (b.cap > 0 && b.cap + b.unavail + b.gap >= N && b.cap >= b.gap) return `教師單日上限：${capName} 於${DOW[capDay]}已達單日上限（${capN} 節），此科又限定該日/節無法改天，故排不下→提高該師「單日上限」、放寬本科鎖定天、或改由其他老師分攤`;
   if (b.unavail >= N) return `教師不排課時段擋住所有可用格（${unavailName}）→請檢查該師的「不排課時段」設定`;
+  if (b.excl > 0 && b.excl + b.unavail + b.cap + b.gap >= N) return `母語日淨空（R12）：${exclName} 於${DOW[exclDay]}為母語專屬日不排他課，此科又限定該日無法改天→放寬本科鎖定天、或改由非母語老師任教`;
   if (b.gap > 0 && b.gap + b.occupied + b.tclash + b.rclash + b.cap >= N && b.free === 0 && b.gap >= Math.max(b.occupied, b.tclash, b.rclash)) return `同科間隔限制：此科設了「不同天／隔天」，可用的天都已排過→放寬此科的分散設定`;
   const parts = [];
   if (b.occupied) parts.push(`${b.occupied} 格已排其他課`);
