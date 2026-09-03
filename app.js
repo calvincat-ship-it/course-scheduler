@@ -2946,16 +2946,16 @@ function swapLegal(gradeId, a, b) {
     gradeClassList(gradeId).forEach(c => { affected.push(slotKey(c.id, a.day, a.period), slotKey(c.id, b.day, b.period)); });
     applySwapToGrid(gradeId, a, b);
     const after = computeConflicts();
-    // 保留（擋下對調）：教師衝堂(1)/教室衝堂(2)/協同未同步(4)、限定星期 lockDays(5)。
-    // 放寬（允許、僅回報警告）：教師不排課時段(3)、限定節次 lockPeriods(6)、教師單日上限(7)、連堂拆散。
-    const BLOCK = /教師衝堂|教室衝堂|協同未同步/;
+    // 保留（擋下對調）：教師衝堂(1)、協同未同步(4)、限定星期 lockDays(5)。
+    // 放寬（允許、僅回報警告）：教室衝堂(2)、教師不排課時段(3)、限定節次 lockPeriods(6)、教師單日上限(7)、連堂拆散。
+    const BLOCK = /教師衝堂|協同未同步/;
     const warnings = [];
     const addW = w => { if (w && !warnings.includes(w)) warnings.push(w); };
     for (const k in after) {
       if (before.has(k)) continue;
       const blocking = after[k].find(r => BLOCK.test(r));
       if (blocking) return { ok: false, reason: blocking };
-      after[k].forEach(r => { if (r.includes('連堂')) addW('會拆散連堂'); if (r.includes('不排課時段')) addW(r); });
+      after[k].forEach(r => { if (r.includes('連堂')) addW('會拆散連堂'); if (r.includes('不排課時段')) addW(r); if (r.includes('教室衝堂')) addW(r); });
     }
     for (const k of affected) {
       const sid = state.slots[k]; if (!sid) continue; const s = subjectById(sid); const [, dS, p] = k.split('|'); const d = +dS;
@@ -3450,7 +3450,7 @@ function reschedFmtSlot(gradeId, slot) {
 }
 function reschedList() {
   const head = subHead('🔀 調課', `<button class="btn" data-action="resched-add">＋ 新增調課</button>`) +
-    `<div class="hint" style="margin-bottom:12px;color:var(--muted)">課表公布後，於<b>指定日期區間</b>把兩個時段的課<b>對調</b>（主課表不變、輸出時套用）。忠孝協同整組一起換（<b>2調2</b>）。<b>保留</b>：教師/教室衝堂、協同同步、限定星期；<b>放寬（僅提醒）</b>：不排課時段、限定節次、單日上限、連堂拆散。</div>`;
+    `<div class="hint" style="margin-bottom:12px;color:var(--muted)">課表公布後，於<b>指定日期區間</b>把兩個時段的課<b>對調</b>（主課表不變、輸出時套用）。忠孝協同整組一起換（<b>2調2</b>）。<b>保留</b>：教師衝堂、協同同步、限定星期；<b>放寬（僅提醒）</b>：教室衝堂、不排課時段、限定節次、單日上限、連堂拆散。</div>`;
   const list = state.reschedules || [];
   if (!list.length) return head + emptyCard('尚無調課記錄', '點右上「＋ 新增調課」建立第一筆。');
   const rows = list.map(r => {
