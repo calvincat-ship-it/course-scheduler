@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v12.20';
+const APP_VERSION = 'v12.21';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -3544,6 +3544,42 @@ function reschedSubstConflicts(gradeId, swaps, startDate, endDate) {
   })));
   return out;
 }
+// 反向：某班某位置(day,period)於 [start,end] 期間是否被同年級調課移走 → 回移到的新位置 {day,period} 或 null。
+function reschedMovedTarget(classId, day, period, startDate, endDate) {
+  const c = classById(classId); const g = c && classGrade(c); const gid = g && g.id;
+  if (!gid || !startDate || !endDate) return null;
+  const dN = Number(day), pS = String(period);
+  for (const r of (state.reschedules || [])) {
+    if (r.gradeId !== gid || !r.startDate || !r.endDate) continue;
+    if (!rangesShareWeekday(startDate, endDate, r.startDate, r.endDate, dN)) continue;
+    for (const sw of (r.swaps || [])) {
+      if (sw.a.day === dN && String(sw.a.period) === pS) return { day: sw.b.day, period: sw.b.period };
+      if (sw.b.day === dN && String(sw.b.period) === pS) return { day: sw.a.day, period: sw.a.period };
+    }
+  }
+  return null;
+}
+// 建立/改期代課前檢查：被代課教師在請假範圍內的課，是否有同期調課會把它移位（回衝突清單）。
+function substReschedConflicts(rec) {
+  if (!rec || !rec.startDate || !rec.endDate || !rec.absentTeacherId) return [];
+  const wd = substRangeWeekdays(rec); const out = [];
+  for (const key in state.slots) {
+    if (!slotAssignments(key).some(a => a.teacherId === rec.absentTeacherId)) continue;
+    const [classId, dStr, p] = key.split('|'); const day = Number(dStr);
+    if ((wd && !wd.has(day)) || !substPeriodOnLeave(rec, p)) continue;
+    const mv = reschedMovedTarget(classId, day, p, rec.startDate, rec.endDate);
+    if (mv) out.push({ className: (classById(classId) || {}).name || '', cell: DAY_LABELS[day] + periodLabel(p), subject: subjectName(state.slots[key]), movedTo: DAY_LABELS[mv.day] + periodLabel(mv.period) });
+  }
+  return out;
+}
+// 代課存檔前：若與調課同期重疊→先彈確認，確認後才 commit()；否則直接 commit()。回傳給 modal onSave 用。
+function substReschedGuard(rec, commit) {
+  const conf = substReschedConflicts(rec);
+  if (!conf.length) return commit();
+  const rows = conf.map(x => `<li>${esc(x.className)}　${esc(x.cell)} ${esc(x.subject)} → 已調至 <b>${esc(x.movedTo)}</b></li>`).join('');
+  openModal({ title: '⚠ 與調課安排重疊', body: `<p>此代課期間，被代課老師下列課已有<b>調課</b>安排、會移到新時段：</p><ul style="margin:8px 0 0;padding-left:20px;line-height:1.7">${rows}</ul><p style="margin-top:10px;color:var(--muted)">列印「調課後課表」會顯示代課老師；代課相關課表會於該格標示已調課的新時段。確定仍要建立／儲存？</p>`, saveLabel: '仍要建立', onSave: () => { commit(); return true; } });
+  return false;   // 原 modal 已被確認框取代，維持開啟
+}
 
 /* ---------- 🔀 調課「調課後課表」列印（1d，比照代課列印，套用 reschedule overlay） ---------- */
 // rec 的位置對映（對稱對調）：回 {day,period,swapped,partner}。partner＝對調來的另一格。
@@ -3809,8 +3845,7 @@ function substAddModal() {
         const conflict = substLeaveConflict({ id: '', absentTeacherId: substMyTeacherId, startDate: dates.startDate, endDate: dates.endDate, periods });
         if (conflict) { toast(`你在「${fmtSubstScope(conflict)}」已經有一筆代課填報，日期／節次重疊，不能重複建立。請改期，或回上一頁編輯既有那筆。`); return false; }
         const rec = { id: uid(), absentTeacherId: substMyTeacherId, startDate: dates.startDate, endDate: dates.endDate, periods, createdAt: new Date().toISOString(), assignments: {}, createdByEmail: substMyEmail, createdByName: substMyName };
-        substEditableIds.add(rec.id);
-        state.substitutions.push(rec); save(); substOpenId = rec.id; closeModal(); render(); return true;
+        return substReschedGuard(rec, () => { substEditableIds.add(rec.id); state.substitutions.push(rec); save(); substOpenId = rec.id; closeModal(); render(); return true; });
       },
     });
     return;
@@ -3827,7 +3862,7 @@ function substAddModal() {
       const conflict = substLeaveConflict({ id: '', absentTeacherId: tid, startDate: dates.startDate, endDate: dates.endDate, periods });
       if (conflict) { toast(`${teacherName(tid)} 在「${fmtSubstScope(conflict)}」已有代課填報，日期／節次重疊，不能重複建立。若要修改請編輯既有那筆。`); return false; }
       const rec = { id: uid(), absentTeacherId: tid, startDate: dates.startDate, endDate: dates.endDate, periods, createdAt: new Date().toISOString(), assignments: {} };
-      state.substitutions.push(rec); save(); substOpenId = rec.id; closeModal(); render(); return true;
+      return substReschedGuard(rec, () => { state.substitutions.push(rec); save(); substOpenId = rec.id; closeModal(); render(); return true; });
     },
   });
 }
@@ -3841,7 +3876,8 @@ function substEditDates(recId) {
       const periods = readSubstPeriods(); if (!periods) return false;
       const conflict = substLeaveConflict({ id: rec.id, absentTeacherId: rec.absentTeacherId, startDate: dates.startDate, endDate: dates.endDate, periods });
       if (conflict) { toast(`${teacherName(rec.absentTeacherId)} 在「${fmtSubstScope(conflict)}」已有另一筆代課填報，日期／節次重疊。請改期或合併到那一筆。`); return false; }
-      rec.startDate = dates.startDate; rec.endDate = dates.endDate; rec.periods = periods; save(); closeModal(); render(); return true;
+      const probe = { id: rec.id, absentTeacherId: rec.absentTeacherId, startDate: dates.startDate, endDate: dates.endDate, periods };
+      return substReschedGuard(probe, () => { rec.startDate = dates.startDate; rec.endDate = dates.endDate; rec.periods = periods; save(); closeModal(); render(); return true; });
     },
   });
 }
@@ -3934,9 +3970,11 @@ function subTeacherTimetableHTML(subId, rec, weekIdx = null) {
       } else if (sh && sh.length) {
         const s = subjectById(sh[0].sid); const color = s ? s.color : '#94a3b8';
         const label = sh.map(h => (classById(h.classId) || {}).name || '').join('、');
+        const mv = reschedMovedTarget(sh[0].classId, d, p.id, rec.startDate, rec.endDate);   // 反向：此代課節若同期被調課→標新時段
+        const mvMark = mv ? `<span class="resched-swapmark" title="此期間已調課：移至 ${esc(DAY_LABELS[mv.day] + periodLabel(mv.period))}">🔀</span>` : '';
         html += `<td class="cell"><div class="subst-offer assigned" style="background:${color};color:${subjTextColor(s, color)}">
-          <b>${esc(label)}</b><small>${esc(subjectName(sh[0].sid))}</small>
-          <span class="subst-sub">代課（代 ${esc(absentName)}）</span></div></td>`;
+          <b>${mvMark}${esc(label)}</b><small>${esc(subjectName(sh[0].sid))}</small>
+          <span class="subst-sub">代課（代 ${esc(absentName)}）${mv ? '· 已調課' : ''}</span></div></td>`;
       } else html += `<td class="cell"></td>`;
     }
     html += `</tr>`;
@@ -3966,8 +4004,10 @@ function substClassTimetableHTML(classId, rec, weekIdx = null) {
         const subId = inScope ? eff[key] : null;   // v10.16 只在本週範圍內顯示代課
         const room = roomsLabelCS(classId, sid) ? '·' + roomsLabelCS(classId, sid) : '';
         if (subId) {   // 此節被代課：改顯示代課教師名
+          const mv = reschedMovedTarget(classId, d, p.id, rec.startDate, rec.endDate);   // 1e/反向：此期間若被調課移位→標示新時段
+          const mvMark = mv ? `<span class="resched-swapmark" title="此期間已調課：移至 ${esc(DAY_LABELS[mv.day] + periodLabel(mv.period))}">🔀</span>` : '';
           html += `<td class="cell"><div class="subst-offer assigned" style="background:${color};color:${subjTextColor(s, color)}" title="原任課：${esc(slotTeachersLabel(key))}">
-            <b>${esc(subjectName(sid))}</b>
+            <b>${mvMark}${esc(subjectName(sid))}</b>
             <span class="subst-sub">${esc(teacherName(subId))}</span></div></td>`;
         } else {
           html += `<td class="cell"><div class="cell-lesson" style="background:${color};color:${subjTextColor(s, color)}">${esc(subjectName(sid))}<small>${esc(slotTeachersLabel(key))}${esc(room)}</small></div></td>`;
@@ -4124,6 +4164,7 @@ function substContextState() {
     subjects: state.subjects, grades: state.grades, classes: state.classes, teachers: state.teachers, rooms: state.rooms || [],
     domains: state.domains || [], slots: state.slots, slotTeachers: state.slotTeachers, slotContent: state.slotContent || {},
     substitutions: state.substitutions || [],
+    reschedules: state.reschedules || [],   // 讓線上自助代課 kiosk 能參照排課者的調課（代課後課表標示已調課的新時段）
   };
 }
 // 排課者：開放（建根目錄檔＋網域共享）
@@ -4249,6 +4290,7 @@ async function substKioskStart() {
     if (obj.fmt !== SUBST_FMT || !obj.state) { toast('這不是代課填報檔'); return; }
     substFileId = fileId; state = obj.state;
     if (!Array.isArray(state.substitutions)) state.substitutions = [];
+    if (!Array.isArray(state.reschedules)) state.reschedules = [];   // 相容舊快照；讓 kiosk 也能參照調課
     normalizeAllSubst();
     if (!state.settings) state.settings = { periods: [], days: [1, 2, 3, 4, 5] };
     substEditableIds = new Set(); substOpenId = null;
