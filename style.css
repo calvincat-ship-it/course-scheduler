@@ -73,6 +73,12 @@ details.domain-fold > summary::-webkit-details-marker { display: none; }
 details.domain-fold > summary::before { content: '▸'; color: var(--muted); transition: transform .15s; font-size: 13px; }
 details.domain-fold[open] > summary::before { transform: rotate(90deg); }
 details.domain-fold[open] > summary { border-bottom: 1px solid var(--line); }
+/* 設定頁「進階與疑難排解」輕量折疊：summary 當區段標題，內部卡片維持原樣 */
+details.settings-fold { margin: 18px 0 6px; }
+details.settings-fold > summary { cursor: pointer; font-weight: 700; font-size: 15px; padding: 10px 4px; user-select: none; list-style: none; color: var(--muted); display: flex; align-items: center; gap: 8px; }
+details.settings-fold > summary::-webkit-details-marker { display: none; }
+details.settings-fold > summary::before { content: '▸'; color: var(--muted); font-size: 13px; transition: transform .15s; }
+details.settings-fold[open] > summary::before { transform: rotate(90deg); }
 /* 領域節數 body 比照科目卡片：下陷凹槽，內部兩張卡片懸浮 */
 .domain-fold-body { padding: 20px 20px 22px; background: #e7edf6; box-shadow: inset 0 8px 18px rgba(15, 23, 42, .15), inset 0 2px 0 rgba(148, 163, 184, .25); }
 .domain-fold-body > .card, .domain-fold-body .card {

@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v12.12';
+const APP_VERSION = 'v12.13';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -4205,19 +4205,21 @@ function viewSettings() {
       }).join('')}</tbody></table>
       <p class="hint" style="color:var(--muted);margin-top:8px">母語可用「/」分列（如 阿美語/閩南語）。固定版面（整潔活動、導師時間、午餐、午休、第八節、週三下午教學研究、學生人數欄）已比照範本內建。</p>
     </div></div>
-    <div class="card"><div class="card-body"><h4 style="margin-top:0">🗓️ 學年度轉換</h4>
-      <p style="color:var(--muted);margin:4px 0 10px">新學年時一鍵沿用本學年的所有設定（科目／年級／班級／教師配課／教室／協同／領域），只把排課清空重排，免重建。套用前會自動下載備份。</p>
-      <button class="btn" data-action="new-school-year">另存為新學年（沿用設定）</button></div></div>
     ${cloudSettingsCard()}
-    <div class="card"><div class="card-body"><h4 style="margin-top:0">🧹 疑難排解：只重設本 App</h4>
-      <p style="color:var(--muted);margin:4px 0 10px">手機上若一直跳「請稍候」授權、卡住或畫面異常，用這個清除「課務編排」在本機的資料並重新載入。<b>只影響這個 App</b>，不會動到血壓記錄、智慧筆記本等其他 App。（有雲端備份的話重新連結即可取回；救急也可直接在網址列開 <code>?reset=1</code>）</p>
-      <button class="ghost" data-action="reset-app" style="color:var(--danger)">🧹 清除本 App 資料並重設</button></div></div>
-    <div class="card"><div class="card-body"><h4 style="margin-top:0">🧑‍🏫 導師線上填課</h4>
-      <p style="color:var(--muted);margin:4px 0 10px">導師專用：用學校 Google 帳號登入，開啟排課老師分享給你的「班級填課檔」，為自編格選課後存回雲端。（排課老師的「開放/收回」在 ④ 排課鎖定後的「☁️ 線上填課」）</p>
-      <button class="btn" data-action="teacher-fill">用 Google 登入並填課</button></div></div>
-    <div class="card"><div class="card-body"><h4 style="margin-top:0">關於</h4>
-      <p style="color:var(--muted)">課務編排 ${APP_VERSION} · 資料存本機瀏覽器。備份請用右上「備份」或下方雲端同步。</p>
-    </div></div>`;
+    <details class="settings-fold"><summary>🛠️ 進階與疑難排解（學年度轉換、導師線上填課、重設本 App、關於）</summary>
+      <div class="card"><div class="card-body"><h4 style="margin-top:0">🗓️ 學年度轉換</h4>
+        <p style="color:var(--muted);margin:4px 0 10px">新學年時一鍵沿用本學年的所有設定（科目／年級／班級／教師配課／教室／協同／領域），只把排課清空重排，免重建。套用前會自動下載備份。</p>
+        <button class="btn" data-action="new-school-year">另存為新學年（沿用設定）</button></div></div>
+      <div class="card"><div class="card-body"><h4 style="margin-top:0">🧑‍🏫 導師線上填課</h4>
+        <p style="color:var(--muted);margin:4px 0 10px">導師專用：用學校 Google 帳號登入，開啟排課老師分享給你的「班級填課檔」，為自編格選課後存回雲端。（排課老師的「開放/收回」在 ④ 排課鎖定後的「☁️ 線上填課」）</p>
+        <button class="btn" data-action="teacher-fill">用 Google 登入並填課</button></div></div>
+      <div class="card"><div class="card-body"><h4 style="margin-top:0">🧹 只重設本 App</h4>
+        <p style="color:var(--muted);margin:4px 0 10px">手機上若一直跳「請稍候」授權、卡住或畫面異常，用這個清除「課務編排」在本機的資料並重新載入。<b>只影響這個 App</b>，不會動到血壓記錄、智慧筆記本等其他 App。（有雲端備份的話重新連結即可取回；救急也可直接在網址列開 <code>?reset=1</code>）</p>
+        <button class="ghost" data-action="reset-app" style="color:var(--danger)">🧹 清除本 App 資料並重設</button></div></div>
+      <div class="card"><div class="card-body"><h4 style="margin-top:0">關於</h4>
+        <p style="color:var(--muted)">課務編排 ${APP_VERSION} · 資料存本機瀏覽器。備份請用右上「備份」或上方雲端同步。</p>
+      </div></div>
+    </details>`;
 }
 function roomModal(existing) {
   const r = existing || { name: '' };
