@@ -255,6 +255,8 @@ details.subj-adv[open] > summary::before { transform: rotate(90deg); }
 details.subj-adv[open] > summary { border-bottom: 1px solid var(--line); margin-bottom: 8px; }
 .pref-quick { margin-left: 8px; display: inline-flex; gap: 4px; vertical-align: middle; }
 button.ghost.xs { padding: 2px 8px; font-size: 12px; min-height: 0; }
+.tpl-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 10px 12px; margin-bottom: 12px; background: #f1f6fc; border: 1px solid var(--line); border-radius: 10px; }
+.tpl-bar .tpl-label { font-weight: 700; font-size: 13px; color: var(--brand-dark); margin-right: 2px; }
 
 /* v09.12 F③ 填課進度 */
 .fill-prog { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin: 10px 0; background: #f8fafc; }

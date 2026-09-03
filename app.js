@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v12.13';
+const APP_VERSION = 'v12.14';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -983,6 +983,42 @@ function subjBody(confirmed) {
   }).join('');
   return hint + `<div class="subj-cards">${cards}</div>`;
 }
+// 科目範本：一鍵套用常見科目的旗標組合（使用者仍可再微調）。節次/上課日以「順序索引/星期數字」表示，各校自適應。
+const SUBJ_TEMPLATES = {
+  main:   { label: '主科(國/數)',        mode: 'single', last: 'avoid' },
+  socsci: { label: '社會/自然',          mode: 'single', consec: true, pairs: 1, single: true, last: 'avoid' },
+  eng:    { label: '英語(分組)',         mode: 'group',  spread: 'distinct', last: 'avoid' },
+  pe:     { label: '體育',               mode: 'single', spread: 'gap', band: true, last: 'light', periodsExcept: [0, 3, 4] }, // 排除第1/4/5節
+  art:    { label: '美勞(連堂)',         mode: 'single', consec: true, last: 'light' },
+  light:  { label: '輕科(音樂/綜合/健康)', mode: 'single', last: 'light' },
+  life:   { label: '生活(分節)',         mode: 'split',  last: 'light' },
+  mother: { label: '母語',               mode: 'group',  exCap: true, dayExcl: true, days: [4] },       // 週四、母語日淨空、不列上限
+  local:  { label: '彈性在地',           mode: 'single', days: [5], periods: [0] },                     // 週五第1節
+};
+// 套用範本到目前開啟的科目 modal（設定 DOM 欄位；不動科目名稱）。未指定的鎖定一律清空＝完整預設語意。
+function applySubjTemplate(tpl) {
+  const t = SUBJ_TEMPLATES[tpl]; if (!t) return;
+  const setChk = (id, v) => { const e = document.getElementById(id); if (e) e.checked = !!v; };
+  const setVal = (id, v) => { const e = document.getElementById(id); if (e) e.value = v; };
+  setVal('sMode', t.mode || 'single');
+  setChk('sConsec', !!t.consec); setVal('sConsecPairs', t.pairs != null ? t.pairs : '');
+  setVal('sSpread', t.spread || 'none');
+  setVal('sLastPref', t.last || 'none');
+  setChk('sSingleApart', !!t.single);
+  setChk('sBandSync', !!t.band);
+  setChk('sDayExclusive', !!t.dayExcl);
+  setChk('sExCap', !!t.exCap);
+  const days = t.days || [];
+  document.querySelectorAll('.s-lockday').forEach(el => { el.checked = days.includes(parseInt(el.value, 10)); });
+  const lps = lessonPeriods().map(p => p.id);
+  let wanted = null;
+  if (t.periods) wanted = t.periods.map(i => lps[i]).filter(Boolean);
+  else if (t.periodsExcept) wanted = lps.filter((_, i) => !t.periodsExcept.includes(i));
+  const wset = wanted ? new Set(wanted) : null;
+  document.querySelectorAll('.s-lockper').forEach(el => { el.checked = wset ? wset.has(el.value) : false; });
+  document.querySelectorAll('.subj-adv').forEach(d => d.open = true);   // 展開進階讓使用者看到套用結果
+  toast('已套用「' + t.label + '」範本，可再微調後儲存');
+}
 function subjectModal(existing) {
   const s = existing || { name: '', color: COLORS[state.subjects.length % COLORS.length], textColor: '', domainId: '', allowGrouping: false, splitTeachers: false, consecutive: false, lockDays: [], lockPeriods: [] };
   const curText = s.textColor || textOn(s.color);   // 目前文字色（未設過→依底色自動）
@@ -1004,6 +1040,8 @@ function subjectModal(existing) {
   openModal({
     title: existing ? '編輯科目' : '新增科目',
     body: `
+      <div class="tpl-bar"><span class="tpl-label">🧩 快速範本</span>${Object.entries(SUBJ_TEMPLATES).map(([k, t]) => `<button type="button" class="ghost xs" data-action="subj-tpl" data-tpl="${k}">${esc(t.label)}</button>`).join('')}
+        <span class="hint" style="color:var(--muted);font-size:12px;flex-basis:100%;margin-top:2px">點一下套用該類科目的常見設定（教學型態／連堂／限制／末節傾向等），套用後可再微調；<b>會覆蓋下方進階設定</b>，不改科目名稱。</span></div>
       <label class="field"><span>科目名稱</span><input type="text" id="sName" value="${esc(s.name)}" oninput="var p=document.getElementById('sPreview');if(p)p.textContent=this.value||'科目'"></label>
       <div class="field-row" style="align-items:flex-end">
         <label class="field" style="flex:1;margin-bottom:0"><span>底色</span><input type="color" id="sColor" value="${s.color}" style="height:40px;padding:2px" oninput="var p=document.getElementById('sPreview');if(p)p.style.background=this.value"></label>
@@ -4899,6 +4937,7 @@ const clickHandlers = {
   'pref-am': () => document.querySelectorAll('.s-prefper').forEach(el => { el.checked = isMorningPeriod(el.value); }),
   'pref-pm': () => document.querySelectorAll('.s-prefper').forEach(el => { el.checked = !isMorningPeriod(el.value); }),
   'pref-clear': () => document.querySelectorAll('.s-prefper').forEach(el => { el.checked = false; }),
+  'subj-tpl': el => applySubjTemplate(el.dataset.tpl),
 
   'add-teacher': () => teacherModal(null),
   'edit-teacher': el => teacherModal(teacherById(el.dataset.id)),
