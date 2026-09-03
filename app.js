@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v12.17';
+const APP_VERSION = 'v12.18';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -249,6 +249,8 @@ let showLoadMatrix = false; // v09.12 ③教師「班×科配課矩陣」展開�
 let fillProgress = null;    // v09.12 F③ 線上填課進度快取 {classId:{total,filled,submitted,submittedAt}}（runtime，按需重讀）
 let substOpenId = null;     // v09.45 代課頁：目前開啟編輯中的代課記錄 id（null＝顯示清單）
 let substWeekTab = null;    // v10.16 分週指派目前檢視的週 index（null＝全部週為底）
+let reschedOpenId = null;   // v12.18 調課頁：null＝清單；'new' 或記錄 id＝編輯器
+let reschedDraft = null;    // v12.18 調課編輯中草稿 {gradeId, src:{day,period}|null, target:{day,period}|null}
 /* v09.11 排課復原 Undo/Redo：只快照 slots/slotTeachers/slotContent（不跨鎖定/自編結構邊界，故 lock/unlock/finalize 時清空堆疊）*/
 let undoStack = [], redoStack = [];
 const snapSlots = () => ({ slots: { ...state.slots }, slotTeachers: { ...state.slotTeachers }, slotContent: { ...state.slotContent } });
@@ -3438,11 +3440,84 @@ function substCellInScope(rec, key) {
    教師·教室不衝堂皆自動守住）。Phase 1：排課者本機工具；Phase 2：線上 ?swap kiosk。
    ========================================================================== */
 function viewReschedule() {
-  const head = subHead('🔀 調課', '') +
-    `<div class="hint" style="margin-bottom:12px;color:var(--muted)">課表公布後，於<b>指定日期區間</b>把兩個時段的課<b>對調</b>（主課表不變、輸出時套用）。忠孝協同的課會<b>整組一起換（2調2）</b>；系統只提供<b>不產生衝堂</b>、且不違反鎖定（如母語週四、體育節次）的合法對調。</div>`;
+  if (state.classes.length === 0) return subHead('🔀 調課') + emptyCard('尚無班級', '請先建立班級與排課，才能安排調課。');
+  if (reschedOpenId) return reschedEditor();
+  return reschedList();
+}
+function reschedFmtSlot(gradeId, slot) {
+  const rep = gradeClassList(gradeId)[0]; const sid = rep ? state.slots[slotKey(rep.id, slot.day, slot.period)] : null;
+  return DAY_LABELS[slot.day] + periodLabel(slot.period) + (sid ? ' ' + subjectName(sid) : '');
+}
+function reschedList() {
+  const head = subHead('🔀 調課', `<button class="btn" data-action="resched-add">＋ 新增調課</button>`) +
+    `<div class="hint" style="margin-bottom:12px;color:var(--muted)">課表公布後，於<b>指定日期區間</b>把兩個時段的課<b>對調</b>（主課表不變、輸出時套用）。忠孝協同整組一起換（<b>2調2</b>）。<b>保留</b>：教師/教室衝堂、協同同步、限定星期；<b>放寬（僅提醒）</b>：不排課時段、限定節次、單日上限、連堂拆散。</div>`;
   const list = state.reschedules || [];
-  if (!list.length) return head + emptyCard('尚無調課記錄', '⚙️ 調課引擎建置中（Phase 1）——完成後可在此選課建立「限期對調」。');
-  return head + `<div class="subst-list">${list.map(r => `<div class="subst-item"><b>${esc(r.note || '調課')}</b>　<span style="color:var(--muted)">${esc(r.startDate || '')}~${esc(r.endDate || '')}</span></div>`).join('')}</div>`;
+  if (!list.length) return head + emptyCard('尚無調課記錄', '點右上「＋ 新增調課」建立第一筆。');
+  const rows = list.map(r => {
+    const g = (state.grades.find(x => x.id === r.gradeId) || {}).name || '';
+    const swaps = (r.swaps || []).map(sw => `${DAY_LABELS[sw.a.day]}${periodLabel(sw.a.period)} ⇄ ${DAY_LABELS[sw.b.day]}${periodLabel(sw.b.period)}`).join('、');
+    return `<div class="subst-item"><div style="flex:1"><b>${esc(g)}</b>　${esc(swaps)}　<span style="color:var(--muted)">${esc(r.startDate || '')}~${esc(r.endDate || '')}</span>${r.note ? `　<span style="color:var(--muted)">（${esc(r.note)}）</span>` : ''}</div><button class="icon-btn" data-action="resched-del" data-id="${r.id}" title="刪除">🗑️</button></div>`;
+  }).join('');
+  return head + `<div class="subst-list">${rows}</div>`;
+}
+function reschedEditor() {
+  const rec = reschedOpenId !== 'new' ? (state.reschedules || []).find(r => r.id === reschedOpenId) : null;
+  const d = reschedDraft || (reschedDraft = { gradeId: (rec && rec.gradeId) || state.grades[0].id, src: null, target: null });
+  const gradeOpts = state.grades.map(g => `<option value="${g.id}" ${g.id === d.gradeId ? 'selected' : ''}>${esc(g.name)}</option>`).join('');
+  let targetsMap = {};
+  if (d.src) legalSwapTargets(d.gradeId, d.src).forEach(t => { targetsMap[t.day + '|' + t.period] = t; });
+  const grid = reschedGridHTML(d.gradeId, d.src, targetsMap);
+  let summary;
+  if (d.src && d.target) {
+    const tinfo = targetsMap[d.target.day + '|' + d.target.period];
+    const warns = tinfo && tinfo.warnings && tinfo.warnings.length ? `<div class="resched-warn">⚠ ${tinfo.warnings.map(esc).join('；')}</div>` : '';
+    summary = `<div class="resched-summary"><b>對調：</b>${esc(reschedFmtSlot(d.gradeId, d.src))}　⇄　${esc(reschedFmtSlot(d.gradeId, d.target))}${warns}</div>`;
+  } else if (d.src) {
+    summary = `<div class="resched-summary">已選來源：<b>${esc(reschedFmtSlot(d.gradeId, d.src))}</b>　→ 點<span style="color:var(--ok)">綠色</span>格選要對調的時段　<button class="ghost xs" data-action="resched-clear-src">重選來源</button></div>`;
+  } else {
+    summary = `<div class="resched-summary" style="color:var(--muted)">先點課表上要異動的<b>來源時段</b>。</div>`;
+  }
+  const today = new Date().toISOString().slice(0, 10);
+  const dateFields = `<div class="field-row" style="margin-top:12px">
+      <label class="field"><span>開始日期</span><input type="date" id="reschedStart" value="${esc((rec && rec.startDate) || today)}"></label>
+      <label class="field"><span>截止日期</span><input type="date" id="reschedEnd" value="${esc((rec && rec.endDate) || today)}"></label>
+      <label class="field" style="flex:2"><span>備註（選填）</span><input type="text" id="reschedNote" value="${esc((rec && rec.note) || '')}" placeholder="如：王老師出差"></label></div>`;
+  const head = subHead('🔀 ' + (rec ? '編輯調課' : '新增調課'), `<button class="ghost" data-action="resched-cancel">← 返回清單</button>`);
+  return head + `<div class="card"><div class="card-body">
+      <label class="field" style="max-width:220px"><span>年級</span><select data-change="resched-grade">${gradeOpts}</select></label>
+      ${summary}
+      <div class="grid-wrap" style="margin-top:10px">${grid}</div>
+      <div class="mx-legend" style="margin-top:8px">🟦 來源　🟩 可對調　⬜ 不可對調（滑鼠移上看原因）　·　放寬項標 ⚠</div>
+      ${dateFields}
+      <div style="margin-top:14px;display:flex;gap:8px">
+        <button class="btn" data-action="resched-save" ${d.src && d.target ? '' : 'disabled'}>建立調課</button>
+        <button class="ghost" data-action="resched-cancel">取消</button></div>
+    </div></div>`;
+}
+// 年級課表格（可點選）：src=已選來源；targetsMap={'day|period':{legal,warnings,reason,...}}
+function reschedGridHTML(gradeId, src, targetsMap) {
+  const days = activeDays(); const rep = gradeClassList(gradeId)[0]; const g = rep && classGrade(rep);
+  let html = `<table class="timetable"><thead><tr><th class="period-th">節次</th>${days.map(d => `<th>${DAY_LABELS[d]}</th>`).join('')}</tr></thead><tbody>`;
+  for (const p of state.settings.periods) {
+    if (p.isBreak) { html += `<tr class="break-row"><td colspan="${days.length + 1}">${esc(p.label)}</td></tr>`; continue; }
+    html += `<tr><td class="period-th">${esc(p.label)}<small>${esc(p.start)}–${esc(p.end)}</small></td>`;
+    for (const d of days) {
+      const sid = rep ? state.slots[slotKey(rep.id, d, p.id)] : null;
+      const hasPeriod = g && gradePeriodHasDay(g, p.id, d);
+      if (!sid) { html += `<td class="cell${hasPeriod ? '' : ' subst-cell-off'}"></td>`; continue; }
+      const s = subjectById(sid); const color = s ? s.color : '#94a3b8';
+      const isSrc = src && src.day === d && src.period === p.id;
+      const tinfo = src ? targetsMap[d + '|' + p.id] : null;
+      let cls = 'resched-cell', act = '', title = '', warnMark = '';
+      if (isSrc) { cls += ' src'; act = `data-action="resched-cell" data-day="${d}" data-period="${esc(p.id)}"`; }
+      else if (!src) { act = `data-action="resched-cell" data-day="${d}" data-period="${esc(p.id)}"`; }
+      else if (tinfo && tinfo.legal) { cls += ' legal'; act = `data-action="resched-cell" data-day="${d}" data-period="${esc(p.id)}"`; if (tinfo.warnings.length) { cls += ' warn'; title = tinfo.warnings.join('；'); warnMark = '<span class="resched-warnmark">⚠</span>'; } }
+      else { cls += ' illegal'; title = (tinfo && tinfo.reason) || '不可對調'; }
+      html += `<td class="cell"><div class="${cls}" ${act} style="background:${color};color:${subjTextColor(s, color)}" title="${esc(title)}"><b>${esc(subjectName(sid))}</b>${warnMark}</div></td>`;
+    }
+    html += `</tr>`;
+  }
+  return html + `</tbody></table>`;
 }
 function viewSubst() {
   if (state.teachers.length === 0)
@@ -5035,6 +5110,26 @@ const clickHandlers = {
   'toggle-matrix': () => { showLoadMatrix = !showLoadMatrix; render(); },
   'goto-teachers': () => { currentTab = 'teachers'; render(); },
   'goto': el => { const t = el.dataset.goto; if (t) { currentTab = t; render(); } },
+  // 🔀 調課（v12.18）
+  'resched-add': () => { reschedOpenId = 'new'; reschedDraft = null; render(); },
+  'resched-cancel': () => { reschedOpenId = null; reschedDraft = null; render(); },
+  'resched-del': el => { const id = el.dataset.id; confirmDelete('刪除此調課記錄？', () => { state.reschedules = (state.reschedules || []).filter(r => r.id !== id); }); },
+  'resched-clear-src': () => { if (reschedDraft) { reschedDraft.src = null; reschedDraft.target = null; render(); } },
+  'resched-cell': el => {
+    const day = +el.dataset.day, period = el.dataset.period; const d = reschedDraft; if (!d) return;
+    if (!d.src) { d.src = { day, period }; d.target = null; }
+    else if (d.src.day === day && d.src.period === period) { d.src = null; d.target = null; }   // 點來源本身＝取消
+    else { const t = legalSwapTargets(d.gradeId, d.src).find(x => x.day === day && x.period === period); if (t && t.legal) d.target = { day, period }; else { toast(t ? ('不可對調：' + t.reason) : '不可對調'); return; } }
+    render();
+  },
+  'resched-save': () => {
+    const d = reschedDraft; if (!d || !d.src || !d.target) { toast('請先選來源與對調目標'); return; }
+    const start = $('#reschedStart').value, end = $('#reschedEnd').value, note = ($('#reschedNote').value || '').trim();
+    if (!start || !end) { toast('請填開始與截止日期'); return; }
+    if (end < start) { toast('截止日不能早於開始日'); return; }
+    const rec = { id: uid(), createdAt: new Date().toISOString(), gradeId: d.gradeId, swaps: [{ a: d.src, b: d.target }], startDate: start, endDate: end, note };
+    (state.reschedules = state.reschedules || []).push(rec); save(); reschedOpenId = null; reschedDraft = null; render(); toast('已建立調課');
+  },
   // 初次設定精靈的「前往設定」：先存已填的基本資料，再關 modal、切到設定頁（讓新手先建上課日/節次/專科教室）
   'setup-goto-settings': () => {
     const sc = $('#setupSchool'), sy = $('#setupYear'), scd = $('#setupCode');
@@ -5289,6 +5384,7 @@ const clickHandlers = {
 };
 
 const changeHandlers = {
+  'resched-grade': el => { if (reschedDraft) { reschedDraft.gradeId = el.value; reschedDraft.src = null; reschedDraft.target = null; } render(); },
   'day-toggle': el => {
     const d = parseInt(el.dataset.day, 10);
     if (el.checked) { if (!state.settings.days.includes(d)) state.settings.days.push(d); }
