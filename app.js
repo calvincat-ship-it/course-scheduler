@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v12.27';
+const APP_VERSION = 'v12.28';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -3587,32 +3587,39 @@ function reschedPickPanel(d) {
   const targetMonday = addDays(weekMondayOf(aDate), wk * 7);
   const wdays = weekSchoolDays(targetMonday);
   const weekBtns = RESCHED_WEEK_LABELS.map((lb, i) => `<button class="ghost xs resched-wk${i === wk ? ' active' : ''}" data-action="resched-week" data-w="${i}">${lb}</button>`).join(' ');
-  const grid = reschedWeekPickGridHTML(seedClassId, src, aDate, d.teacherId, targetMonday);
-  return `<div class="resched-summary">為 <b>${esc(cls)} ${esc(subjectName(srcSid))}</b>（${esc(fmtMD(aDate))} ${esc(DAY_LABELS[src.day])} ${esc(periodLabel(src.period))}）挑一個要<b>對調</b>的時段：點<span style="color:var(--ok)">綠色</span>格。 <button class="ghost xs" data-action="resched-cancel-pick">取消選擇</button></div>
+  const grid = reschedWeekPickGridHTML(seedClassId, src, aDate, d.teacherId, targetMonday, d.swaps);
+  return `<div class="resched-summary">為 <b>${esc(cls)} ${esc(subjectName(srcSid))}</b>（${esc(fmtMD(aDate))} ${esc(DAY_LABELS[src.day])} ${esc(periodLabel(src.period))}）挑一個要<b>對調</b>的時段：點<span style="color:var(--ok)">綠色</span>格。<span style="color:var(--muted)">（課表已套用你前面已排的調課）</span> <button class="ghost xs" data-action="resched-cancel-pick">取消選擇</button></div>
     <div style="margin:10px 0 6px;display:flex;align-items:center;gap:8px;flex-wrap:wrap"><b>對調到：</b>${weekBtns}<span style="color:var(--muted)">${esc(fmtMD(targetMonday))}~${esc(fmtMD(wdays[4].date))}</span></div>
     <div class="grid-wrap">${grid}</div>
-    <div class="mx-legend" style="margin-top:8px">🟦 來源　🟩 可對調　⬜ 不可對調（滑鼠移上看原因）　·　⚠放寬項　·　⏳本人任課·已鎖定</div>`;
+    <div class="mx-legend" style="margin-top:8px">🟦 來源　🟩 可對調　⬜ 不可對調　·　⚠放寬項　·　⏳本人任課·鎖定　·　🔒 前一筆調課已用（🔀＝已被前面調課換過）</div>`;
 }
-// 視覺式：某週課表格（欄＝該週日期），點合法目標格加入對調
-function reschedWeekPickGridHTML(seedClassId, src, aDate, teacherId, monday) {
+// 視覺式：某週課表格（欄＝該週日期）；draftSwaps＝草稿中已排的調課→累積套用(顯示換過後內容)＋擋已用格
+function reschedWeekPickGridHTML(seedClassId, src, aDate, teacherId, monday, draftSwaps) {
   const wdays = weekSchoolDays(monday); const c = classById(seedClassId); const g = classGrade(c);
+  const draftRec = { swaps: draftSwaps || [] };
+  const usedSet = new Set();   // 已被前面草稿調課用掉的 (date|period) 端點（含 seedClass 範圍）
+  (draftSwaps || []).forEach(sw => { if (!(sw.classIds || []).includes(seedClassId)) return; usedSet.add(sw.aDate + '|' + sw.a.period); usedSet.add(sw.bDate + '|' + sw.b.period); });
   const legalByDate = {}; wdays.forEach(w => { const m = {}; legalTargetsOnDate(seedClassId, src, aDate, teacherId, w.date).forEach(t => { m[t.period] = t; }); legalByDate[w.date] = m; });
   let html = `<table class="timetable"><thead><tr><th class="period-th">節次</th>${wdays.map(w => `<th>${DAY_LABELS[w.wd]}<small>${esc(fmtMD(w.date))}</small></th>`).join('')}</tr></thead><tbody>`;
   for (const p of state.settings.periods) {
     if (p.isBreak) { html += `<tr class="break-row"><td colspan="${wdays.length + 1}">${esc(p.label)}</td></tr>`; continue; }
     html += `<tr><td class="period-th">${esc(p.label)}<small>${esc(p.start)}–${esc(p.end)}</small></td>`;
     for (const w of wdays) {
-      const sid = state.slots[slotKey(seedClassId, w.wd, p.id)];
+      const rp = reschedResolveOnDate(draftRec, seedClassId, w.date, w.wd, p.id);   // 累積：套用前面草稿調課後的實際內容
+      const sid = state.slots[slotKey(seedClassId, rp.day, rp.period)];
       const hasPeriod = g && gradePeriodHasDay(g, p.id, w.wd);
       if (!sid) { html += `<td class="cell${hasPeriod ? '' : ' subst-cell-off'}"></td>`; continue; }
       const s = subjectById(sid); const color = s ? s.color : '#94a3b8';
       const isSrc = (w.date === aDate && w.wd === src.day && p.id === src.period);
+      const used = usedSet.has(w.date + '|' + p.id);
       const tinfo = legalByDate[w.date][p.id];
       let clsN = 'resched-cell', act = '', title = '', warnMark = '';
       if (isSrc) { clsN += ' src'; }
+      else if (used) { clsN += ' illegal'; warnMark = '<span class="resched-warnmark">🔒</span>'; title = '此時段已被前一筆調課使用'; }
       else if (tinfo && tinfo.legal) { clsN += ' legal'; act = `data-action="resched-pick-target" data-date="${esc(w.date)}" data-day="${w.wd}" data-period="${esc(p.id)}"`; const ws = tinfo.warnings || []; if (ws.length) { clsN += ' warn'; warnMark = '<span class="resched-warnmark">⚠</span>'; title = ws.join('；'); } }
       else if (tinfo && tinfo.stillAbsent) { clsN += ' illegal'; warnMark = '<span class="resched-warnmark">⏳</span>'; title = tinfo.reason; }
       else { clsN += ' illegal'; title = (tinfo && tinfo.reason) || '不可對調'; }
+      if (rp.swapped && !isSrc && !warnMark) warnMark = '<span class="resched-swapmark">🔀</span>';   // 已被前面調課換過
       html += `<td class="cell"><div class="${clsN}" ${act} style="background:${color};color:${subjTextColor(s, color)}" title="${esc(title)}"><b>${esc(subjectName(sid))}</b>${warnMark}</div></td>`;
     }
     html += `</tr>`;
@@ -5391,6 +5398,7 @@ const clickHandlers = {
     const d = reschedDraft; if (!d || !d.picking) return;
     const bDate = el.dataset.date, day = +el.dataset.day, period = el.dataset.period;
     const { seedClassId, aDate, src } = d.picking;
+    if (d.swaps.some(sw => (sw.classIds || []).includes(seedClassId) && ((sw.aDate === bDate && sw.a.period === period) || (sw.bDate === bDate && sw.b.period === period)))) { toast('此時段已被前一筆調課使用'); return; }
     const t = legalTargetsOnDate(seedClassId, src, aDate, d.teacherId, bDate).find(x => x.occupied && x.period === period);
     if (!t || !t.legal) { toast(t ? ('不可對調：' + (t.reason || '')) : '不可對調'); return; }
     reschedSyncForm();
