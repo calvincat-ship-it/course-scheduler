@@ -3,12 +3,25 @@
 > 收工時 Claude 更新這裡；開工時 Claude 先讀這裡。跟程式碼一起 git 同步。
 
 ## 最後更新
-- 時間：2026-09-01
+- 時間：2026-09-02
 - 機器：（本次 session 的機器；Desktop\claude code）
-- 版本：**main = v12.00（已上線、GH Pages 已部署）**。schema 仍為 2、向下相容。
-- 狀態：全部本機（node --check + 預覽合成情境實測）通過、無 console error、已 push main。
+- 版本：**main = v12.08（已 push；GH Pages 依常規部署）**。schema 仍為 2、向下相容。
+- 狀態：全部本機（node --check + 預覽用「和平分校示範檔」實測）通過、無 console error、已 push main。
 
-## 本次區間做了什麼（v11.00 → v12.00）＝**A 組自動排課進階 + 刪班崩潰修復**
+## 本次區間做了什麼（v12.00 → v12.08）＝**排課引擎/規則大擴充**
+> 測試素材：一律用「和平分校示範檔」（源檔在 Downloads，測試 cp 成 repo `_diag.json`＝已 gitignore；含個資勿入 repo）。見記憶 [[feedback_course_scheduler_test_fixture]]。**自動排課是固定亂數種子(deterministic)＝同資料每次同結果**（非「多按幾次會變」）。
+- **v12.01 連堂剩餘單堂「不與連堂對相鄰天」**：`singleApartFromPair` 由「不同天」升級為「不相鄰天(Δ≤1 軟罰)」；`cellSoftScore`＋`scoreSolution` 加罰；沿用同欄位無遷移。
+- **v12.02 更強求解（回溯／局部搜尋）**：隨機重啟後仍排不下時，`finalChainRepair`(連鎖修復升級：含連堂對/協同、加深、時間截止)＋`strongSolveLNS`(LNS ruin&recreate 單純層、單調接受不回退)。總預算 `STRONG_BUDGET`；時間截止一路傳入 `tryPlace/findRelocationPlan/placeWithChain`(新增 `opts={budgetN,deadline}`)。`residualUnitsScoped/ruinSimpleCells/recreateSimple`。
+- **v12.03 排不下原因診斷**：`unplacedReason(spec)` 掃該科所有「排課限制允許格」逐格找第一阻礙，優先報硬阻礙(教師單日上限/不排課/日節限制)再報軟阻礙(占用/衝堂)＋具體解法；接進自動排課結果視窗「可能原因」欄。
+- **v12.04 分階段排課**：①硬限制→②科任→③級任本班→④補完，每階段可檢視再排下一段。**階段1硬鎖、階段2軟鎖**。`unitStage/cellStage`(1硬限制/2科任含級任教他班/3級任本班)、`runAutoSchedule(opts.stage / opts.hardLockStage1)`、`autoStage`(讓連鎖修復/LNS 只處理本階段)、`autoHardLocked`(連鎖/LNS 不搬硬鎖格)、`stagedScheduleModal/runStage`。UI 在自動排課視窗入口。
+- **v12.05 一鍵清空**：排課工具列🧹清空，全校或指定班級；**已鎖定格(cellIsLocked)不清**；`clearSchedule/clearScheduleModal`；pushUndo 可復原。定稿/未鎖都顯示、單格選取中不顯示。
+- **v12.06 連堂單堂「完全不與連堂對同天」(硬)**：`canPlaceAt` 加硬約束——此類科目每班同天最多 2 節(=一組連堂對)，第 3 節必到別天(無別天寧可留空不塞同天)；greedy 再優先挑不相鄰天。
+- **v12.07 R5＋R11(既定機制、不需勾選)**：R5＝`adjacentOpenPeriod` 感知時間間隔，相鄰兩節間隔比「正常下課(節間最短)」多≥5分即不可連堂(自動擋大下課 p2-p3、自適應各校；`normalTransitionGap/timeToMin`)。R11(既定軟性 best-effort)＝級任每個有課日上下午各≥1節：`scoreSolution` 加罰(半天無節次/不排課豁免)＋`cellSoftScore` 引導＋`repairR11` 收尾(搬單純課到缺半天空格)；**滿排零餘裕時受結構限制(週三半天/跨班)有殘留**。
+- **v12.08 R13 同學段體育同時段(科目勾選硬規則)**：科目加 `bandSync`「同學段排相同節次」(1·2/3·4/5·6 各自分組)；`applyBandSync()` 依學段建「合成協同群組 `__band:<sid>:<band>`」→**複用整套 coteach 引擎**(同步/排課/衝堂全免改)、冪等、於載入/科目存/班級存刪/`runAutoSchedule` 開頭呼叫。**修 `canPlaceAt`：協同/學段科目要求「所有夥伴班同格也可放」(加 `skipCoteach` 防遞迴)**——原本跨年級不同老師會漏排/硬塞衝堂的根因。**順修 greedy 連堂拆開瑕疵**：連堂要成對卻無相鄰夥伴格→留空不排(交連鎖修復)、絕不拆成不相鄰單格(消除「連堂未相鄰」衝堂)。排課規則.md 亦新增 R13。
+- **⚠ 關鍵發現（母語/國語排不下真因）＝教師單日上限**：`teacherDailyCap` 取 `teacher.maxPerDay>0 ? maxPerDay : 全域 maxLessonsPerDay`(示範檔=4)；導師 maxPerDay 多為 0→回退 4，週授課~16 節滿排時某天需 5-6 節被擋。示範檔 R13 開+**導師上限調 6→168/168 全滿零衝堂**；上限 4 會剩 1-2 節(結構性、非引擎 bug)。**衝堂檢查不檢查單日上限**(易誤判「可行」)。
+- **規則對照(排課規則.md R1-R13/P1-P5)**：App 可做 R2/R3/R4/R6/R7/R8/R9/R10/R13＋軟性 P1/P2/P5/R5/R11；**仍未做：R12(母語日淨空)、P3(級任跨科連堂≤3)、R1/S3(第七節輕科天數頻率)**。
+
+## 更早：本次區間做了什麼（v11.00 → v12.00）＝**A 組自動排課進階 + 刪班崩潰修復**
 - **共用移動搜尋核心（增量 1，日後「調課」共用）**：把一堂課抽象成可移動單元（單純=1格／協同=夥伴班同節組／連堂=相鄰對／分節=該師格）；`canPlaceAt` 為最終硬約束閘門＝**保證零新衝堂**。核心函式：`snapshotGrid/restoreGrid`、`specAssignmentsAt`、`offeringsAtDP`、`specStaticOK`、`targetPlacements`、`blockersFor`、`tentativePlaceSpec`、`tryPlace`、`relocateOffering`、`findRelocationPlan`、`canPlaceDirect`、`specRemaining`、`isSpecStuck`。
 - **喬課升級**：`swapSuggestModal` 去掉「僅單純科目」限制→分組/協同/分節/連堂皆可；連鎖**可跨班**（步驟標「跨班」）；`applyRelocationPlan` 依序重放＋協同/連堂同步。調色盤卡住判定改 `isSpecStuck`（分節逐師顯示喬課鈕）。**保守**：被搬移的「占用課」仍限單純科（跨班可，但不搬別班的協同/連堂整組）。
 - **自動排課科目優先權分層**（`unitPriorityRank`）：1 有排課限制 ▸ 2 有自動排課偏好 ▸ 3 需協同 ▸ 4 科任(含級任教他班) ▸ 5 級任教本班；同層再依緊度/連堂/隨機。`buildAutoUnits` 與 `runAutoSchedule` 排序皆 rank 優先。
@@ -105,18 +118,19 @@
 - **v09.04** 使用說明全面重整（後續版本持續同步）。
 </details>
 
-## 下一步（可挑）＝2026-09-01 更新（v11.00 上線後）
-**✅ v11.00 已完成（自上一版清單）**：⑨首頁儀表板、⑬久未備份提醒、①代課「使用說明」（已於 helpModal 補「🔄 代課」段，含線上代課填報）、⑩「快速開始」的入門引導部分（歡迎頁＋初次設定精靈）。
+## 下一步（可挑）＝2026-09-02 更新（v12.08 後）
+**✅ 本區間已完成**：ROADMAP A/E 全部（含更強求解 v12.02）、連堂進階 pattern(v12.01/06)、排不下診斷(v12.03)、分階段排課(v12.04)、一鍵清空(v12.05)、排課規則 R5/R11/R13(v12.07/08)。
 
 **🔲 仍待開發**
-- **A 自動排課進階**（ROADMAP A/E）：跨班調課連鎖、調課建議支援分組/協同/分節/連堂、更強求解(回溯/局部搜尋)、自動排課局部重排。
-- **B 輸出強化**（ROADMAP D）：PWA 圖示補 PNG（現只有 icon.svg）、docx 班級表「領域合併」legend（健體/藝文）。
-- **C 體驗/穩健**（ROADMAP G-Tier3）：**範例資料**（一鍵載入示範學校，含科目/年級/班級/教師/配課；⑩剩下這半）、連堂進階 pattern（奇數單堂不與連堂對相鄰天）、平板適配（格子點觸/大小）。
-- **D 代課小項**：代課 kiosk 防呆指引（再遇 Picker「developer key invalid」等顯示自救步驟）。
-- **資料校對**：108 課綱領域節數（v06 內建起始值，尤其五六年級英語/綜合、彈性學習）。
-- 投報率建議：先做 **PNG 圖示**（快、掃尾）或 **範例資料**（多校導入門檻）。
+- **排課規則尚未做**（排課規則.md）：**R12 母語教師母語日淨空**、**P3 級任跨科連堂(每區塊≤3)**、**R1/S3 第七節輕科的天數頻率**（低年級≥1天、中高≥2天）。這三條較像 CP-SAT 全局約束，App 貪婪/局部搜尋要另加機制。
+- **R11 強化(選配)**：目前滿排零餘裕下有結構性殘留；若要更少殘留需「跨科對調」局部搜尋(比 repairR11 的搬到空格更強)。
+- **B 輸出強化**（ROADMAP D）：PWA 圖示補 PNG、docx 班級表「領域合併」legend（健體/藝文）。
+- **C 體驗**：**範例資料一鍵載入**（可用「和平分校示範檔」當範本，但需去個資）、平板適配。
+- **資料校對**：108 課綱領域節數。
 
 ## 待決 / 卡住的問題
+- **v12.01–08 皆未真機 live 驗證**：僅本機預覽用示範檔實測(deterministic)通過；使用者實際資料的排課品質/列印待其自行確認。
+- **示範檔零餘裕**：需求=容量(168=168)，導師 maxPerDay 多為 0→回退全域上限 4，滿排＋R11/R13 時會剩 1-2 節排不下（結構性）。**建議把導師單日上限調 5-6** 即 168 全滿；已在對話中告知使用者。
 - **（已清）線上代課填報 live**：2026-08-31 使用者實機驗證通過（含 Android PWA 授權迴圈修復後、Picker 金鑰設「無」後）。
 - **（已清）F³ live 與雲端同步 live**：2026-08-11 驗證通過；雲端修復（v09.43）亦確認 OK。
 - **列印多週逐週輸出未真機驗證**：v10.16 分週指派的列印（substPrintHTML 逐週各出一組）本機邏輯測過、但需真實配課資料真機列印確認排版。
