@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v12.19';
+const APP_VERSION = 'v12.20';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -3520,6 +3520,31 @@ function reschedGridHTML(gradeId, src, targetsMap) {
   return html + `</tbody></table>`;
 }
 
+/* ---------- 1e 代課↔調課互相參照 ---------- */
+// 某 slotKey 在 [start,end] 期間是否有代課指派（同星期幾 × 節次在請假範圍 × 日期區間重疊）。回 {subId,rec} 或 null。
+function substForKeyInRange(key, startDate, endDate) {
+  if (!startDate || !endDate) return null;
+  const [, dStr, p] = key.split('|'); const wd = Number(dStr);
+  for (const rec of (state.substitutions || [])) {
+    if (!rec.startDate || !rec.endDate) continue;
+    if (!substPeriodOnLeave(rec, p)) continue;
+    if (!rangesShareWeekday(startDate, endDate, rec.startDate, rec.endDate, wd)) continue;
+    let sub = (rec.assignments || {})[key];
+    if (!sub && rec.weekOverrides) for (const wk in rec.weekOverrides) { const i = wk.indexOf('|'); if (i > 0 && wk.slice(i + 1) === key && rec.weekOverrides[wk]) { sub = rec.weekOverrides[wk]; break; } }
+    if (sub) return { subId: sub, rec };
+  }
+  return null;
+}
+// 建立調課前檢查：對調端點的課於同期是否已有代課安排（同時段調課不可與代課衝突）。回衝突清單。
+function reschedSubstConflicts(gradeId, swaps, startDate, endDate) {
+  const out = [];
+  gradeClassList(gradeId).forEach(c => (swaps || []).forEach(sw => [sw.a, sw.b].forEach(pos => {
+    const hit = substForKeyInRange(slotKey(c.id, pos.day, pos.period), startDate, endDate);
+    if (hit) out.push({ className: c.name, cell: DAY_LABELS[pos.day] + periodLabel(pos.period), subName: teacherName(hit.subId), absentName: teacherName(hit.rec.absentTeacherId), scope: fmtSubstScope(hit.rec) });
+  })));
+  return out;
+}
+
 /* ---------- 🔀 調課「調課後課表」列印（1d，比照代課列印，套用 reschedule overlay） ---------- */
 // rec 的位置對映（對稱對調）：回 {day,period,swapped,partner}。partner＝對調來的另一格。
 function reschedResolvePos(rec, day, period) {
@@ -3554,7 +3579,11 @@ function reschedClassTimetableHTML(classId, rec) {
         const room = roomsLabelCS(classId, sid) ? '·' + roomsLabelCS(classId, sid) : '';
         const origSid = rp.swapped ? state.slots[slotKey(classId, d, p.id)] : null;
         const mark = rp.swapped ? `<span class="resched-swapmark" title="由 ${esc(DAY_LABELS[rp.day] + periodLabel(rp.period))} 對調而來${origSid ? '（原為 ' + esc(subjectName(origSid)) + '）' : ''}">🔀</span>` : '';
-        html += `<td class="cell"><div class="cell-lesson${rp.swapped ? ' resched-moved' : ''}" style="background:${color};color:${subjTextColor(s, color)}">${mark}${esc(subjectName(sid))}<small>${esc(slotTeachersLabel(key))}${esc(room)}</small></div></td>`;
+        const sub = substForKeyInRange(key, rec.startDate, rec.endDate);   // 1e：此課於調課期間同時有代課→顯示代課老師
+        const teacherLine = sub
+          ? `<small>代 ${esc(teacherName(sub.subId))}<span style="opacity:.75">（原 ${esc(slotTeachersLabel(key))}）</span></small>`
+          : `<small>${esc(slotTeachersLabel(key))}${esc(room)}</small>`;
+        html += `<td class="cell"><div class="cell-lesson${rp.swapped ? ' resched-moved' : ''}${sub ? ' resched-subbed' : ''}" style="background:${color};color:${subjTextColor(s, color)}">${mark}${esc(subjectName(sid))}${teacherLine}</div></td>`;
       } else if (open) { html += `<td class="cell"></td>`; }
       else { html += `<td class="cell blocked" title="此節本日不上課"></td>`; }
     }
@@ -5225,7 +5254,14 @@ const clickHandlers = {
     if (!start || !end) { toast('請填開始與截止日期'); return; }
     if (end < start) { toast('截止日不能早於開始日'); return; }
     const rec = { id: uid(), createdAt: new Date().toISOString(), gradeId: d.gradeId, swaps: [{ a: d.src, b: d.target }], startDate: start, endDate: end, note };
-    (state.reschedules = state.reschedules || []).push(rec); save(); reschedOpenId = null; reschedDraft = null; render(); toast('已建立調課');
+    const commit = () => { (state.reschedules = state.reschedules || []).push(rec); save(); reschedOpenId = null; reschedDraft = null; render(); toast('已建立調課'); };
+    const conf = reschedSubstConflicts(rec.gradeId, rec.swaps, start, end);   // 1e：同期代課衝突→提醒確認
+    if (conf.length) {
+      const rows = conf.map(x => `<li>${esc(x.className)}　${esc(x.cell)}：代課 <b>${esc(x.subName)}</b>（${esc(x.absentName)} 請假・${esc(x.scope)}）</li>`).join('');
+      openModal({ title: '⚠ 與代課安排重疊', body: `<p>此調課期間，下列被對調的課已有<b>代課</b>安排：</p><ul style="margin:8px 0 0;padding-left:20px;line-height:1.7">${rows}</ul><p style="margin-top:10px;color:var(--muted)">調課後這些課會移到新時段，代課老師會跟著移動（列印「調課後課表」時一併顯示）。確定仍要建立？</p>`, saveLabel: '仍要建立', onSave: () => { commit(); return true; } });
+      return;
+    }
+    commit();
   },
   // 初次設定精靈的「前往設定」：先存已填的基本資料，再關 modal、切到設定頁（讓新手先建上課日/節次/專科教室）
   'setup-goto-settings': () => {
