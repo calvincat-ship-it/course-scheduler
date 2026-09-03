@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v12.14';
+const APP_VERSION = 'v12.15';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -1025,6 +1025,8 @@ function subjectModal(existing) {
   const mode = s.splitTeachers ? 'split' : s.allowGrouping ? 'group' : 'single';
   const domainOpts = `<option value="">（未分類）</option>` +
     state.domains.map(d => `<option value="${d.id}" ${s.domainId === d.id ? 'selected' : ''}>${esc(d.name)}</option>`).join('');
+  const roomOpts = `<option value="">— 無（不指定專科教室）—</option>` +
+    state.rooms.map(r => `<option value="${r.id}" ${s.roomId === r.id ? 'selected' : ''}>${esc(r.name)}</option>`).join('');
   const lockDays = new Set(s.lockDays || []);
   const lockPeriods = new Set(s.lockPeriods || []);
   // 偏好節次：優先用 preferPeriods；舊資料只有偏好時段(preferBand)時，換算成對應的上午/下午各節（整併「偏好時段」與「偏好節次」為單一控制）
@@ -1058,6 +1060,9 @@ function subjectModal(existing) {
             <option value="split" ${mode === 'split' ? 'selected' : ''}>✂️ 分節上課（多師分攤、各上「不同節」，如生活 A上4＋B上2）</option>
           </select></label>
       </div>
+      <label class="field"><span>預設專科教室（此科所有配課自動使用，如自然→自然教室；排課時檢查同教室不衝堂）</span>
+        <select id="sRoom" ${state.rooms.length ? '' : 'disabled'}>${roomOpts}</select>
+        <span class="hint" style="color:var(--muted);font-size:12px;margin-top:4px">${state.rooms.length ? '設一次即套用全部班級；個別班要用不同教室時，可在「③ 教師配課」該列右側覆寫。' : '尚無教室——請先到「⚙️ 設定 → 專科教室」新增，再回此指派。'}</span></label>
       <div style="display:flex;align-items:center;gap:10px;margin:6px 0 2px;flex-wrap:wrap">
         <label class="checkbox" style="margin:0"><input type="checkbox" id="sConsec" ${s.consecutive ? 'checked' : ''}> ⏱ 需連堂（兩節相鄰接續上）</label>
         <label class="field" style="margin:0;flex-direction:row;align-items:center;gap:6px"><span style="white-space:nowrap">連堂次數（對）</span><input type="number" id="sConsecPairs" min="0" max="10" value="${s.consecutivePairs != null ? s.consecutivePairs : ''}" placeholder="自動" style="width:70px"></label>
@@ -1104,7 +1109,7 @@ function subjectModal(existing) {
       const consecutivePairs = consec && pairsRaw !== '' ? Math.max(0, parseInt(pairsRaw, 10) || 0) : null;
       const spreadV = $('#sSpread').value;   // none / distinct / gap（整併原兩個 checkbox）
       const lastPrefV = $('#sLastPref').value;   // none / avoid / light（整併「主科避末節」+「輕科優先末節」）
-      const data = { name, color: $('#sColor').value, textColor: $('#sTextColor').value, domainId: $('#sDomain').value, allowGrouping: m === 'group', splitTeachers: m === 'split', consecutive: consec, consecutivePairs, lockDays: ld, lockPeriods: lp, distinctDays: spreadV === 'distinct', gapDays: spreadV === 'gap', preferBand: 'any', preferPeriods: pp, avoidLastPeriod: lastPrefV === 'avoid', lightSubject: lastPrefV === 'light', singleApartFromPair: $('#sSingleApart').checked, excludeDailyCap: $('#sExCap').checked, dayExclusive: $('#sDayExclusive').checked, bandSync: $('#sBandSync').checked };
+      const data = { name, color: $('#sColor').value, textColor: $('#sTextColor').value, domainId: $('#sDomain').value, roomId: ($('#sRoom') ? $('#sRoom').value : (existing ? existing.roomId : '') || ''), allowGrouping: m === 'group', splitTeachers: m === 'split', consecutive: consec, consecutivePairs, lockDays: ld, lockPeriods: lp, distinctDays: spreadV === 'distinct', gapDays: spreadV === 'gap', preferBand: 'any', preferPeriods: pp, avoidLastPeriod: lastPrefV === 'avoid', lightSubject: lastPrefV === 'light', singleApartFromPair: $('#sSingleApart').checked, excludeDailyCap: $('#sExCap').checked, dayExclusive: $('#sDayExclusive').checked, bandSync: $('#sBandSync').checked };
       if (existing) Object.assign(existing, data); else state.subjects.push({ id: uid(), ...data });
       applyBandSync(); save(); render(); toast('已儲存科目');
       return true;
@@ -1373,8 +1378,9 @@ function delClass(id) {
 const teacherLoadSum = t => (t.load || []).reduce((s, L) => s + (L.hours || 0), 0);
 const classSubjectRequired = (classId, sid) => { const c = classById(classId); if (!c) return 0; const sh = gradeSubjHours(classGrade(c) || {}, sid); return sh ? sh.hours : 0; };
 function loadsForClassSubject(classId, sid) {
-  const out = [];
-  state.teachers.forEach(t => (t.load || []).forEach(L => { if (L.classId === classId && L.subjectId === sid) out.push({ teacher: t, hours: L.hours, roomId: L.roomId || '' }); }));
+  const out = []; const subj = subjectById(sid); const defRoom = (subj && subj.roomId) || '';
+  // 有效教室＝配課列個別指定優先，否則沿用「科目預設教室」（E：教室綁科目一次搞定，配課列可覆寫例外）
+  state.teachers.forEach(t => (t.load || []).forEach(L => { if (L.classId === classId && L.subjectId === sid) out.push({ teacher: t, hours: L.hours, roomId: L.roomId || defRoom }); }));
   return out;
 }
 function roomsForClassSubject(classId, sid) { return [...new Set(loadsForClassSubject(classId, sid).map(x => x.roomId).filter(Boolean))]; }
@@ -1554,14 +1560,15 @@ function loadEditorHTML() {
     if (!opts.length) return `<option value="">（該班科目皆已配滿）</option>`;
     return opts.join('');
   };
-  const rOpts = sel => `<option value="">— 無教室 —</option>` + state.rooms.map(r => `<option value="${r.id}" ${r.id === sel ? 'selected' : ''}>${esc(r.name)}</option>`).join('');
+  // 空值選項顯示科目預設教室（沿用），讓使用者知道「留空＝用科目預設」
+  const rOpts = (sel, sid) => { const sub = subjectById(sid); const defRoom = sub && sub.roomId ? roomName(sub.roomId) : ''; const emptyLabel = defRoom ? `沿用科目預設（${esc(defRoom)}）` : '— 無教室 —'; return `<option value="">${emptyLabel}</option>` + state.rooms.map(r => `<option value="${r.id}" ${r.id === sel ? 'selected' : ''}>${esc(r.name)}</option>`).join(''); };
   const rows = modalLoad.map((L, i) => {
     const rem = remainingForRow(L.classId, L.subjectId, i);
     return `<div class="group-row" data-idx="${i}">
       <select class="ld-class" data-change="load-class" data-idx="${i}">${clsOpts(L.classId)}</select>
       <select class="ld-subject" data-change="load-subject" data-idx="${i}">${subOpts(L.classId, L.subjectId, i)}</select>
       <input type="number" class="ld-hours" data-change="load-hours" data-idx="${i}" min="0" max="${rem}" value="${L.hours || ''}" placeholder="節" title="剩餘可填 ${rem} 節" style="width:56px">
-      <select class="ld-room" title="專科教室（可留空）">${rOpts(L.roomId)}</select>
+      <select class="ld-room" title="專科教室（留空＝沿用科目預設）">${rOpts(L.roomId, L.subjectId)}</select>
       <button type="button" class="icon-btn" data-action="del-load-row" data-idx="${i}">🗑️</button>
     </div>`;
   }).join('');
@@ -4214,11 +4221,11 @@ function viewSettings() {
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
         <h4 style="margin:0">專科教室</h4><button class="ghost" data-action="add-room">＋ 新增教室</button>
       </div>
-      <div class="hint" style="color:var(--muted);margin-bottom:10px">🏫 <b>指派方式：</b>在這裡建立教室後，到「<b>③ 教師</b>」點教師編輯，在其<b>配課列（班級 → 科目 → 節數 → 教室）</b>最右邊的下拉選單，把教室指派給該科。排課時會自動檢查同一教室同時段是否被兩班搶用。</div>
+      <div class="hint" style="color:var(--muted);margin-bottom:10px">🏫 <b>指派方式：</b>在這裡建立教室後，最快是到「<b>① 科目</b>」點該科編輯、設「<b>預設專科教室</b>」（如自然→自然教室），此科所有班級一次套用。個別班要用不同教室的例外，才到「③ 教師配課」該列右側覆寫。排課時自動檢查同一教室同時段不被兩班搶用。</div>
       ${state.rooms.length === 0 ? `<div style="color:var(--muted)">尚無專科教室（例：電腦教室、自然教室、音樂教室、體育館）。</div>`
       : `<table class="data"><tbody>${state.rooms.map(r => `<tr>
           <td><b>${esc(r.name)}</b></td>
-          <td>${state.teachers.reduce((n, t) => n + (t.load || []).filter(L => L.roomId === r.id).length, 0)} 筆配課使用</td>
+          <td>${(() => { const subs = state.subjects.filter(s => s.roomId === r.id).length; const rows = state.teachers.reduce((n, t) => n + (t.load || []).filter(L => L.roomId === r.id).length, 0); return (subs ? subs + ' 科預設' + (rows ? '、' : '') : '') + (rows ? rows + ' 筆配課覆寫' : (subs ? '' : '未使用')); })()}</td>
           <td class="row-actions"><button class="icon-btn" data-action="edit-room" data-id="${r.id}">✏️</button><button class="icon-btn" data-action="del-room" data-id="${r.id}">🗑️</button></td>
         </tr>`).join('')}</tbody></table>`}
     </div></div>
@@ -4276,7 +4283,10 @@ function roomModal(existing) {
 function delRoom(id) {
   const r = roomById(id); if (!r) return;
   const uses = state.teachers.reduce((n, t) => n + (t.load || []).filter(L => L.roomId === id).length, 0);
-  confirmDelete(`刪除教室「${r.name}」？${uses ? '（' + uses + ' 筆配課的教室將清空）' : ''}`, () => {
+  const subs = state.subjects.filter(s => s.roomId === id).length;
+  const note = (subs || uses) ? `（${[subs ? subs + ' 科預設' : '', uses ? uses + ' 筆配課覆寫' : ''].filter(Boolean).join('、')}的教室將清空）` : '';
+  confirmDelete(`刪除教室「${r.name}」？${note}`, () => {
+    state.subjects.forEach(s => { if (s.roomId === id) s.roomId = ''; });
     state.teachers.forEach(t => (t.load || []).forEach(L => { if (L.roomId === id) L.roomId = ''; }));
     state.rooms = state.rooms.filter(x => x.id !== id);
   });
