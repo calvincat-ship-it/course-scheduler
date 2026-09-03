@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v12.23';
+const APP_VERSION = 'v12.24';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -2988,8 +2988,9 @@ function legalSwapTargets(seedClassId, src, absentTeacherId) {
       const scope = swapScope(seedClassId, src, t);
       const r = swapLegal(scope, src, t);
       const retKey = slotKey(seedClassId, t.day, t.period); const retSid = state.slots[retKey];   // 對調後這堂會移到 src(請假時段)
-      const stillAbsent = !!(absentTeacherId && retSid && slotAssignments(retKey).some(x => x.teacherId === absentTeacherId));
-      return { day: t.day, period: t.period, legal: r.ok, reason: r.reason || '', warnings: r.warnings || [], scope, subjectAt: retSid ? subjectName(retSid) : '', stillAbsent };
+      const stillAbsent = !!(absentTeacherId && retSid && slotAssignments(retKey).some(x => x.teacherId === absentTeacherId));   // 目標仍是本人任課→對調後仍落在請假時段，沒解決請假
+      const legal = r.ok && !stillAbsent;   // 本人其他課直接鎖定不可選
+      return { day: t.day, period: t.period, legal, reason: stillAbsent ? '此為本人任課，對調後仍在請假時段（無法解決請假）' : (r.reason || ''), warnings: r.warnings || [], scope, subjectAt: retSid ? subjectName(retSid) : '', stillAbsent };
     });
 }
 
@@ -3502,8 +3503,8 @@ function reschedEditor() {
   const teacherOpts = `<option value="">— 選擇教師 —</option>` + state.teachers.map(t => `<option value="${t.id}" ${t.id === d.teacherId ? 'selected' : ''}>${esc(t.name)}${t.type ? `（${esc(t.type)}）` : ''}</option>`).join('');
   const topFields = `<div class="field-row">
       <label class="field" style="max-width:240px"><span>申請調課教師（請假者）</span><select data-change="resched-teacher">${teacherOpts}</select></label>
-      <label class="field"><span>開始日期</span><input type="date" data-change="resched-date" data-k="startDate" value="${esc(d.startDate)}"></label>
-      <label class="field"><span>截止日期</span><input type="date" data-change="resched-date" data-k="endDate" value="${esc(d.endDate)}"></label>
+      <label class="field"><span>開始日期</span><input type="date" data-change="resched-date" data-k="startDate" value="${esc(d.startDate)}" max="${esc(d.endDate || '')}"></label>
+      <label class="field"><span>截止日期</span><input type="date" data-change="resched-date" data-k="endDate" value="${esc(d.endDate)}" min="${esc(d.startDate || '')}"></label>
       <label class="field" style="flex:2"><span>備註（選填）</span><input type="text" id="reschedNote" value="${esc(d.note || '')}" placeholder="如：王老師出差"></label></div>`;
   let body;
   if (!d.teacherId) body = `<div class="resched-summary" style="color:var(--muted)">請先選擇<b>申請調課的教師</b>與<b>日期區間</b>，系統會列出該教師這段期間的課。</div>`;
@@ -3545,7 +3546,7 @@ function reschedPickPanel(d) {
   const srcSid = state.slots[slotKey(seedClassId, src.day, src.period)];
   return `<div class="resched-summary">為 <b>${esc(cls)} ${esc(subjectName(srcSid))}</b>（${esc(DAY_LABELS[src.day] + periodLabel(src.period))}）選一個要<b>對調</b>的時段：點<span style="color:var(--ok)">綠色</span>格。 <button class="ghost xs" data-action="resched-cancel-pick">取消選擇</button></div>
     <div class="grid-wrap" style="margin-top:10px">${grid}</div>
-    <div class="mx-legend" style="margin-top:8px">🟦 來源　🟩 可對調　⬜ 不可對調（滑鼠移上看原因）　·　⚠放寬項　·　⏳對調後此時段仍為本人任課（沒解決請假）</div>`;
+    <div class="mx-legend" style="margin-top:8px">🟦 來源　🟩 可對調　⬜ 不可對調（滑鼠移上看原因）　·　⚠放寬項　·　⏳本人任課·已鎖定（對調後仍在請假時段）</div>`;
 }
 // 單一班級課表格（挑對調目標用）：src 高亮、targetsMap={'day|period':{legal,warnings,reason,stillAbsent}}
 function reschedClassGridHTML(classId, src, targetsMap) {
@@ -3566,9 +3567,9 @@ function reschedClassGridHTML(classId, src, targetsMap) {
       else if (tinfo && tinfo.legal) {
         clsN += ' legal'; act = `data-action="resched-cell" data-day="${d}" data-period="${esc(p.id)}"`;
         const ws = tinfo.warnings || [];
-        if (tinfo.stillAbsent) { clsN += ' warn'; warnMark = '<span class="resched-warnmark">⏳</span>'; title = '對調後此時段仍為本人任課（沒解決請假）' + (ws.length ? '；' + ws.join('；') : ''); }
-        else if (ws.length) { clsN += ' warn'; warnMark = '<span class="resched-warnmark">⚠</span>'; title = ws.join('；'); }
+        if (ws.length) { clsN += ' warn'; warnMark = '<span class="resched-warnmark">⚠</span>'; title = ws.join('；'); }
       }
+      else if (tinfo && tinfo.stillAbsent) { clsN += ' illegal'; warnMark = '<span class="resched-warnmark">⏳</span>'; title = tinfo.reason; }   // 本人任課：鎖定
       else if (tinfo) { clsN += ' illegal'; title = tinfo.reason || '不可對調'; }
       else { clsN += ' illegal'; title = '不可對調'; }
       html += `<td class="cell"><div class="${clsN}" ${act} style="background:${color};color:${subjTextColor(s, color)}" title="${esc(title)}"><b>${esc(subjectName(sid))}</b>${warnMark}</div></td>`;
@@ -5635,7 +5636,15 @@ const clickHandlers = {
 
 const changeHandlers = {
   'resched-teacher': el => { reschedSyncForm(); if (reschedDraft) { reschedDraft.teacherId = el.value; reschedDraft.swaps = []; reschedDraft.picking = null; } render(); },
-  'resched-date': el => { reschedSyncForm(); if (reschedDraft) { reschedDraft[el.dataset.k] = el.value; reschedDraft.picking = null; } render(); },
+  'resched-date': el => {
+    reschedSyncForm(); const d = reschedDraft; if (!d) { render(); return; }
+    d[el.dataset.k] = el.value; d.picking = null;
+    if (d.startDate && d.endDate && d.endDate < d.startDate) {   // 夾住：截止不得早於開始
+      if (el.dataset.k === 'startDate') d.endDate = d.startDate; else d.startDate = d.endDate;
+      toast('截止日不得早於開始日，已自動對齊');
+    }
+    render();
+  },
   'day-toggle': el => {
     const d = parseInt(el.dataset.day, 10);
     if (el.checked) { if (!state.settings.days.includes(d)) state.settings.days.push(d); }
