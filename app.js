@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v12.16';
+const APP_VERSION = 'v12.17';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -143,6 +143,7 @@ function defaultState() {
     substitutions: [],    // v09.45/v10.06 代課安排：[{ id, absentTeacherId, startDate, endDate, date(舊/相容), createdAt, assignments:{'classId|day|period':subTeacherId} }]
     substDeleted: [],     // v10.12 已刪除代課記錄 id 墓碑：收回時略過，避免線上殘留資料被再度合併回來
     substShare: null,     // v10.01 線上代課填報分享：{ fileId, link, domain, openedAt }
+    reschedules: [],      // v12.17 調課（限期對調）：主課表 slots 不動，輸出/檢視時套用；[{ id, createdAt, startDate, endDate, gradeId, swaps:[{a:{day,period},b:{day,period}}], note }]
     helpSeen: false,
     setupSeen: false,   // v10.19 全新安裝初次設定精靈（校名/學年度/學校代號）是否已出現過
   };
@@ -792,6 +793,7 @@ function render() {
     case 'schedule': view.innerHTML = viewSchedule(); break;
     case 'output': view.innerHTML = viewOutput(); break;
     case 'subst': view.innerHTML = viewSubst(); break;
+    case 'reschedule': view.innerHTML = viewReschedule(); break;
     case 'settings': view.innerHTML = viewSettings(); break;
   }
 }
@@ -918,6 +920,7 @@ function viewHome() {
     <div class="home-quick">
       <button class="btn" data-action="goto" data-goto="output">🖨 課表輸出</button>
       <button class="btn ghost" data-action="goto" data-goto="subst">🔁 代課 / 線上填報</button>
+      <button class="btn ghost" data-action="goto" data-goto="reschedule">🔀 調課</button>
       <button class="btn ghost" data-action="goto" data-goto="settings">⚙️ 設定</button>
       <button class="btn ghost" data-action="help">❓ 使用說明</button>
     </div>
@@ -3366,6 +3369,18 @@ function substCellInScope(rec, key) {
   return (!wd || wd.has(Number(d))) && substPeriodOnLeave(rec, p);
 }
 
+/* ==========================================================================
+   🔀 調課（v12.17～，限期對調）— 主課表 slots 不動，於日期區間內套用「時段對調」。
+   協同(忠孝同節)整組一起換＝2調2；新落點一律過 canPlaceAt（母語鎖日/體育鎖節/
+   教師·教室不衝堂皆自動守住）。Phase 1：排課者本機工具；Phase 2：線上 ?swap kiosk。
+   ========================================================================== */
+function viewReschedule() {
+  const head = subHead('🔀 調課', '') +
+    `<div class="hint" style="margin-bottom:12px;color:var(--muted)">課表公布後，於<b>指定日期區間</b>把兩個時段的課<b>對調</b>（主課表不變、輸出時套用）。忠孝協同的課會<b>整組一起換（2調2）</b>；系統只提供<b>不產生衝堂</b>、且不違反鎖定（如母語週四、體育節次）的合法對調。</div>`;
+  const list = state.reschedules || [];
+  if (!list.length) return head + emptyCard('尚無調課記錄', '⚙️ 調課引擎建置中（Phase 1）——完成後可在此選課建立「限期對調」。');
+  return head + `<div class="subst-list">${list.map(r => `<div class="subst-item"><b>${esc(r.note || '調課')}</b>　<span style="color:var(--muted)">${esc(r.startDate || '')}~${esc(r.endDate || '')}</span></div>`).join('')}</div>`;
+}
 function viewSubst() {
   if (state.teachers.length === 0)
     return subHead('🔄 代課') + emptyCard('尚無教師', '請先到「③ 教師」建立教師與配課，才能安排代課。');
@@ -4325,7 +4340,7 @@ function importJSON() {
       try {
         const data = JSON.parse(reader.result);
         if (!data || data.schema !== SCHEMA) throw new Error('版本不符（需 schema ' + SCHEMA + '）');
-        state = data; if (!state.slotTeachers || typeof state.slotTeachers !== 'object') state.slotTeachers = {}; if (!state.slotContent || typeof state.slotContent !== 'object') state.slotContent = {}; if (!Array.isArray(state.lockedCells)) state.lockedCells = []; if (!Array.isArray(state.selfCells)) state.selfCells = []; if (!state.selfBackup || typeof state.selfBackup !== 'object') state.selfBackup = {}; if (!state.selfDone || typeof state.selfDone !== 'object') state.selfDone = {}; if (typeof state.staffingOkSig !== 'string') state.staffingOkSig = ''; if (!Array.isArray(state.substitutions)) state.substitutions = []; if (!Array.isArray(state.substDeleted)) state.substDeleted = []; normalizeAllSubst(); save(); closeModal(); selectedGradeId = null; render(); toast('已匯入備份');
+        state = data; if (!state.slotTeachers || typeof state.slotTeachers !== 'object') state.slotTeachers = {}; if (!state.slotContent || typeof state.slotContent !== 'object') state.slotContent = {}; if (!Array.isArray(state.lockedCells)) state.lockedCells = []; if (!Array.isArray(state.selfCells)) state.selfCells = []; if (!state.selfBackup || typeof state.selfBackup !== 'object') state.selfBackup = {}; if (!state.selfDone || typeof state.selfDone !== 'object') state.selfDone = {}; if (typeof state.staffingOkSig !== 'string') state.staffingOkSig = ''; if (!Array.isArray(state.substitutions)) state.substitutions = []; if (!Array.isArray(state.substDeleted)) state.substDeleted = []; if (!Array.isArray(state.reschedules)) state.reschedules = []; normalizeAllSubst(); save(); closeModal(); selectedGradeId = null; render(); toast('已匯入備份');
       } catch (e) { toast('匯入失敗：' + e.message); }
     };
     reader.readAsText(file);
@@ -4639,6 +4654,7 @@ async function applyBackupObject(data) {
     if (!Array.isArray(state.domains)) state.domains = defaultDomains();
     if (!Array.isArray(state.substitutions)) state.substitutions = [];
     if (!Array.isArray(state.substDeleted)) state.substDeleted = [];
+    if (!Array.isArray(state.reschedules)) state.reschedules = [];
     normalizeAllSubst();
     if (!state.settings.subjectMap || typeof state.settings.subjectMap !== 'object') state.settings.subjectMap = {};
     await idbSet(STATE_KEY, state);   // 直接寫 IDB，繞過 save() 的雲端 hook
@@ -5367,6 +5383,7 @@ async function init() {
   if (typeof state.staffingOkSig !== 'string') state.staffingOkSig = '';                      // v09.01 配課檢查簽章
   if (!Array.isArray(state.substitutions)) state.substitutions = [];                          // v09.45 代課安排
   if (!Array.isArray(state.substDeleted)) state.substDeleted = [];                            // v10.12 代課刪除墓碑
+  if (!Array.isArray(state.reschedules)) state.reschedules = [];                              // v12.17 調課（限期對調）
   normalizeAllSubst();                                                                        // v10.06 代課日期遷移（date→startDate/endDate）
   if (typeof state.domainsConfirmed !== 'boolean') state.domainsConfirmed = state.subjects.length > 0; // v09.20 領域→科目整合閘門（既有已建科目者視為已完成，不擋）
   state.subjects.forEach(s => { if (s.selfDesigned) delete s.selfDesigned; });                // v08.03 移除舊手動自編旗標
