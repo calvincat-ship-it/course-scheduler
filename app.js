@@ -2911,6 +2911,61 @@ function swapSuggestModal(classId, sid, teacherId) {
   openModal({ title: '調課建議', wide: true, body, saveLabel: '套用建議', onSave: () => { applyRelocationPlan(spec, plan); toast('已套用調課建議'); return true; } });
 }
 
+/* ==========================================================================
+   🔀 調課引擎（v12.17～）：同年級內「兩時段對調」。忠孝協同整組一起換＝2調2。
+   合法性＝對調後不新增任何衝堂（重用 computeConflicts：教師/教室/不排課/協同/連堂）
+   ＋不違反 lockDays/lockPeriods ＋不超教師單日上限。純模擬、還原後不動 state。
+   ========================================================================== */
+function gradeClassList(gradeId) { return state.classes.filter(c => c.gradeId === gradeId); }
+// 該年級目前「有課的時段」清單（以有課的任一班為準；回 [{day,period}]）
+function gradeOccupiedSlots(gradeId) {
+  const ids = new Set(gradeClassList(gradeId).map(c => c.id)); const seen = new Set(); const out = [];
+  for (const key in state.slots) { const [cid, d, p] = key.split('|'); if (!ids.has(cid)) continue; const dp = d + '|' + p; if (seen.has(dp)) continue; seen.add(dp); out.push({ day: +d, period: p }); }
+  return out;
+}
+// 把某年級的兩個時段內容（含分節老師）逐班對調（就地改 state；呼叫端負責 snapshot/restore）
+function applySwapToGrid(gradeId, a, b) {
+  gradeClassList(gradeId).forEach(c => {
+    const kA = slotKey(c.id, a.day, a.period), kB = slotKey(c.id, b.day, b.period);
+    const sA = state.slots[kA], sB = state.slots[kB], tA = state.slotTeachers[kA], tB = state.slotTeachers[kB];
+    if (sB !== undefined) state.slots[kA] = sB; else delete state.slots[kA];
+    if (sA !== undefined) state.slots[kB] = sA; else delete state.slots[kB];
+    if (tB !== undefined) state.slotTeachers[kA] = tB; else delete state.slotTeachers[kA];
+    if (tA !== undefined) state.slotTeachers[kB] = tA; else delete state.slotTeachers[kB];
+  });
+}
+// 對調是否合法（同年級 a↔b）。回 {ok:true} 或 {ok:false, reason}。
+function swapLegal(gradeId, a, b) {
+  if (a.day === b.day && a.period === b.period) return { ok: false, reason: '同一格' };
+  const snap = snapshotGrid();
+  try {
+    const before = new Set(Object.keys(computeConflicts()));
+    const affected = [];
+    gradeClassList(gradeId).forEach(c => { affected.push(slotKey(c.id, a.day, a.period), slotKey(c.id, b.day, b.period)); });
+    applySwapToGrid(gradeId, a, b);
+    const after = computeConflicts();
+    // 對調後任何「新的」衝堂（原本沒有、現在有的 key）→ 不合法
+    for (const k in after) if (!before.has(k)) return { ok: false, reason: after[k][0] };
+    // lockDays / lockPeriods / 單日上限（computeConflicts 不查）
+    for (const k of affected) {
+      const sid = state.slots[k]; if (!sid) continue; const s = subjectById(sid); const [, dS, p] = k.split('|'); const d = +dS;
+      if ((s.lockDays || []).length && !s.lockDays.includes(d)) return { ok: false, reason: subjectName(sid) + '：限定星期，不可移到此日' };
+      if ((s.lockPeriods || []).length && !s.lockPeriods.includes(p)) return { ok: false, reason: subjectName(sid) + '：限定節次，不可移到此節' };
+      if (!s.excludeDailyCap) for (const x of slotAssignments(k)) { const cap = teacherDailyCap(x.teacherId); if (cap > 0 && teacherDayLoad(x.teacherId, d) > cap) return { ok: false, reason: teacherName(x.teacherId) + '：單日超過 ' + cap + ' 節上限' }; }
+    }
+    return { ok: true };
+  } finally { restoreGrid(snap); }
+}
+// 給定來源時段，列出同年級所有「合法對調」的目標時段（回 [{day,period,legal,reason,subjectAt}]，legal=false 者附原因）
+function legalSwapTargets(gradeId, src) {
+  const reps = gradeClassList(gradeId); if (!reps.length) return [];
+  const repId = reps[0].id;
+  const subjAt = (slot) => { const sid = state.slots[slotKey(repId, slot.day, slot.period)]; return sid ? subjectName(sid) : ''; };
+  return gradeOccupiedSlots(gradeId)
+    .filter(t => !(t.day === src.day && t.period === src.period))
+    .map(t => { const r = swapLegal(gradeId, src, t); return { day: t.day, period: t.period, legal: r.ok, reason: r.reason || '', subjectAt: subjAt(t) }; });
+}
+
 /* ---------- A7 教師視角「哪幾格可調」總覽（唯讀分析，不動資料） ---------- */
 let flexTeacherId = null;
 // 逐格暫時清空該師的課，數同班內還有幾個合法空格可搬（state-preserving）
