@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v12.22';
+const APP_VERSION = 'v12.23';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -5351,8 +5351,6 @@ const clickHandlers = {
   'resched-cancel': () => { reschedOpenId = null; reschedDraft = null; render(); },
   'resched-del': el => { const id = el.dataset.id; confirmDelete('刪除此調課記錄？', () => { state.reschedules = (state.reschedules || []).filter(r => r.id !== id); }); },
   'resched-print': el => reschedPrint(el.dataset.id),
-  'resched-teacher': el => { reschedSyncForm(); if (reschedDraft) { reschedDraft.teacherId = el.value; reschedDraft.swaps = []; reschedDraft.picking = null; } render(); },
-  'resched-date': el => { reschedSyncForm(); if (reschedDraft) { reschedDraft[el.dataset.k] = el.value; reschedDraft.picking = null; } render(); },
   'resched-pick-src': el => { reschedSyncForm(); const d = reschedDraft; if (!d) return; d.picking = { seedClassId: el.dataset.class, src: { day: +el.dataset.day, period: el.dataset.period } }; render(); },
   'resched-cancel-pick': () => { reschedSyncForm(); if (reschedDraft) reschedDraft.picking = null; render(); },
   'resched-remove-swap': el => { reschedSyncForm(); const d = reschedDraft; if (!d) return; d.swaps.splice(+el.dataset.i, 1); render(); },
@@ -5636,6 +5634,8 @@ const clickHandlers = {
 };
 
 const changeHandlers = {
+  'resched-teacher': el => { reschedSyncForm(); if (reschedDraft) { reschedDraft.teacherId = el.value; reschedDraft.swaps = []; reschedDraft.picking = null; } render(); },
+  'resched-date': el => { reschedSyncForm(); if (reschedDraft) { reschedDraft[el.dataset.k] = el.value; reschedDraft.picking = null; } render(); },
   'day-toggle': el => {
     const d = parseInt(el.dataset.day, 10);
     if (el.checked) { if (!state.settings.days.includes(d)) state.settings.days.push(d); }
