@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v12.35';
+const APP_VERSION = 'v12.36';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -213,8 +213,9 @@ function toast(msg) { const el = $('#toast'); el.textContent = msg; el.hidden = 
 
 /* ---------- Modal ---------- */
 let modalOnSave = null;
-function openModal({ title, body, saveLabel = '儲存', onSave = null, wide = false }) {
-  modalOnSave = onSave;
+let modalOnClose = null;
+function openModal({ title, body, saveLabel = '儲存', onSave = null, wide = false, onClose = null }) {
+  modalOnSave = onSave; modalOnClose = onClose;
   $('#modalRoot').innerHTML = `
     <div class="modal-backdrop" data-action="modal-backdrop">
       <div class="modal ${wide ? 'wide' : ''}">
@@ -228,7 +229,7 @@ function openModal({ title, body, saveLabel = '儲存', onSave = null, wide = fa
     </div>`;
   const f = $('#modalRoot input, #modalRoot select, #modalRoot textarea'); if (f) f.focus();
 }
-function closeModal() { $('#modalRoot').innerHTML = ''; modalOnSave = null; }
+function closeModal() { const cb = modalOnClose; $('#modalRoot').innerHTML = ''; modalOnSave = null; modalOnClose = null; if (cb) cb(); }
 
 /* ==========================================================================
    Router
@@ -4163,7 +4164,7 @@ function substEditDates(recId) {
   });
 }
 
-function substCellPicker(recId, key, day, period, weekTab = null) {
+function substCellPicker(recId, key, day, period, weekTab = null, returnTo = null) {
   const rec = substById(recId); if (!rec) return;
   const classId = key.split('|')[0]; const sid = state.slots[key];
   const free = freeTeachersAt(day, period, rec, weekTab);
@@ -4189,6 +4190,7 @@ function substCellPicker(recId, key, day, period, weekTab = null) {
   };
   openModal({
     title: `指派代課 — ${clsName} ${subjectName(sid)}`, saveLabel: '確定',
+    onClose: returnTo === 'reschedule' ? () => { substOpenId = null; substWeekTab = null; currentTab = 'reschedule'; render(); } : null,
     onSave: free.length ? () => {
       const sel = document.querySelector('input[name="subT"]:checked'); if (!sel) { toast('請選一位代課教師'); return false; }
       setAssign(sel.value); save(); closeModal(); render(); return true;
@@ -5631,8 +5633,8 @@ const clickHandlers = {
     // 4) 跳到代課分頁，鎖定到含此日期的那一週，開啟該格指派
     const weeks = substWeeks(rec); const wIdx = weeks.length > 1 ? (weeks.find(w => date >= w.start && date <= w.end) || {}).idx : null;
     substOpenId = rec.id; substWeekTab = (wIdx == null ? null : wIdx); currentTab = 'subst'; render();
-    toast('已切到代課；你的調課草稿已保留，處理完可回「🔀 調課」分頁繼續。');
-    substCellPicker(rec.id, slotKey(classId, day, period), day, period, substWeekTab);
+    toast('請為此節指派代課老師；完成後會自動返回調課畫面。');
+    substCellPicker(rec.id, slotKey(classId, day, period), day, period, substWeekTab, 'reschedule');
   },
   // 「🔄 改派代課」：此師當日代別人上的課、本人也請假→開原代課單該格改派其他代課老師
   'resched-cover-resubst': el => {
@@ -5641,8 +5643,8 @@ const clickHandlers = {
     const rec = substById(recId); if (!rec) { toast('找不到原代課記錄'); return; }
     const weeks = substWeeks(rec); const wIdx = weeks.length > 1 ? (weeks.find(w => date >= w.start && date <= w.end) || {}).idx : null;
     substOpenId = recId; substWeekTab = (wIdx == null ? null : wIdx); currentTab = 'subst'; render();
-    toast('已切到代課；原代課老師也請假，請為此節改派其他代課老師。你的調課草稿已保留。');
-    substCellPicker(recId, key, day, period, substWeekTab);
+    toast('原代課老師也請假，請為此節改派其他代課老師；完成後會自動返回調課畫面。');
+    substCellPicker(recId, key, day, period, substWeekTab, 'reschedule');
   },
   'resched-pick-target': el => {   // 選定目標日期＋節次 → 加入一筆日期式對調
     const d = reschedDraft; if (!d || !d.picking) return;

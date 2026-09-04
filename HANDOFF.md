@@ -5,8 +5,15 @@
 ## 最後更新
 - 時間：2026-09-04
 - 機器：Desktop\claude code
-- 版本：**main = v12.35（已 push；GH Pages 依常規部署）**。schema 仍為 2、向下相容。
+- 版本：**main = v12.36（已 push；GH Pages 依常規部署）**。schema 仍為 2、向下相容。
 - 狀態：本機 node --check + 預覽實測（`_test-fixture-real.json` 12班＋使用者「查錯版」真實檔）通過、無 console error（僅 favicon 404）、全部已 push main。
+
+## 本次區間做了什麼（v12.36）＝**改代課／改派代課後自動返回調課畫面**
+> 使用者要求：從調課逐日列課按「🔄 改代課」或「🔄 改派代課」跳到代課指派後，完成應自動回到原本的調課畫面。
+- `openModal` 新增 `onClose` 參數（存 `modalOnClose`）；`closeModal` 於清空後呼叫（null-guard 防重入）。所有結束路徑（確定/清除/取消/✕/背景）皆走 closeModal。
+- `substCellPicker` 新增 `returnTo` 參數；`returnTo==='reschedule'` 時 onClose＝清 substOpenId/substWeekTab、`currentTab='reschedule'`、render()。
+- `resched-to-subst`（改代課）與 `resched-cover-resubst`（改派代課）呼叫 substCellPicker 帶 `'reschedule'`，toast 改「完成後會自動返回調課畫面」。調課草稿（reschedDraft）跨分頁保留，返回即見。
+- 實測「查錯版」：改派代課選人確定→自動回調課編輯器、備註保留、該格代課職務因改派他人而從列表消失；取消亦返回；改代課（本身課）save/cancel 皆返回。
 
 ## 本次區間做了什麼（v12.35）＝**修：調課逐日列課漏列「該師當日的代課職務」**
 > 使用者查錯：王健榮 9/23 請假、p1/p3 指定徐淑卿代課；之後新增「徐淑卿 9/23 請假調課」時，逐日列課只顯示徐淑卿本身的課（二年孝班 生活 p4），沒有列出她要代王健榮的 p1/p3。
