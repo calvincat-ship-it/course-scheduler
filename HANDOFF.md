@@ -5,8 +5,14 @@
 ## 最後更新
 - 時間：2026-09-04
 - 機器：Desktop\claude code
-- 版本：**main = v12.39（已 push；GH Pages 依常規部署）**。schema 仍為 2、向下相容。
+- 版本：**main = v12.40（已 push；GH Pages 依常規部署）**。schema 仍為 2、向下相容。
 - 狀態：本機 node --check + 預覽實測通過、無 console error、全部已 push main。**Google Drive 往返（登入/送出/收回）僅能真機驗證**。
+
+## 本次區間做了什麼（v12.40）＝**代課「可代課空堂老師」名單改依該日調課後實際課表判忙碌**
+> 先前記在待辦的已知限制：指派代課時的空堂名單原本用 `busyTeachersAt(day,period)` 只掃基礎 `state.slots`（依星期幾），在有調課的日子不精準——被調課**移走**的老師誤判忙、被調課**移入**的老師誤判閒。
+- **核心**：新增 `busyTeachersOnDate(date,day,period,swaps)`＝逐班以 `composeResolve` 解析該日該格「調課後」實際內容來源、收集真正在上課的老師（取代 busyTeachersAt）。新增 `substCellDates(rec,weekTab,day)`＝本代課格對應具體日期（單週/指定週→一天；多週彙總無單一日期→區間內所有該星期上課日，取忙碌**聯集**＝保守，該週可用單週覆蓋精確化）。
+- `freeTeachersAt`：有日期→套 `reschedMasterRec().swaps` 逐日聯集算 busy；**無日期（舊資料）→退回 busyTeachersAt**（相容、零回歸）。代課跨紀錄互斥（substOtherBlockers/blocked）維持原安全擋法未動。
+- **實測**（_test-fixture-real，造「一年忠班週一 p1(馬美玲)⇄p2(陳立涵)」調課）：週一 p1 空堂判斷正確翻轉——馬美玲變空堂、陳立涵變忙碌；freeTeachersAt 有日期版/舊資料 fallback 皆正確、無 console error。commit 939bc41。
 
 ## 本次區間做了什麼（v12.38–39）
 ### v12.39＝**修：代課/調課填報未反映既有調課（呈現原始課表）**
