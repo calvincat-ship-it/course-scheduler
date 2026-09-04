@@ -5,8 +5,15 @@
 ## 最後更新
 - 時間：2026-09-04
 - 機器：Desktop\claude code
-- 版本：**main = v12.34（已 push；GH Pages 依常規部署）**。schema 仍為 2、向下相容。
-- 狀態：本機 node --check + 預覽實測（`_test-fixture-real.json` 12班）通過、無 console error（僅 favicon 404）、全部已 push main。
+- 版本：**main = v12.35（已 push；GH Pages 依常規部署）**。schema 仍為 2、向下相容。
+- 狀態：本機 node --check + 預覽實測（`_test-fixture-real.json` 12班＋使用者「查錯版」真實檔）通過、無 console error（僅 favicon 404）、全部已 push main。
+
+## 本次區間做了什麼（v12.35）＝**修：調課逐日列課漏列「該師當日的代課職務」**
+> 使用者查錯：王健榮 9/23 請假、p1/p3 指定徐淑卿代課；之後新增「徐淑卿 9/23 請假調課」時，逐日列課只顯示徐淑卿本身的課（二年孝班 生活 p4），沒有列出她要代王健榮的 p1/p3。
+- 真因：`reschedSourceLessons` 只掃 `state.slots` 中該師為**本身任課**的格，未含該師**當日被指派代課**的職務。
+- 修：`reschedSourceLessons` 每日除本身任課外，另掃所有 `state.substitutions`——該師於當日為有效代課者（`substEffectiveSub` 依週判定、跳過本人請假的 rec）的格，加為 `isCover:true` 條目（帶 `coverRecId/coverFor`）。
+- `reschedLessonsPanel`：代課職務列以粉標「代 ○○ 的課」呈現，動作為 **🔄 改派代課**（不走調課，因那是別人的班）→ handler `resched-cover-resubst` 開**原代課單**該格 `substCellPicker` 改指派其他代課老師；調課草稿保留。
+- 版本 v12.35＋sw 同步。實測「查錯版」：徐淑卿 9/23 現正確列出 六年孝班 數學 p1、國語 p3（代 王健榮）＋本身 二年孝班 生活 p4；改派代課開啟王健榮原代課單對應格。
 
 ## 本次區間做了什麼（v12.34）＝**調課↔代課整合：改代課按鈕＋列印真實反映兩者**
 > 使用者需求：新增調課時「已代課」節次仍列出並提供「改代課」按鈕直接導引到代課功能（範圍限請假期間）；列印調課／代課課表都要完全反映該時段該班級/教師受代課＋調課後的真實課表。使用者決策：改代課＝自動建/開該師代課單並跳到該格；同格調課↔代課**互斥**（改代課時自動移除該格調課）。

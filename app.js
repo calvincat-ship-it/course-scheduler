@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v12.34';
+const APP_VERSION = 'v12.35';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -3606,16 +3606,35 @@ function reschedSwapForSlotDate(classId, date, day, period, excludeRecId) {
   }
   return null;
 }
-// 請假教師在請假區間內、逐「日期」的課（回 [{date,wd,lessons:[{key,classId,day,period,sid}]}]）
+// 請假教師在請假區間內、逐「日期」的課（回 [{date,wd,lessons:[{key,classId,day,period,sid,isCover,coverRecId,coverFor}]}]）
+// 含兩類：①該師本身任課的課（isCover=false）②該師「當日受指派代別人的課」（isCover=true）——
+// 這樣某師若被指派代課後又請假，其代課職務也會一併列出、可再改派。
 function reschedSourceLessons(teacherId, leaveStart, leaveEnd) {
   const pIdx = pid => state.settings.periods.findIndex(pp => pp.id === pid);
   const out = [];
   for (const date of schoolDatesInRange(leaveStart, leaveEnd)) {
-    const wd = weekdayOf(date); const lessons = [];
+    const wd = weekdayOf(date); const lessons = []; const seen = new Set();
     for (const key in state.slots) {
       if (!slotAssignments(key).some(a => a.teacherId === teacherId)) continue;
       const [classId, dStr, p] = key.split('|'); if (Number(dStr) !== wd) continue;
-      lessons.push({ key, classId, day: wd, period: p, sid: state.slots[key], date });
+      lessons.push({ key, classId, day: wd, period: p, sid: state.slots[key], date, isCover: false }); seen.add(key);
+    }
+    // 代課職務：此師於當日被指派代別位老師的課
+    for (const rec of (state.substitutions || [])) {
+      if (rec.absentTeacherId === teacherId) continue;
+      if (!rec.startDate || !rec.endDate || date < rec.startDate || date > rec.endDate) continue;
+      const wks = substWeeks(rec); const wIdx = wks.length > 1 ? (wks.find(w => date >= w.start && date <= w.end) || {}).idx : null;
+      const consider = k => {
+        const i = k.indexOf('|'); const isOvr = /^\d+\|/.test(k) && k.split('|').length === 4;
+        const key = isOvr ? k.slice(i + 1) : k;
+        if (seen.has(key)) return; seen.add(key);
+        const [classId, dStr, p] = key.split('|'); if (Number(dStr) !== wd || !substPeriodOnLeave(rec, p)) return;
+        if (substEffectiveSub(rec, (wIdx == null ? null : wIdx), key) !== teacherId) return;
+        const sid = state.slots[key]; if (!sid) return;
+        lessons.push({ key, classId, day: wd, period: p, sid, date, isCover: true, coverRecId: rec.id, coverFor: rec.absentTeacherId });
+      };
+      Object.keys(rec.assignments || {}).forEach(consider);
+      Object.keys(rec.weekOverrides || {}).forEach(consider);
     }
     lessons.sort((a, b) => (pIdx(a.period) - pIdx(b.period)) || ((classById(a.classId) || {}).name || '').localeCompare((classById(b.classId) || {}).name || '', 'zh-Hant'));
     if (lessons.length) out.push({ date, wd, lessons });
@@ -3691,6 +3710,10 @@ function reschedLessonsPanel(d) {
   const sections = groups.map(g => {
     const rows = g.lessons.map(L => {
       const cls = (classById(L.classId) || {}).name || '';
+      // 代課職務：此師當日代別人上的課——本人請假時只能「改派其他代課老師」，不走調課
+      if (L.isCover) {
+        return `<div class="subst-item"><div style="flex:1"><b>${esc(cls)}</b> ${esc(subjectName(L.sid))} <span style="color:var(--muted)">${esc(periodLabel(L.period))}</span>　<span class="pill" style="background:#fce7f3;color:#9d174d" title="此節是 ${esc(teacherName(L.coverFor))} 請假、由 ${esc(teacherName(d.teacherId))} 代課；本人也請假需改派">代 ${esc(teacherName(L.coverFor))} 的課</span></div><button class="ghost xs" data-action="resched-cover-resubst" data-rec="${esc(L.coverRecId)}" data-key="${esc(L.key)}" data-day="${L.day}" data-period="${esc(L.period)}" data-date="${esc(L.date)}" title="原代課老師也請假：為此節改派其他代課老師">🔄 改派代課</button></div>`;
+      }
       const subId = substSubForDate(L.key, L.date);
       const existing = reschedSwapForSlotDate(L.classId, L.date, L.day, L.period, reschedOpenId !== 'new' ? reschedOpenId : null);
       const mine = swapBySrc[L.classId + '|' + L.date + '|' + L.period];
@@ -3704,7 +3727,7 @@ function reschedLessonsPanel(d) {
     }).join('');
     return `<div style="margin-top:10px"><div style="font-weight:700">${esc(fmtMD(g.date))}（${esc(DAY_LABELS[g.wd])}）</div><div class="subst-list">${rows}</div></div>`;
   }).join('');
-  return `<div class="hint" style="margin:6px 0;color:var(--muted)">下列是 <b>${esc(teacherName(d.teacherId))}</b> 請假期間逐日的課。每一節可二擇一：「<b>安排調課</b>」對調到指定日期，或「<b>🔄 改代課</b>」直接找人代這一節（會帶你到代課功能、自動建立此請假期間的代課單並開啟指派；若此格已排調課會自動移除）。已代課的節次仍會列出，可按「🔄 調整代課」更換人員。</div>${sections}`;
+  return `<div class="hint" style="margin:6px 0;color:var(--muted)">下列是 <b>${esc(teacherName(d.teacherId))}</b> 請假期間逐日的課。每一節可二擇一：「<b>安排調課</b>」對調到指定日期，或「<b>🔄 改代課</b>」直接找人代這一節（會帶你到代課功能、自動建立此請假期間的代課單並開啟指派；若此格已排調課會自動移除）。已代課的節次仍會列出，可按「🔄 調整代課」更換人員。<br>若此師當日<b>另有代別人上的課</b>（代課職務），也會一併列出並標「代 ○○ 的課」，本人請假時可按「🔄 改派代課」改指定其他代課老師。</div>${sections}`;
 }
 // 挑對調目標：先選「週」（請假當週前三週～後三週，共7週），再在該週課表格上點一節與來源對調
 const RESCHED_WEEK_OFFSETS = [-3, -2, -1, 0, 1, 2, 3];   // pickWeek＝相對請假來源週的偏移（可負＝往前）
@@ -5610,6 +5633,16 @@ const clickHandlers = {
     substOpenId = rec.id; substWeekTab = (wIdx == null ? null : wIdx); currentTab = 'subst'; render();
     toast('已切到代課；你的調課草稿已保留，處理完可回「🔀 調課」分頁繼續。');
     substCellPicker(rec.id, slotKey(classId, day, period), day, period, substWeekTab);
+  },
+  // 「🔄 改派代課」：此師當日代別人上的課、本人也請假→開原代課單該格改派其他代課老師
+  'resched-cover-resubst': el => {
+    reschedSyncForm();
+    const recId = el.dataset.rec, key = el.dataset.key, day = +el.dataset.day, period = el.dataset.period, date = el.dataset.date;
+    const rec = substById(recId); if (!rec) { toast('找不到原代課記錄'); return; }
+    const weeks = substWeeks(rec); const wIdx = weeks.length > 1 ? (weeks.find(w => date >= w.start && date <= w.end) || {}).idx : null;
+    substOpenId = recId; substWeekTab = (wIdx == null ? null : wIdx); currentTab = 'subst'; render();
+    toast('已切到代課；原代課老師也請假，請為此節改派其他代課老師。你的調課草稿已保留。');
+    substCellPicker(recId, key, day, period, substWeekTab);
   },
   'resched-pick-target': el => {   // 選定目標日期＋節次 → 加入一筆日期式對調
     const d = reschedDraft; if (!d || !d.picking) return;
