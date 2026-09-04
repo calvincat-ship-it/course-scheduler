@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v12.28';
+const APP_VERSION = 'v12.29';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -3577,16 +3577,17 @@ function reschedLessonsPanel(d) {
   }).join('');
   return `<div class="hint" style="margin:6px 0;color:var(--muted)">下列是 <b>${esc(teacherName(d.teacherId))}</b> 請假期間逐日的課。「已代課」請改用代課功能指定人員；「已調課」請到該筆調課調整。其餘可「安排調課」對調到指定日期。</div>${sections}`;
 }
-// 挑對調目標：先選「週」（請假當週/下一~三週，最多4週），再在該週課表格上點一節與來源對調
-const RESCHED_WEEK_LABELS = ['請假當週', '下一週', '下二週', '下三週'];
+// 挑對調目標：先選「週」（請假當週前三週～後三週，共7週），再在該週課表格上點一節與來源對調
+const RESCHED_WEEK_OFFSETS = [-3, -2, -1, 0, 1, 2, 3];   // pickWeek＝相對請假來源週的偏移（可負＝往前）
+const RESCHED_WEEK_LABEL = { '-3': '前三週', '-2': '前二週', '-1': '前一週', '0': '請假當週', '1': '下一週', '2': '下二週', '3': '下三週' };
 function reschedPickPanel(d) {
   const { seedClassId, aDate, src } = d.picking;
   const cls = (classById(seedClassId) || {}).name || '';
   const srcSid = state.slots[slotKey(seedClassId, src.day, src.period)];
-  const wk = Math.min(3, Math.max(0, d.pickWeek || 0));
+  const wk = Math.min(3, Math.max(-3, d.pickWeek || 0));
   const targetMonday = addDays(weekMondayOf(aDate), wk * 7);
   const wdays = weekSchoolDays(targetMonday);
-  const weekBtns = RESCHED_WEEK_LABELS.map((lb, i) => `<button class="ghost xs resched-wk${i === wk ? ' active' : ''}" data-action="resched-week" data-w="${i}">${lb}</button>`).join(' ');
+  const weekBtns = RESCHED_WEEK_OFFSETS.map(off => `<button class="ghost xs resched-wk${off === wk ? ' active' : ''}" data-action="resched-week" data-w="${off}">${RESCHED_WEEK_LABEL[off]}</button>`).join(' ');
   const grid = reschedWeekPickGridHTML(seedClassId, src, aDate, d.teacherId, targetMonday, d.swaps);
   return `<div class="resched-summary">為 <b>${esc(cls)} ${esc(subjectName(srcSid))}</b>（${esc(fmtMD(aDate))} ${esc(DAY_LABELS[src.day])} ${esc(periodLabel(src.period))}）挑一個要<b>對調</b>的時段：點<span style="color:var(--ok)">綠色</span>格。<span style="color:var(--muted)">（課表已套用你前面已排的調課）</span> <button class="ghost xs" data-action="resched-cancel-pick">取消選擇</button></div>
     <div style="margin:10px 0 6px;display:flex;align-items:center;gap:8px;flex-wrap:wrap"><b>對調到：</b>${weekBtns}<span style="color:var(--muted)">${esc(fmtMD(targetMonday))}~${esc(fmtMD(wdays[4].date))}</span></div>
@@ -5392,7 +5393,7 @@ const clickHandlers = {
   'resched-print': el => reschedPrint(el.dataset.id),
   'resched-pick-src': el => { reschedSyncForm(); const d = reschedDraft; if (!d) return; d.picking = { seedClassId: el.dataset.class, aDate: el.dataset.date, src: { day: +el.dataset.day, period: el.dataset.period } }; d.pickWeek = 0; render(); },
   'resched-cancel-pick': () => { reschedSyncForm(); if (reschedDraft) { reschedDraft.picking = null; reschedDraft.pickWeek = 0; } render(); },
-  'resched-week': el => { reschedSyncForm(); if (reschedDraft) reschedDraft.pickWeek = Math.min(3, Math.max(0, +el.dataset.w || 0)); render(); },
+  'resched-week': el => { reschedSyncForm(); if (reschedDraft) reschedDraft.pickWeek = Math.min(3, Math.max(-3, +el.dataset.w || 0)); render(); },
   'resched-remove-swap': el => { reschedSyncForm(); const d = reschedDraft; if (!d) return; d.swaps.splice(+el.dataset.i, 1); render(); },
   'resched-pick-target': el => {   // 選定目標日期＋節次 → 加入一筆日期式對調
     const d = reschedDraft; if (!d || !d.picking) return;
