@@ -5,8 +5,19 @@
 ## 最後更新
 - 時間：2026-09-04
 - 機器：Desktop\claude code
-- 版本：**main = v12.37（已 push；GH Pages 依常規部署）**。schema 仍為 2、向下相容。
-- 狀態：本機 node --check + 預覽實測通過、無 console error（僅 favicon 404）、全部已 push main。**Google Drive 往返（登入/送出/收回）僅能真機驗證，尚未真機測**。
+- 版本：**main = v12.39（已 push；GH Pages 依常規部署）**。schema 仍為 2、向下相容。
+- 狀態：本機 node --check + 預覽實測通過、無 console error、全部已 push main。**Google Drive 往返（登入/送出/收回）僅能真機驗證**。
+
+## 本次區間做了什麼（v12.38–39）
+### v12.39＝**修：代課/調課填報未反映既有調課（呈現原始課表）**
+> 使用者實機查錯：田凱臣已把 9/7 p7 體育調課至 9/10 p6；線上填報時 9/10 的代課/調課都沒出現該節、呈現原始課表。真因：來源列課與代課格都只掃**基礎 slots（依星期幾）**，從不套用既有調課。
+- **核心**：新增 `teacherLessonsOnDate(teacherId, date, swaps)`＝逐格 `composeResolve` 求某師某「具體日期」實際在教的課（回 occurrence key `classId|wd|period`＋`movedIn`）。**無相關調課時 composeResolve 回傳基礎格＝行為不變（回歸風險僅限有調課的日子）**。
+- **調課來源列** `reschedSourceLessons(…, priorSwaps)`：改用 teacherLessonsOnDate 套既有調課；`reschedLessonsPanel` 帶 `orderedPriorSwaps(editId,[])`。被調課移入的課顯示於**新位置**（標「🔀 調課移入」、可再連鎖對調），原位置不再誤列。
+- **代課格** `substTimetableHTML`：逐星期幾以 `substCellDate` 取實際日期→ teacherLessonsOnDate 套調課建 map；指派鍵＝occurrence cell。可對應唯一日期才套、否則退回基礎掃描。移入格標🔀＋「＋指派代課（調課移入）」。
+- **`absentCells`**：改為「請假期間逐日、套調課後」的 occurrence key 聯集（無日期範圍→退回基礎掃描）。`absentCellsInScope`/計數/`substEditor` 連帶正確。
+- **列印一致**：`trueClassCell` 代課改以「發生格＋日期」查（occurrence，而非來源格），與代課表指派同鍵；`subTeacherTimetableHTML` 代課節主題用 `composedSidAt` 取移入後實際科目。
+- 實測（_test-fixture-real 造 R1）：9/10 調課來源列出移入體育（🔀）、9/7 不再列；代課格 9/10 體育可指派；指派後代課班表顯示體育+代課師、調課班表顯示體育🔀。無 console error。**線上真機仍待測**。
+### v12.38＝線上填報開放視窗移到首頁快速入口「☁️ 線上填報」；首頁「代課/線上填報」鈕改「代課」；代課子頁移除該鈕。
 
 ## 本次區間做了什麼（v12.37）＝**Phase 2：線上調課填報 kiosk（?swap），與代課共用同一份檔**
 > 使用者決策：①線上檔案＝**單一共用檔**（代課＋調課同一份 Drive 檔）；②教師端＝**兩個連結共用同一檔**（?subst 代課、?swap 調課）。共用一份檔＝收回一次即同步兩端，教師隨時看到整合後最新課表。
