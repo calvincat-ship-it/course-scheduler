@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v12.32';
+const APP_VERSION = 'v12.33';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -3452,7 +3452,8 @@ function busyTeachersAt(day, period) {
   }
   return set;
 }
-// 某(day,period) 可代課的教師：不上課、未設不排課時段、非被代課者、且未在本記錄同節被指派為別格代課
+// 某(day,period) 可代課的教師：不上課、非被代課者、未在本記錄同節被指派為別格代課、無跨紀錄互斥。
+// v12.33：「該節設不排課時段」改為不排除，仍可選、由 UI 標⚠提醒（isUnavailableAt 判定）。
 function freeTeachersAt(day, period, rec, weekIdx = null) {
   const busy = busyTeachersAt(day, period);
   const usedThisDP = new Set();
@@ -3462,10 +3463,11 @@ function freeTeachersAt(day, period, rec, weekIdx = null) {
   return state.teachers.filter(t =>
     t.id !== rec.absentTeacherId &&
     !busy.has(t.id) &&
-    !(t.unavailable || []).includes(day + '|' + period) &&
     !usedThisDP.has(t.id) &&
     !blocked.has(t.id));
 }
+// 某教師是否於該(day,period)設為「不排課時段」（代課仍可選但要提醒）。
+function isUnavailableAt(t, day, period) { return !!(t && (t.unavailable || []).includes(day + '|' + period)); }
 // 被代課教師本週有課的格（keys）
 function absentCells(rec) {
   const keys = [];
@@ -4124,10 +4126,12 @@ function substCellPicker(recId, key, day, period, weekTab = null) {
   const weeks = substWeeks(rec); const wk = (weekTab != null && weeks[weekTab]) ? weeks[weekTab] : null;
   const clsName = (classById(classId) || {}).name || '';
   const perLabel = (state.settings.periods.find(pp => pp.id === period) || {}).label || '';
+  const sortedFree = [...free].sort((a, b) => (isUnavailableAt(a, day, period) ? 1 : 0) - (isUnavailableAt(b, day, period) ? 1 : 0));   // 有空堂者在前、不排課時段者殿後
   const list = free.length
-    ? free.map(tt => `<label class="restore-item"><input type="radio" name="subT" value="${tt.id}" ${cur === tt.id ? 'checked' : ''}>
-        <span><b>${esc(tt.name)}</b>${tt.type ? ` <small style="color:var(--muted)">${esc(tt.type)}</small>` : ''}</span></label>`).join('')
-    : `<p style="color:var(--danger);margin:6px 0">本節沒有空堂教師可代課（其他老師都在上課、設為不排課時段、或正在其他代課／請假中）。</p>`;
+    ? sortedFree.map(tt => { const un = isUnavailableAt(tt, day, period);
+      return `<label class="restore-item"><input type="radio" name="subT" value="${tt.id}" ${cur === tt.id ? 'checked' : ''}>
+        <span><b>${esc(tt.name)}</b>${tt.type ? ` <small style="color:var(--muted)">${esc(tt.type)}</small>` : ''}${un ? ` <small style="color:var(--warn)">⚠ 該節原設為不排課時段</small>` : ''}</span></label>`; }).join('')
+    : `<p style="color:var(--danger);margin:6px 0">本節沒有可代課的教師（其他老師都在上課、或正在其他代課／請假中）。</p>`;
   const blocked = substOtherBlockers(day, period, rec);   // v10.06 因日期重疊而不可選者，列出原因
   const blockedHTML = blocked.size
     ? `<div style="margin-top:10px"><p class="hint" style="color:var(--muted);margin:0 0 2px">因日期重疊，本節不可代課：</p>${[...blocked.entries()].map(([tid, reason]) => `<div class="hint" style="color:var(--muted);margin:2px 0">・${esc(reason)}</div>`).join('')}</div>`
