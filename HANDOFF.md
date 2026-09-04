@@ -5,8 +5,19 @@
 ## 最後更新
 - 時間：2026-09-04
 - 機器：Desktop\claude code
-- 版本：**main = v12.28（已 push；GH Pages 依常規部署）**。schema 仍為 2、向下相容。
-- 狀態：本機 node --check + 預覽實測（`_test-fixture-real.json` 12班）通過、無 console error、全部已 push main。
+- 版本：**main = v12.34（已 push；GH Pages 依常規部署）**。schema 仍為 2、向下相容。
+- 狀態：本機 node --check + 預覽實測（`_test-fixture-real.json` 12班）通過、無 console error（僅 favicon 404）、全部已 push main。
+
+## 本次區間做了什麼（v12.34）＝**調課↔代課整合：改代課按鈕＋列印真實反映兩者**
+> 使用者需求：新增調課時「已代課」節次仍列出並提供「改代課」按鈕直接導引到代課功能（範圍限請假期間）；列印調課／代課課表都要完全反映該時段該班級/教師受代課＋調課後的真實課表。使用者決策：改代課＝自動建/開該師代課單並跳到該格；同格調課↔代課**互斥**（改代課時自動移除該格調課）。
+- **改代課按鈕（Req1+2）**：`reschedLessonsPanel` 每堂課列 `🔄 改代課`（已代課者顯示 `🔄 調整代課`）。handler `resched-to-subst`：①移除此格既有調課（草稿＋其他已存記錄，編輯中者以草稿為準）②`substLeaveConflict` 找／建此師「請假日期區間、全天」代課單 ③`currentTab='subst'`＋鎖到含該日期的週＋`substCellPicker` 直接開指派視窗。調課草稿保留（reschedDraft 為 module let，跨分頁不失）。
+- **列印真實反映（Req3）**：新增共用引擎 `substCellDate(rec,weekIdx,day)`（某週某星期幾→實際日期）＋`trueClassCell(classId,date,day,period,masterSwaps)`（套用全部調課依序疊加＋當日代課，回 {sid,subId,swapped,fromDate/Day/Period,srcKey}）。
+  - `substClassTimetableHTML`＝**date-aware**：標題「課表（代課／調課後）」、表頭加日期、逐格用 trueClassCell → 調課移入格標🔀、代課格顯代課師名。多週未指定週時退回基礎課表＋eff。
+  - `subTeacherTimetableHTML`＝代課者自己的課也逐格套調課（composeResolve），移入標🔀。
+  - `substTimetableHTML`（被代課者格）＝已被調課移走的格標🔀「已調課，不需代課」並停用點選（互斥視覺化）。
+  - `reschedTeacherWeekHTML`（調課教師列印）＝補上代課 overlay（該師該節已代課→標「代課：XX」）。
+- 檔案：`app.js`（新引擎在 substSubForDate 後；handler 在 resched-remove-swap 後）、版本 v12.34＋`sw.js` CACHE 同步。
+- 待驗證：**未真機 live**（僅本機預覽 deterministic 實測通過）。多週代課單的改代課只指派「含該日期那一週」該格（weekOverrides）＝符合「該日該節」語意；若需整段沿用需使用者到代課頁切「全部週」。
 
 ## 本次區間做了什麼（v12.19 → v12.28）＝**🔀 調課功能大重構（教師導向＋日期式可跨週）**
 > 完整現況/函式全索引見記憶 [[project_course_scheduler_substitution_future]]（已整個改寫成現況）。以下依實機回饋逐步演進：
