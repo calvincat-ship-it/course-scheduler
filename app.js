@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v12.31';
+const APP_VERSION = 'v12.32';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -3640,7 +3640,7 @@ function reschedList() {
 }
 function reschedEditor() {
   const today = new Date().toISOString().slice(0, 10);
-  const d = reschedDraft || (reschedDraft = { teacherId: '', leaveStart: today, leaveEnd: today, note: '', swaps: [], picking: null, pickWeek: 0 });
+  const d = reschedDraft || (reschedDraft = { teacherId: '', leaveStart: today, leaveEnd: '', note: '', swaps: [], picking: null, pickWeek: 0 });
   const teacherOpts = `<option value="">— 選擇教師 —</option>` + state.teachers.map(t => `<option value="${t.id}" ${t.id === d.teacherId ? 'selected' : ''}>${esc(t.name)}${t.type ? `（${esc(t.type)}）` : ''}</option>`).join('');
   const topFields = `<div class="field-row">
       <label class="field" style="max-width:240px"><span>申請調課教師（請假者）</span><select data-change="resched-teacher">${teacherOpts}</select></label>
@@ -3649,6 +3649,8 @@ function reschedEditor() {
       <label class="field" style="flex:2"><span>備註（選填）</span><input type="text" id="reschedNote" value="${esc(d.note || '')}" placeholder="如：王老師出差"></label></div>`;
   let body;
   if (!d.teacherId) body = `<div class="resched-summary" style="color:var(--muted)">請先選擇<b>申請調課的教師</b>與<b>請假日期</b>，系統會列出該教師請假期間逐日的課。</div>`;
+  else if (!d.leaveStart || !d.leaveEnd) body = `<div class="resched-summary" style="color:var(--muted)">請設定<b>請假開始</b>與<b>截止日期</b>，系統會列出 <b>${esc(teacherName(d.teacherId))}</b> 請假期間逐日的課。</div>`;
+  else if (d.leaveEnd < d.leaveStart) body = `<div class="resched-summary" style="color:var(--warn)">截止日不可早於開始日，請重新設定請假日期。</div>`;
   else if (d.picking) body = reschedPickPanel(d);
   else body = reschedLessonsPanel(d);
   const editing = reschedOpenId && reschedOpenId !== 'new';
