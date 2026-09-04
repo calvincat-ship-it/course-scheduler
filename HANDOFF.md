@@ -5,8 +5,17 @@
 ## 最後更新
 - 時間：2026-09-04
 - 機器：Desktop\claude code
-- 版本：**main = v12.36（已 push；GH Pages 依常規部署）**。schema 仍為 2、向下相容。
-- 狀態：本機 node --check + 預覽實測（`_test-fixture-real.json` 12班＋使用者「查錯版」真實檔）通過、無 console error（僅 favicon 404）、全部已 push main。
+- 版本：**main = v12.37（已 push；GH Pages 依常規部署）**。schema 仍為 2、向下相容。
+- 狀態：本機 node --check + 預覽實測通過、無 console error（僅 favicon 404）、全部已 push main。**Google Drive 往返（登入/送出/收回）僅能真機驗證，尚未真機測**。
+
+## 本次區間做了什麼（v12.37）＝**Phase 2：線上調課填報 kiosk（?swap），與代課共用同一份檔**
+> 使用者決策：①線上檔案＝**單一共用檔**（代課＋調課同一份 Drive 檔）；②教師端＝**兩個連結共用同一檔**（?subst 代課、?swap 調課）。共用一份檔＝收回一次即同步兩端，教師隨時看到整合後最新課表。
+- **共用檔**：沿用 `state.substShare` 與 `SUBST_FMT` 快照（`substContextState()` 早已含 substitutions＋reschedules＋課表）。建檔名改「代課調課填報-…」。`substShareModal` 出**兩個連結**（?subst/?swap）並說明共用。
+- **?swap kiosk**（比照 ?subst）：`swapKiosk/swapLinkMode/swapEnded/swapFileId/swapMy*` 模組變數；`save()` 於 swapKiosk 早退；`render()` 先判 swapKiosk→`viewSwapKiosk()`；init `params.has('swap')`→`setSwapKiosk(true)`；keydown/undo guard 加 swapKiosk。
+- **kiosk 流程**：`swapKioskStart`（登入→Picker 開共用檔→`state=obj.state`→email 對應 `swapMyTeacherId`）；`viewSwapKiosk`（登入畫面/banner/找不到教師/`viewReschedule`）；`swapSubmit`（重讀最新→只 upsert 自己那筆 reschedule→寫回，append-only，不動代課與他人）。
+- **調課 UI kiosk 化**：`reschedList`（只列自己的、隱藏全校總表/刪除、標題「我的調課」）、`reschedEditor`（教師固定本人、隱藏選單、送出鈕「💾 送出到雲端」）、`reschedLessonsPanel`（kiosk 隱藏「改代課」與代課職務列，只留「安排調課」）、`resched-save` 於 kiosk 走 `swapSubmit`。handlers `swap-login`/`swap-kiosk-exit`。
+- **收回整合**：`collectSubst` 同時合併教師線上**調課**（append-only、略過 `state.reschedDeleted` 墓碑）＋沿用覆蓋整份快照；`resched-del` 加 `reschedDeleted` 墓碑；init 補 guard。收回訊息改「已收回 N 筆代課、M 筆調課」。
+- 實測：`?swap` 路由→登入畫面；模擬登入後 kiosk 編輯器（本人固定/送出鈕/無改代課/安排調課可用/週格）、清單只列自己、arrange→pick 週格；organizer 端無回歸（全校總表/刪除/改代課/選教師皆在）。**Drive 往返待真機**。
 
 ## 本次區間做了什麼（v12.36）＝**改代課／改派代課後自動返回調課畫面**
 > 使用者要求：從調課逐日列課按「🔄 改代課」或「🔄 改派代課」跳到代課指派後，完成應自動回到原本的調課畫面。

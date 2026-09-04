@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v12.36';
+const APP_VERSION = 'v12.37';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -149,7 +149,7 @@ function defaultState() {
   };
 }
 
-async function save() { if (substKiosk) return; await idbSet(STATE_KEY, state); scheduleCloudBackup(); maybeDailySnapshot(); }   // v10.01 代課 kiosk 載入的是排課者狀態，不可寫進教師本機/雲端
+async function save() { if (substKiosk || swapKiosk) return; await idbSet(STATE_KEY, state); scheduleCloudBackup(); maybeDailySnapshot(); }   // v10.01/12.37 代課／調課 kiosk 載入的是排課者狀態，不可寫進教師本機/雲端
 
 /* ---------- Helpers ---------- */
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -245,6 +245,9 @@ let fillLinkMode = false; // v09.07 由填課連結(?fill)進入：離開＝關�
 let substKiosk = false, substLinkMode = false, substEnded = false, substFileId = null, substMyEmail = '', substMyName = '';
 let substMyTeacherId = '', substNoMatch = false;   // v10.10 教師自助：用登入 email 對應教師本人，只安排自己的代課
 let substEditableIds = new Set();   // 本 session kiosk 新建、可編輯/送出的記錄 id（其餘唯讀）
+/* v12.37 調課線上填報 kiosk（?swap）：教師登入→開「同一份」共享檔（含代課+調課+課表快照）→只安排自己的調課、append-only 送出 */
+let swapKiosk = false, swapLinkMode = false, swapEnded = false, swapFileId = null, swapMyEmail = '', swapMyName = '';
+let swapMyTeacherId = '', swapNoMatch = false, swapEditableIds = new Set();
 let fillEnded = false;    // v09.07 填課結束畫面旗標
 let showLoadMatrix = false; // v09.12 ③教師「班×科配課矩陣」展開狀態（runtime）
 let fillProgress = null;    // v09.12 F③ 線上填課進度快取 {classId:{total,filled,submitted,submittedAt}}（runtime，按需重讀）
@@ -782,7 +785,9 @@ function setKioskNav(on) {   // 只負責隱藏/顯示導覽與右上動作鈕
 }
 function setKiosk(on) { kioskFill = on; setKioskNav(on); render(); }              // v09.05 導師填課 kiosk
 function setSubstKiosk(on) { substKiosk = on; setKioskNav(on); render(); }        // v10.01 代課填報 kiosk
+function setSwapKiosk(on) { swapKiosk = on; setKioskNav(on); render(); }          // v12.37 調課填報 kiosk
 function render() {
+  if (swapKiosk) { $('#view').innerHTML = viewSwapKiosk(); return; }     // 調課填報模式
   if (substKiosk) { $('#view').innerHTML = viewSubstKiosk(); return; }   // 代課填報模式
   if (kioskFill) { $('#view').innerHTML = viewTeacherFill(); return; }   // 導師填課模式：只出填課介面
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === currentTab));
@@ -809,7 +814,7 @@ const NAV_SECTIONS = [
   { tab: 'teachers', label: '教師配課' },
   { tab: 'schedule', label: '排課' },
 ];
-const homeBtn = () => (kioskFill || substKiosk) ? '' : `<button class="pn-home" data-action="goto" data-goto="home">← 回首頁</button>`;
+const homeBtn = () => (kioskFill || substKiosk || swapKiosk) ? '' : `<button class="pn-home" data-action="goto" data-goto="home">← 回首頁</button>`;
 // 4 個核心頁：頂端導覽列「取代」子頁標題（當前頁以 active pill 標示），右側可帶頁面動作鈕
 function coreHead(current, actions = '') {
   const links = NAV_SECTIONS.map(s =>
@@ -3665,27 +3670,40 @@ function legalTargetsOnDate(seedClassId, src, aDate, absentTeacherId, bDate, pri
   return out;
 }
 function reschedList() {
-  const list = state.reschedules || [];
-  const actions = `${list.length ? `<button class="ghost" data-action="resched-master-print" title="依建立順序合併所有調課，輸出真正的最終課表">🖨️ 全校調課後總表</button> ` : ''}<button class="btn" data-action="resched-add">＋ 新增調課</button>`;
-  const head = subHead('🔀 調課', actions) +
-    `<div class="hint" style="margin-bottom:12px;color:var(--muted)">因教師請假等，於<b>指定日期區間</b>把某位教師該期間的課<b>對調</b>到其他時段（主課表不變、輸出時套用）。協同課整組一起換。<b>保留</b>：教師衝堂、協同同步、限定星期；<b>放寬（僅提醒）</b>：教室衝堂、不排課時段、限定節次、單日上限、連堂拆散。<br>多筆調課會<b>依建立順序疊加</b>：已被前面調課移動過的格，仍可依「調課後最新內容」再對調；要看真正的最終課表請用右上「全校調課後總表」。</div>`;
-  if (!list.length) return head + emptyCard('尚無調課記錄', '點右上「＋ 新增調課」建立第一筆。');
+  let list = state.reschedules || [];
+  if (swapKiosk) list = list.filter(r => r.teacherId === swapMyTeacherId);   // v12.37 教師端只看自己的調課
+  const addLabel = swapKiosk ? '＋ 新增我的調課' : '＋ 新增調課';
+  const masterBtn = (swapKiosk || !list.length) ? '' : `<button class="ghost" data-action="resched-master-print" title="依建立順序合併所有調課，輸出真正的最終課表">🖨️ 全校調課後總表</button> `;
+  const actions = `${masterBtn}<button class="btn" data-action="resched-add">${addLabel}</button>`;
+  const head = subHead(swapKiosk ? '🔀 我的調課' : '🔀 調課', actions) +
+    `<div class="hint" style="margin-bottom:12px;color:var(--muted)">${swapKiosk
+      ? `以下是<b>你（${esc(teacherName(swapMyTeacherId) || swapMyName)}）</b>的調課安排。按「${addLabel}」設定請假日期，即可調出<b>你自己的課表</b>，把該期間的課<b>對調</b>到其他時段，最後送出到雲端。<b>不同日期的請假請各按一次</b>；點既有的一筆是編輯／重送那一筆。`
+      : `因教師請假等，於<b>指定日期區間</b>把某位教師該期間的課<b>對調</b>到其他時段（主課表不變、輸出時套用）。協同課整組一起換。<b>保留</b>：教師衝堂、協同同步、限定星期；<b>放寬（僅提醒）</b>：教室衝堂、不排課時段、限定節次、單日上限、連堂拆散。<br>多筆調課會<b>依建立順序疊加</b>：已被前面調課移動過的格，仍可依「調課後最新內容」再對調；要看真正的最終課表請用右上「全校調課後總表」。`}</div>`;
+  if (!list.length) return head + emptyCard(swapKiosk ? '你還沒有調課安排' : '尚無調課記錄', `點右上「${addLabel}」建立第一筆。`);
   const rows = list.map(r => {
     const who = r.teacherId ? teacherName(r.teacherId) : ((state.grades.find(x => x.id === r.gradeId) || {}).name || '');
     const swaps = (r.swaps || []).map(sw => sw.aDate ? `${fmtMD(sw.aDate)}(${DAY_LABELS[sw.a.day]})${periodLabel(sw.a.period)} ⇄ ${fmtMD(sw.bDate)}(${DAY_LABELS[sw.b.day]})${periodLabel(sw.b.period)}` : `${DAY_LABELS[sw.a.day]}${periodLabel(sw.a.period)} ⇄ ${DAY_LABELS[sw.b.day]}${periodLabel(sw.b.period)}`).join('、');
-    return `<div class="subst-item"><div style="flex:1"><b>${esc(who)}</b>　${esc(swaps)}${r.note ? `　<span style="color:var(--muted)">（${esc(r.note)}）</span>` : ''}</div><button class="ghost xs" data-action="resched-edit" data-id="${r.id}" title="重新調整此調課">✏️ 調整</button><button class="ghost xs" data-action="resched-print" data-id="${r.id}" title="列印／存 PDF 調課後課表">🖨️ 調課後課表</button><button class="icon-btn" data-action="resched-del" data-id="${r.id}" title="刪除">🗑️</button></div>`;
+    const by = (!swapKiosk && r.createdByName) ? `　<span class="subst-item-meta">填報：${esc(r.createdByName)}</span>` : '';
+    const tail = swapKiosk
+      ? `<button class="ghost xs" data-action="resched-edit" data-id="${r.id}" title="調整並重送">✏️ 調整</button>`
+      : `<button class="ghost xs" data-action="resched-edit" data-id="${r.id}" title="重新調整此調課">✏️ 調整</button><button class="ghost xs" data-action="resched-print" data-id="${r.id}" title="列印／存 PDF 調課後課表">🖨️ 調課後課表</button><button class="icon-btn" data-action="resched-del" data-id="${r.id}" title="刪除">🗑️</button>`;
+    return `<div class="subst-item"><div style="flex:1"><b>${esc(who)}</b>　${esc(swaps)}${r.note ? `　<span style="color:var(--muted)">（${esc(r.note)}）</span>` : ''}${by}</div>${tail}</div>`;
   }).join('');
   return head + `<div class="subst-list">${rows}</div>`;
 }
 function reschedEditor() {
   const today = new Date().toISOString().slice(0, 10);
-  const d = reschedDraft || (reschedDraft = { teacherId: '', leaveStart: today, leaveEnd: '', note: '', swaps: [], picking: null, pickWeek: 0 });
+  const d = reschedDraft || (reschedDraft = { teacherId: swapKiosk ? swapMyTeacherId : '', leaveStart: today, leaveEnd: '', note: '', swaps: [], picking: null, pickWeek: 0 });
+  if (swapKiosk) d.teacherId = swapMyTeacherId;   // 教師端固定為本人
   const teacherOpts = `<option value="">— 選擇教師 —</option>` + state.teachers.map(t => `<option value="${t.id}" ${t.id === d.teacherId ? 'selected' : ''}>${esc(t.name)}${t.type ? `（${esc(t.type)}）` : ''}</option>`).join('');
+  const teacherField = swapKiosk
+    ? `<label class="field" style="max-width:240px"><span>申請調課教師（你本人）</span><input type="text" value="${esc(teacherName(swapMyTeacherId))}" disabled></label>`
+    : `<label class="field" style="max-width:240px"><span>申請調課教師（請假者）</span><select data-change="resched-teacher">${teacherOpts}</select></label>`;
   const topFields = `<div class="field-row">
-      <label class="field" style="max-width:240px"><span>申請調課教師（請假者）</span><select data-change="resched-teacher">${teacherOpts}</select></label>
+      ${teacherField}
       <label class="field"><span>請假開始</span><input type="date" data-change="resched-date" data-k="leaveStart" value="${esc(d.leaveStart)}" max="${esc(d.leaveEnd || '')}"></label>
       <label class="field"><span>請假截止</span><input type="date" data-change="resched-date" data-k="leaveEnd" value="${esc(d.leaveEnd)}" min="${esc(d.leaveStart || '')}"></label>
-      <label class="field" style="flex:2"><span>備註（選填）</span><input type="text" id="reschedNote" value="${esc(d.note || '')}" placeholder="如：王老師出差"></label></div>`;
+      <label class="field" style="flex:2"><span>備註（選填）</span><input type="text" id="reschedNote" value="${esc(d.note || '')}" placeholder="如：出差研習"></label></div>`;
   let body;
   if (!d.teacherId) body = `<div class="resched-summary" style="color:var(--muted)">請先選擇<b>申請調課的教師</b>與<b>請假日期</b>，系統會列出該教師請假期間逐日的課。</div>`;
   else if (!d.leaveStart || !d.leaveEnd) body = `<div class="resched-summary" style="color:var(--muted)">請設定<b>請假開始</b>與<b>截止日期</b>，系統會列出 <b>${esc(teacherName(d.teacherId))}</b> 請假期間逐日的課。</div>`;
@@ -3694,12 +3712,13 @@ function reschedEditor() {
   else body = reschedLessonsPanel(d);
   const editing = reschedOpenId && reschedOpenId !== 'new';
   const canSave = d.swaps.length > 0 && d.teacherId && d.leaveStart && d.leaveEnd && d.leaveEnd >= d.leaveStart;
+  const saveLabel = swapKiosk ? '💾 送出到雲端' : (editing ? '儲存調整' : '建立調課');
   const head = subHead('🔀 ' + (editing ? '調整調課' : '新增調課'), `<button class="ghost" data-action="resched-cancel">← 返回清單</button>`);
   return head + `<div class="card"><div class="card-body">
       ${topFields}
       ${body}
       <div style="margin-top:14px;display:flex;gap:8px">
-        <button class="btn" data-action="resched-save" ${canSave ? '' : 'disabled'}>${editing ? '儲存調整' : '建立調課'}${d.swaps.length ? `（${d.swaps.length} 筆對調）` : ''}</button>
+        <button class="btn" data-action="resched-save" ${canSave ? '' : 'disabled'}>${saveLabel}${d.swaps.length ? `（${d.swaps.length} 筆對調）` : ''}</button>
         <button class="ghost" data-action="resched-cancel">取消</button></div>
     </div></div>`;
 }
@@ -3711,24 +3730,29 @@ function reschedLessonsPanel(d) {
   const sections = groups.map(g => {
     const rows = g.lessons.map(L => {
       const cls = (classById(L.classId) || {}).name || '';
-      // 代課職務：此師當日代別人上的課——本人請假時只能「改派其他代課老師」，不走調課
+      // 代課職務：此師當日代別人上的課——本人請假時只能「改派其他代課老師」，不走調課（教師端 kiosk 不處理，交排課者）
       if (L.isCover) {
+        if (swapKiosk) return '';
         return `<div class="subst-item"><div style="flex:1"><b>${esc(cls)}</b> ${esc(subjectName(L.sid))} <span style="color:var(--muted)">${esc(periodLabel(L.period))}</span>　<span class="pill" style="background:#fce7f3;color:#9d174d" title="此節是 ${esc(teacherName(L.coverFor))} 請假、由 ${esc(teacherName(d.teacherId))} 代課；本人也請假需改派">代 ${esc(teacherName(L.coverFor))} 的課</span></div><button class="ghost xs" data-action="resched-cover-resubst" data-rec="${esc(L.coverRecId)}" data-key="${esc(L.key)}" data-day="${L.day}" data-period="${esc(L.period)}" data-date="${esc(L.date)}" title="原代課老師也請假：為此節改派其他代課老師">🔄 改派代課</button></div>`;
       }
       const subId = substSubForDate(L.key, L.date);
       const existing = reschedSwapForSlotDate(L.classId, L.date, L.day, L.period, reschedOpenId !== 'new' ? reschedOpenId : null);
       const mine = swapBySrc[L.classId + '|' + L.date + '|' + L.period];
       let badge = subId ? `<span class="pill blue" title="此日已有代課">已代課：${esc(teacherName(subId))}</span> ` : '';
-      const subBtn = `<button class="ghost xs" data-action="resched-to-subst" data-class="${L.classId}" data-date="${esc(L.date)}" data-day="${L.day}" data-period="${esc(L.period)}" title="${subId ? '調整這一節的代課老師' : '改用代課處理：找人代這一節（若此格已排調課會自動移除）'}">🔄 ${subId ? '調整代課' : '改代課'}</button>`;
+      const subBtn = swapKiosk ? '' : `<button class="ghost xs" data-action="resched-to-subst" data-class="${L.classId}" data-date="${esc(L.date)}" data-day="${L.day}" data-period="${esc(L.period)}" title="${subId ? '調整這一節的代課老師' : '改用代課處理：找人代這一節（若此格已排調課會自動移除）'}">🔄 ${subId ? '調整代課' : '改代課'}</button>`;
       let right;
       if (mine) right = `<span style="color:var(--ok);font-weight:700">→ ${esc(fmtMD(mine.sw.bDate))}(${esc(DAY_LABELS[mine.sw.b.day])}) ${esc(periodLabel(mine.sw.b.period))}</span> <button class="icon-btn" data-action="resched-remove-swap" data-i="${mine.i}" title="取消此對調">🗑️</button>`;
       else if (existing) { badge += `<span class="pill" style="background:#fde68a;color:#78350f" title="已在另一筆調課記錄">已調課→${esc(fmtMD(existing.otherDate))} ${esc(periodLabel(existing.other.period))}</span>`; right = `<span style="color:var(--muted);font-size:13px">已在其他調課記錄</span>`; }
       else right = `<button class="ghost xs" data-action="resched-pick-src" data-class="${L.classId}" data-date="${esc(L.date)}" data-day="${L.day}" data-period="${esc(L.period)}">＋ 安排調課</button>`;
-      return `<div class="subst-item"><div style="flex:1"><b>${esc(cls)}</b> ${esc(subjectName(L.sid))} <span style="color:var(--muted)">${esc(periodLabel(L.period))}</span>　${badge}</div>${right} ${subBtn}</div>`;
+      return `<div class="subst-item"><div style="flex:1"><b>${esc(cls)}</b> ${esc(subjectName(L.sid))} <span style="color:var(--muted)">${esc(periodLabel(L.period))}</span>　${badge}</div>${right}${subBtn ? ' ' + subBtn : ''}</div>`;
     }).join('');
+    if (!rows.trim()) return '';   // kiosk 過濾掉代課職務後可能整日無可調課的課
     return `<div style="margin-top:10px"><div style="font-weight:700">${esc(fmtMD(g.date))}（${esc(DAY_LABELS[g.wd])}）</div><div class="subst-list">${rows}</div></div>`;
   }).join('');
-  return `<div class="hint" style="margin:6px 0;color:var(--muted)">下列是 <b>${esc(teacherName(d.teacherId))}</b> 請假期間逐日的課。每一節可二擇一：「<b>安排調課</b>」對調到指定日期，或「<b>🔄 改代課</b>」直接找人代這一節（會帶你到代課功能、自動建立此請假期間的代課單並開啟指派；若此格已排調課會自動移除）。已代課的節次仍會列出，可按「🔄 調整代課」更換人員。<br>若此師當日<b>另有代別人上的課</b>（代課職務），也會一併列出並標「代 ○○ 的課」，本人請假時可按「🔄 改派代課」改指定其他代課老師。</div>${sections}`;
+  const hint = swapKiosk
+    ? `下列是 <b>${esc(teacherName(d.teacherId))}</b> 請假期間逐日的課。每一節可「<b>安排調課</b>」對調到指定日期（前三週～後三週）；完成後按上方「💾 送出到雲端」。協同課會整組一起換。`
+    : `下列是 <b>${esc(teacherName(d.teacherId))}</b> 請假期間逐日的課。每一節可二擇一：「<b>安排調課</b>」對調到指定日期，或「<b>🔄 改代課</b>」直接找人代這一節（會帶你到代課功能、自動建立此請假期間的代課單並開啟指派；若此格已排調課會自動移除）。已代課的節次仍會列出，可按「🔄 調整代課」更換人員。<br>若此師當日<b>另有代別人上的課</b>（代課職務），也會一併列出並標「代 ○○ 的課」，本人請假時可按「🔄 改派代課」改指定其他代課老師。`;
+  return `<div class="hint" style="margin:6px 0;color:var(--muted)">${hint}</div>${sections}`;
 }
 // 挑對調目標：先選「週」（請假當週前三週～後三週，共7週），再在該週課表格上點一節與來源對調
 const RESCHED_WEEK_OFFSETS = [-3, -2, -1, 0, 1, 2, 3];   // pickWeek＝相對請假來源週的偏移（可負＝往前）
@@ -4488,7 +4512,7 @@ async function openSubstShare() {
     const year = String(state.settings.reportYear || '');
     const payload = { fmt: SUBST_FMT, ver: 1, openedAt: new Date().toISOString(), state: substContextState() };
     step = '建立雲端檔案';
-    const f = await drivePutJson(`代課填報-${state.settings.schoolCode || 'msd9'}${year}.json`, null, JSON.stringify(payload));
+    const f = await drivePutJson(`代課調課填報-${state.settings.schoolCode || 'msd9'}${year}.json`, null, JSON.stringify(payload));
     const shared = [], failed = [];
     for (const t of withEmail) {
       step = `分享給 ${t.email}`;
@@ -4516,8 +4540,10 @@ async function collectSubst() {
     // 1) 收回合併（只增不覆蓋本機既有）
     step = '讀取教師填報';
     if (!Array.isArray(state.substDeleted)) state.substDeleted = [];
+    if (!Array.isArray(state.reschedDeleted)) state.reschedDeleted = [];   // v12.37 調課墓碑
     const deleted = new Set(state.substDeleted);
-    let added = 0;
+    const rDeleted = new Set(state.reschedDeleted);
+    let added = 0, addedR = 0;
     try {
       const obj = JSON.parse(await fillDownloadText(state.substShare.fileId));
       const incoming = (obj.state && Array.isArray(obj.state.substitutions)) ? obj.state.substitutions : [];
@@ -4525,6 +4551,10 @@ async function collectSubst() {
       // v10.12 略過墓碑：排課者已刪除的紀錄不再合併回來（避免線上殘留被再度收回）
       incoming.forEach(r => { if (r && r.id && !localIds.has(r.id) && !deleted.has(r.id)) { state.substitutions.push(r); added++; } });
       normalizeAllSubst();
+      // v12.37 同時合併教師線上「調課」（只增不覆蓋、略過墓碑）——共用同一份檔，代課調課一起收回
+      const incomingR = (obj.state && Array.isArray(obj.state.reschedules)) ? obj.state.reschedules : [];
+      const localRIds = new Set((state.reschedules || []).map(r => r.id));
+      incomingR.forEach(r => { if (r && r.id && !localRIds.has(r.id) && !rDeleted.has(r.id)) { (state.reschedules = state.reschedules || []).push(r); addedR++; } });
     } catch (e) { /* 舊檔讀不到(可能被刪)→視為無新填報，下面改建新檔 */ }
     // 1.5) v10.12 檢查已合併記錄是否過期，讓排課者確認刪除（會一併從線上檔移除）
     let removedExpired = 0;
@@ -4548,7 +4578,7 @@ async function collectSubst() {
       const f = await drivePutJson('', null, JSON.stringify(payload), fileId);   // PATCH 覆蓋既有檔
       fileId = f.id; link = f.webViewLink || link;
     } catch (e) {
-      const f = await drivePutJson(`代課填報-${state.settings.schoolCode || 'msd9'}${year}.json`, null, JSON.stringify(payload));   // 舊檔失效→建新檔
+      const f = await drivePutJson(`代課調課填報-${state.settings.schoolCode || 'msd9'}${year}.json`, null, JSON.stringify(payload));   // 舊檔失效→建新檔
       fileId = f.id; link = f.webViewLink || '';
     }
     // 3) 補分享給尚未分享過的 Email（新加入的教師/臨時代課老師）
@@ -4562,7 +4592,8 @@ async function collectSubst() {
     }
     state.substShare = { fileId, link, sharedEmails: shared, openedAt: new Date().toISOString() };
     save(); render(); substShareModal();
-    let msg = (added ? `已收回 ${added} 筆教師填報，` : '無新填報，') + '已用最新課表更新共享檔（含推送刪除）' + (removedExpired ? `，清除 ${removedExpired} 筆過期` : '') + (newShared ? `，補分享給 ${newShared} 位新教師` : '');
+    const gotAny = added || addedR;
+    let msg = (gotAny ? `已收回 ${added} 筆代課、${addedR} 筆調課，` : '無新填報，') + '已用最新課表更新共享檔（含推送刪除）' + (removedExpired ? `，清除 ${removedExpired} 筆過期` : '') + (newShared ? `，補分享給 ${newShared} 位新教師` : '');
     if (failed.length) openModal({ title: '已收回並重新開放（部分分享失敗）', body: `<p style="margin-top:0">${esc(msg)}。以下分享失敗：</p><pre style="white-space:pre-wrap;word-break:break-all;background:#f4f4f5;padding:10px;border-radius:8px;font-size:12px">${esc(failed.join('\n'))}</pre>` });
     else toast(msg);
   } catch (e) {
@@ -4571,21 +4602,23 @@ async function collectSubst() {
 }
 function substShareModal() {
   const ss = state.substShare;
-  const url = location.origin + location.pathname + '?subst=1';
+  const base = location.origin + location.pathname;
+  const substUrl = base + '?subst=1', swapUrl = base + '?swap=1';
   const withEmail = state.teachers.filter(t => t.email && /@/.test(t.email));
   const shareCount = ss && ss.sharedEmails ? ss.sharedEmails.length : 0;
   const body = ss
     ? `<div class="total-badge ok">已開放 · 已分享給 ${shareCount} 位教師</div>
-       <p style="margin:8px 0"><b>把這個代課填報連結給教師：</b><br><code style="user-select:all;word-break:break-all">${esc(url)}</code></p>
-       <p style="color:var(--muted);margin:8px 0">教師用<b>自己的 Google 帳號（學校或 Gmail 皆可）</b>登入 → Picker 選這份代課檔 → 看全部代課、可<b>新增自己的</b>（不可刪改他人）。<b>新增了教師（或臨時代課老師）→ 在③教師補其 Email → 按下方「收回代課」即會補分享給新加入者。</b></p>
+       <p style="margin:8px 0"><b>代課填報連結：</b><br><code style="user-select:all;word-break:break-all">${esc(substUrl)}</code></p>
+       <p style="margin:8px 0"><b>調課填報連結：</b><br><code style="user-select:all;word-break:break-all">${esc(swapUrl)}</code></p>
+       <p style="color:var(--muted);margin:8px 0">兩個連結<b>共用同一份線上檔</b>（含最新課表＋代課＋調課）。教師用<b>自己的 Google 帳號（學校或 Gmail 皆可）</b>登入 → Picker 選這份檔：代課連結安排<b>找人代課</b>、調課連結把課<b>對調</b>到別時段，皆<b>只能新增自己的</b>。<b>新增了教師 → 在③教師補其 Email → 按下方「收回」即會補分享給新加入者。</b></p>
        <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
-         <button class="btn" data-action="collect-subst">📥 收回代課（合併＋更新線上）</button>
+         <button class="btn" data-action="collect-subst">📥 收回代課／調課（合併＋更新線上）</button>
        </div>
-       <p class="hint" style="color:var(--muted);margin:8px 0 0">「收回代課」會：把教師新填的代課合併回來 → 用<b>目前最新課表</b>覆蓋共享檔（已收回的代課保留、課表更新同步給教師端、<b>你刪除過的代課會一併從線上移除且不再合併回來</b>）→ <b>若有截止日已過的代課會先問你要不要清除</b> → 補分享給新填 Email 的教師。</p>`
-    : `<p style="margin-top:0">在你的雲端硬碟建立一份「代課填報」共享檔（含目前課表快照），<b>逐位分享給有填 Email 的教師</b>（學校帳號或個人 Gmail 皆可）；教師用連結登入查看全部代課、<b>新增</b>自己的代課安排，你再「收回」合併回來。</p>
-       <p style="color:var(--muted)">目前有 Email 的教師：<b>${withEmail.length}</b> 位。無校帳號的臨時代課老師，用個人 Gmail 也可以（在③教師填其 Gmail）。教師端<b>只能新增</b>、不能刪改他人；刪除代課仍只由你在此頁做。</p>
-       <button class="btn" data-action="open-subst">☁️ 開放代課填報（分享給 ${withEmail.length} 位）</button>`;
-  openModal({ title: '線上代課填報（逐位 Email 分享）', wide: true, body });
+       <p class="hint" style="color:var(--muted);margin:8px 0 0">「收回」會：把教師新填的<b>代課與調課一起</b>合併回來 → 用<b>目前最新課表</b>覆蓋共享檔（已收回的保留、課表更新同步給教師端、<b>你刪除過的代課／調課會一併從線上移除且不再合併回來</b>）→ <b>若有截止日已過的代課會先問你要不要清除</b> → 補分享給新填 Email 的教師。因為兩端共用同一份檔，收回一次即同步更新代課與調課兩端，教師隨時看到的都是整合後的最新課表。</p>`
+    : `<p style="margin-top:0">在你的雲端硬碟建立<b>一份</b>「代課／調課填報」共享檔（含目前課表快照），<b>逐位分享給有填 Email 的教師</b>（學校帳號或個人 Gmail 皆可）；教師用連結登入：代課連結<b>找人代課</b>、調課連結把課<b>對調</b>，你再「收回」把兩者一起合併回來。<b>代課與調課共用同一份檔，永遠整合一致。</b></p>
+       <p style="color:var(--muted)">目前有 Email 的教師：<b>${withEmail.length}</b> 位。無校帳號的臨時代課老師，用個人 Gmail 也可以（在③教師填其 Gmail）。教師端<b>只能新增自己的</b>、不能刪改他人；刪除仍只由你在此頁做。</p>
+       <button class="btn" data-action="open-subst">☁️ 開放代課／調課填報（分享給 ${withEmail.length} 位）</button>`;
+  openModal({ title: '線上代課／調課填報（共用一份檔・逐位 Email 分享）', wide: true, body });
 }
 // 教師 kiosk：登入 → Picker 開共享代課檔 → 載入為 state
 async function substKioskStart() {
@@ -4648,6 +4681,67 @@ function viewSubstKiosk() {
       <h3 style="margin-top:0">找不到你的教師資料</h3>
       <p style="color:var(--muted)">你登入的帳號 <b>${esc(substMyEmail || '')}</b> 不在教師名單中，無法對應到你的課表。<br>請聯絡排課老師，到「③ 教師」把<b>這個 Email</b> 填到你的教師資料後，再重新開啟此連結。</p></div></div>`;
   return banner + viewSubst();
+}
+
+/* ==========================================================================
+   v12.37 線上調課填報 kiosk（?swap）——與代課共用「同一份」共享檔（SUBST_FMT 快照含
+   substitutions＋reschedules＋課表）。教師登入→開同一份檔→只安排自己的調課、append-only 送出。
+   收回（collectSubst）會同時合併代課與調課、並用最新快照覆蓋整份檔，兩端永遠整合一致。
+   ========================================================================== */
+// 教師 kiosk：登入 → Picker 開共享檔 → 載入為 state（含最新代課＋調課）
+async function swapKioskStart() {
+  try {
+    toast('登入 Google…'); const token = await getFillToken('');
+    const info = await fillUserInfo(); swapMyEmail = (info.email || '').trim(); swapMyName = info.name || '';
+    const fileId = await pickFillFile(token);
+    if (!fileId) return;
+    const obj = JSON.parse(await fillDownloadText(fileId));
+    if (obj.fmt !== SUBST_FMT || !obj.state) { toast('這不是代課／調課填報檔'); return; }
+    swapFileId = fileId; state = obj.state;
+    if (!Array.isArray(state.substitutions)) state.substitutions = [];
+    if (!Array.isArray(state.reschedules)) state.reschedules = [];
+    normalizeAllSubst();
+    if (!state.settings) state.settings = { periods: [], days: [1, 2, 3, 4, 5] };
+    try { applyBandSync(); } catch (e) { }   // 重建學段合成協同群組（供對調範圍判定）
+    swapEditableIds = new Set(); reschedOpenId = null; reschedDraft = null;
+    const em = (swapMyEmail || '').trim().toLowerCase();
+    const me = em ? state.teachers.find(t => (t.email || '').trim().toLowerCase() === em) : null;
+    swapMyTeacherId = me ? me.id : ''; swapNoMatch = !me;
+    if (me) state.reschedules.forEach(r => { if (r && (r.createdByEmail || '').trim().toLowerCase() === em) swapEditableIds.add(r.id); });   // 自己送出過的可續編
+    currentTab = 'reschedule'; render();
+  } catch (e) { toast('開啟失敗：' + e.message); }
+}
+// 教師 kiosk：送出「自己這一筆調課」到雲端（重讀最新、只 upsert 自己這筆，不動他人／不動代課）
+async function swapSubmit(rec) {
+  if (!rec) return;
+  try {
+    toast('送出中…');
+    let obj; try { obj = JSON.parse(await fillDownloadText(swapFileId)); } catch (e) { obj = { fmt: SUBST_FMT, ver: 1, state: {} }; }
+    obj.state = obj.state || {}; const list = Array.isArray(obj.state.reschedules) ? obj.state.reschedules : [];
+    const clean = { ...rec, createdByEmail: swapMyEmail, createdByName: swapMyName };
+    const i = list.findIndex(x => x.id === rec.id);
+    if (i >= 0) list[i] = clean; else list.push(clean);
+    obj.state.reschedules = list;
+    await drivePutJson('', null, JSON.stringify(obj), swapFileId);
+    const li = (state.reschedules || []).findIndex(x => x.id === rec.id);   // 同步反映到本地快照
+    if (li >= 0) state.reschedules[li] = clean; else (state.reschedules = state.reschedules || []).push(clean);
+    swapEditableIds.add(rec.id); reschedOpenId = null; reschedDraft = null; render();
+    toast('已送出到雲端，排課老師收回後即生效（可再調整後重送）');
+  } catch (e) { toast('送出失敗：' + e.message); }
+}
+function viewSwapKiosk() {
+  if (swapEnded) return `<div class="card"><div class="card-body" style="text-align:center;padding:48px 20px">
+      <h2 style="margin-top:0">✅ 調課填報已結束</h2><p style="color:var(--muted)">你可以直接關閉此分頁。</p></div></div>`;
+  if (!swapFileId) return `<div class="page-head"><h2>🔀 線上調課填報</h2></div>
+    <div class="card"><div class="card-body">
+      <p>用<b>你自己的 Google 帳號</b>（學校或 Gmail 皆可）登入，開啟排課老師分享的<b>代課／調課填報檔</b>（與代課同一份）。系統會以你的帳號 Email 對應你本人，調出<b>你自己的課表</b>，讓你把請假期間的課<b>對調</b>到其他時段。</p>
+      <button class="btn" data-action="swap-login">用 Google 登入並開啟</button></div></div>`;
+  const banner = `<div class="lock-banner no-print"><span>🔀 我的調課填報｜${esc(swapMyName || swapMyEmail || '')}</span>
+      <button class="ghost" data-action="swap-kiosk-exit">完成／關閉</button></div>`;
+  if (swapNoMatch) return banner + `<div class="card"><div class="card-body" style="text-align:center;padding:40px 20px">
+      <h3 style="margin-top:0">找不到你的教師資料</h3>
+      <p style="color:var(--muted)">你登入的帳號 <b>${esc(swapMyEmail || '')}</b> 不在教師名單中，無法對應到你的課表。<br>請聯絡排課老師，到「③ 教師」把<b>這個 Email</b> 填到你的教師資料後，再重新開啟此連結。</p></div></div>`;
+  return banner + viewReschedule();
 }
 
 // v09.18 班級簡稱：去掉「年級／年／班」，如 六年忠班→六忠、一年甲班→一甲（教師總表格內用）
@@ -5599,9 +5693,10 @@ const clickHandlers = {
   'resched-master-print': () => reschedMasterPrint(),
   'resched-del': el => {
     const id = el.dataset.id; const deps = reschedDependents(id);
-    if (!deps.length) { confirmDelete('刪除此調課記錄？', () => { state.reschedules = (state.reschedules || []).filter(r => r.id !== id); }); return; }
+    const tomb = () => { if (!Array.isArray(state.reschedDeleted)) state.reschedDeleted = []; if (!state.reschedDeleted.includes(id)) state.reschedDeleted.push(id); };   // v12.37 墓碑：收回時不再合併回來
+    if (!deps.length) { confirmDelete('刪除此調課記錄？', () => { state.reschedules = (state.reschedules || []).filter(r => r.id !== id); tomb(); }); return; }
     const names = deps.map(r => teacherName(r.teacherId) || '（無名）').join('、');
-    openModal({ title: '刪除調課', body: `<p>確定刪除此調課記錄？</p><p style="color:var(--warn)">⚠ 有 <b>${deps.length}</b> 筆<b>較晚建立</b>的調課（${esc(names)}）建立在這筆之上，刪除後它們的落點可能失準，建議刪除後逐一檢視／重新調整。</p>`, saveLabel: '仍要刪除', onSave: () => { state.reschedules = (state.reschedules || []).filter(r => r.id !== id); save(); render(); return true; } });
+    openModal({ title: '刪除調課', body: `<p>確定刪除此調課記錄？</p><p style="color:var(--warn)">⚠ 有 <b>${deps.length}</b> 筆<b>較晚建立</b>的調課（${esc(names)}）建立在這筆之上，刪除後它們的落點可能失準，建議刪除後逐一檢視／重新調整。</p>`, saveLabel: '仍要刪除', onSave: () => { state.reschedules = (state.reschedules || []).filter(r => r.id !== id); tomb(); save(); render(); return true; } });
   },
   'resched-print': el => reschedPrint(el.dataset.id),
   'resched-pick-src': el => { reschedSyncForm(); const d = reschedDraft; if (!d) return; d.picking = { seedClassId: el.dataset.class, aDate: el.dataset.date, src: { day: +el.dataset.day, period: el.dataset.period } }; d.pickWeek = 0; render(); },
@@ -5668,6 +5763,7 @@ const clickHandlers = {
     const editing = reschedOpenId && reschedOpenId !== 'new' ? (state.reschedules || []).find(r => r.id === reschedOpenId) : null;
     const rec = { id: editing ? editing.id : uid(), createdAt: editing ? editing.createdAt : new Date().toISOString(), teacherId: d.teacherId, leaveStart: d.leaveStart, leaveEnd: d.leaveEnd, note: (d.note || '').trim(), swaps: d.swaps.map(sw => ({ aDate: sw.aDate, a: sw.a, bDate: sw.bDate, b: sw.b, seedClassId: sw.seedClassId, classIds: sw.classIds })) };
     const commit = () => {
+      if (swapKiosk) { swapSubmit(rec); return; }   // v12.37 教師端：append-only 送到共享檔（不寫本機）
       if (editing) { Object.assign(editing, rec); } else { (state.reschedules = state.reschedules || []).push(rec); }
       save(); reschedOpenId = null; reschedDraft = null; render(); toast(editing ? '已更新調課' : '已建立調課');
     };
@@ -5934,6 +6030,8 @@ const clickHandlers = {
   'subst-login': () => substKioskStart(),
   'subst-submit': el => substSubmit(substById(el.dataset.id)),
   'subst-kiosk-exit': () => { substEnded = true; render(); try { window.close(); } catch (e) {} },
+  'swap-login': () => swapKioskStart(),
+  'swap-kiosk-exit': () => { swapEnded = true; render(); try { window.close(); } catch (e) {} },
 };
 
 const changeHandlers = {
@@ -6034,7 +6132,7 @@ function bindGlobal() {
   }, true);
   document.addEventListener('change', e => { const el = e.target.closest('[data-change]'); if (!el) return; const fn = changeHandlers[el.dataset.change]; if (fn) fn(el, e); });
   document.addEventListener('keydown', e => {   // v09.11 排課復原：Ctrl+Z 復原、Ctrl+Y/Ctrl+Shift+Z 重做（僅④排課、非輸入中、非 kiosk）
-    if (kioskFill || substKiosk || currentTab !== 'schedule' || lockMode) return;
+    if (kioskFill || substKiosk || swapKiosk || currentTab !== 'schedule' || lockMode) return;
     if (/^(INPUT|TEXTAREA|SELECT)$/.test((e.target.tagName || '')) || e.target.isContentEditable) return;
     if (!(e.ctrlKey || e.metaKey)) return;
     const k = e.key.toLowerCase();
@@ -6102,6 +6200,7 @@ async function init() {
   if (!Array.isArray(state.substitutions)) state.substitutions = [];                          // v09.45 代課安排
   if (!Array.isArray(state.substDeleted)) state.substDeleted = [];                            // v10.12 代課刪除墓碑
   if (!Array.isArray(state.reschedules)) state.reschedules = [];                              // v12.17 調課（限期對調）
+  if (!Array.isArray(state.reschedDeleted)) state.reschedDeleted = [];                        // v12.37 調課刪除墓碑（線上收回略過）
   state.reschedules = state.reschedules.filter(r => r && Array.isArray(r.swaps) && r.swaps.every(sw => sw && sw.aDate && sw.bDate));   // v12.25 清除舊 weekday 式調課記錄（改日期式）
   normalizeAllSubst();                                                                        // v10.06 代課日期遷移（date→startDate/endDate）
   if (typeof state.domainsConfirmed !== 'boolean') state.domainsConfirmed = state.subjects.length > 0; // v09.20 領域→科目整合閘門（既有已建科目者視為已完成，不擋）
@@ -6124,6 +6223,7 @@ async function init() {
   const substMode = params.has('subst');                                   // v10.01 代課填報入口（排課老師發的連結）
   if (fillMode) { fillLinkMode = true; setKiosk(true); }                    // v09.05/07 導師 kiosk：只顯示填課介面；連結進入者離開＝結束、不進系統
   else if (substMode) { substLinkMode = true; setSubstKiosk(true); }        // v10.01 代課 kiosk：只顯示代課填報；離開＝結束、不進系統
+  else if (params.has('swap')) { swapLinkMode = true; setSwapKiosk(true); } // v12.37 調課 kiosk：只顯示調課填報；共用同一份線上檔
   else if (hadOldData) upgradeNoticeModal();                              // 舊版同仁：改版通知
   else if (!state.setupSeen) { state.setupSeen = true; save(); setupModal(); } // 全新安裝：初次設定精靈（校名/學年度/代號）→ 內部再串使用說明
   else if (!state.helpSeen) { helpModal(); state.helpSeen = true; save(); } // 新同仁：使用說明
