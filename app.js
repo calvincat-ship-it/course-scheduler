@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v12.29';
+const APP_VERSION = 'v12.30';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -3589,17 +3589,22 @@ function reschedPickPanel(d) {
   const wdays = weekSchoolDays(targetMonday);
   const weekBtns = RESCHED_WEEK_OFFSETS.map(off => `<button class="ghost xs resched-wk${off === wk ? ' active' : ''}" data-action="resched-week" data-w="${off}">${RESCHED_WEEK_LABEL[off]}</button>`).join(' ');
   const grid = reschedWeekPickGridHTML(seedClassId, src, aDate, d.teacherId, targetMonday, d.swaps);
-  return `<div class="resched-summary">為 <b>${esc(cls)} ${esc(subjectName(srcSid))}</b>（${esc(fmtMD(aDate))} ${esc(DAY_LABELS[src.day])} ${esc(periodLabel(src.period))}）挑一個要<b>對調</b>的時段：點<span style="color:var(--ok)">綠色</span>格。<span style="color:var(--muted)">（課表已套用你前面已排的調課）</span> <button class="ghost xs" data-action="resched-cancel-pick">取消選擇</button></div>
+  return `<div class="resched-summary">為 <b>${esc(cls)} ${esc(subjectName(srcSid))}</b>（${esc(fmtMD(aDate))} ${esc(DAY_LABELS[src.day])} ${esc(periodLabel(src.period))}）挑一個要<b>對調</b>的時段：點<span style="color:var(--ok)">綠色</span>格。<span style="color:var(--muted)">（課表已套用所有已建立的調課後內容）</span> <button class="ghost xs" data-action="resched-cancel-pick">取消選擇</button></div>
     <div style="margin:10px 0 6px;display:flex;align-items:center;gap:8px;flex-wrap:wrap"><b>對調到：</b>${weekBtns}<span style="color:var(--muted)">${esc(fmtMD(targetMonday))}~${esc(fmtMD(wdays[4].date))}</span></div>
     <div class="grid-wrap">${grid}</div>
-    <div class="mx-legend" style="margin-top:8px">🟦 來源　🟩 可對調　⬜ 不可對調　·　⚠放寬項　·　⏳本人任課·鎖定　·　🔒 前一筆調課已用（🔀＝已被前面調課換過）</div>`;
+    <div class="mx-legend" style="margin-top:8px">🟦 來源　🟩 可對調　⬜ 不可對調　·　⚠放寬項　·　⏳本人任課·鎖定　·　🔒 已被其他調課占用（🔀＝已被調課換過內容）</div>`;
 }
-// 視覺式：某週課表格（欄＝該週日期）；draftSwaps＝草稿中已排的調課→累積套用(顯示換過後內容)＋擋已用格
+// 視覺式：某週課表格（欄＝該週日期）。疊加「其他已存調課記錄＋本次草稿」→格子顯示所有調課後的實際內容，並擋掉已被占用的格。
 function reschedWeekPickGridHTML(seedClassId, src, aDate, teacherId, monday, draftSwaps) {
   const wdays = weekSchoolDays(monday); const c = classById(seedClassId); const g = classGrade(c);
-  const draftRec = { swaps: draftSwaps || [] };
-  const usedSet = new Set();   // 已被前面草稿調課用掉的 (date|period) 端點（含 seedClass 範圍）
-  (draftSwaps || []).forEach(sw => { if (!(sw.classIds || []).includes(seedClassId)) return; usedSet.add(sw.aDate + '|' + sw.a.period); usedSet.add(sw.bDate + '|' + sw.b.period); });
+  // 疊加所有調課：其他已建立記錄（排除編輯中的）＋本次草稿，確保顯示與占用都反映「所有調課後」的實況（跨記錄）。
+  const editId = (reschedOpenId && reschedOpenId !== 'new') ? reschedOpenId : null;
+  const otherSwaps = [];
+  (state.reschedules || []).forEach(r => { if (editId && r.id === editId) return; (r.swaps || []).forEach(sw => otherSwaps.push(sw)); });
+  const allSwaps = otherSwaps.concat(draftSwaps || []);
+  const draftRec = { swaps: allSwaps };
+  const usedSet = new Set();   // 已被其他調課/草稿用掉的 (date|period) 端點（限 seedClass 範圍）
+  allSwaps.forEach(sw => { if (!(sw.classIds || []).includes(seedClassId)) return; usedSet.add(sw.aDate + '|' + sw.a.period); usedSet.add(sw.bDate + '|' + sw.b.period); });
   const legalByDate = {}; wdays.forEach(w => { const m = {}; legalTargetsOnDate(seedClassId, src, aDate, teacherId, w.date).forEach(t => { m[t.period] = t; }); legalByDate[w.date] = m; });
   let html = `<table class="timetable"><thead><tr><th class="period-th">節次</th>${wdays.map(w => `<th>${DAY_LABELS[w.wd]}<small>${esc(fmtMD(w.date))}</small></th>`).join('')}</tr></thead><tbody>`;
   for (const p of state.settings.periods) {
@@ -3616,7 +3621,7 @@ function reschedWeekPickGridHTML(seedClassId, src, aDate, teacherId, monday, dra
       const tinfo = legalByDate[w.date][p.id];
       let clsN = 'resched-cell', act = '', title = '', warnMark = '';
       if (isSrc) { clsN += ' src'; }
-      else if (used) { clsN += ' illegal'; warnMark = '<span class="resched-warnmark">🔒</span>'; title = '此時段已被前一筆調課使用'; }
+      else if (used) { clsN += ' illegal'; warnMark = '<span class="resched-warnmark">🔒</span>'; title = '此時段已被其他調課占用（顯示為調課後內容，不可重複調課）'; }
       else if (tinfo && tinfo.legal) { clsN += ' legal'; act = `data-action="resched-pick-target" data-date="${esc(w.date)}" data-day="${w.wd}" data-period="${esc(p.id)}"`; const ws = tinfo.warnings || []; if (ws.length) { clsN += ' warn'; warnMark = '<span class="resched-warnmark">⚠</span>'; title = ws.join('；'); } }
       else if (tinfo && tinfo.stillAbsent) { clsN += ' illegal'; warnMark = '<span class="resched-warnmark">⏳</span>'; title = tinfo.reason; }
       else { clsN += ' illegal'; title = (tinfo && tinfo.reason) || '不可對調'; }
@@ -5400,6 +5405,9 @@ const clickHandlers = {
     const bDate = el.dataset.date, day = +el.dataset.day, period = el.dataset.period;
     const { seedClassId, aDate, src } = d.picking;
     if (d.swaps.some(sw => (sw.classIds || []).includes(seedClassId) && ((sw.aDate === bDate && sw.a.period === period) || (sw.bDate === bDate && sw.b.period === period)))) { toast('此時段已被前一筆調課使用'); return; }
+    // 跨記錄防呆：目標格已是其他調課記錄的端點（同日同節）→擋，避免疊出衝突（顯示已顯示為調課後內容）
+    const editId2 = (reschedOpenId && reschedOpenId !== 'new') ? reschedOpenId : null;
+    if (reschedSwapForSlotDate(seedClassId, bDate, day, period, editId2)) { toast('此時段已被其他調課占用，不可重複調課'); return; }
     const t = legalTargetsOnDate(seedClassId, src, aDate, d.teacherId, bDate).find(x => x.occupied && x.period === period);
     if (!t || !t.legal) { toast(t ? ('不可對調：' + (t.reason || '')) : '不可對調'); return; }
     reschedSyncForm();

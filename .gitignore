@@ -12,3 +12,4 @@ tools/report.txt
 # _diag.json＝目前固定測試檔（和平分校示範檔），供瀏覽器預覽 fetch 用
 _diag.json
 _test-fixture*.json
+_user-*.json

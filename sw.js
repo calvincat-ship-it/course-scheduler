@@ -1,4 +1,4 @@
-const CACHE_NAME = 'course-scheduler-v12.29';
+const CACHE_NAME = 'course-scheduler-v12.30';
 const ASSETS = [
   './',
   './index.html',
