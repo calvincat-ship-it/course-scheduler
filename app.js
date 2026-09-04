@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v12.39';
+const APP_VERSION = 'v12.40';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -3459,10 +3459,32 @@ function busyTeachersAt(day, period) {
   }
   return set;
 }
+// 某「具體日期」的(day,period)實際正在上課（忙碌）的教師 id 集合＝逐班以 composeResolve 套調課後的真實內容，
+// 而非基礎課表。有調課的日子才能精準判斷誰真的有空堂。swaps 預設為全部調課(reschedMasterRec)。
+function busyTeachersOnDate(date, day, period, swaps) {
+  const set = new Set();
+  for (const c of state.classes) {
+    const rp = composeResolve(c.id, date, Number(day), period, swaps || []);
+    slotAssignments(slotKey(c.id, rp.day, rp.period)).forEach(a => a.teacherId && set.add(a.teacherId));
+  }
+  return set;
+}
+// 本代課格(星期,節)對應的具體日期清單：單週或指定週→該日一天；多週彙總(無單一日期)→區間內所有該星期幾的上課日
+// （彙總檢視時取各日忙碌的「聯集」＝較保守，避免把某週實際有課的老師誤列為空堂；該週可再用單週覆蓋處理）。
+function substCellDates(rec, weekTab, day) {
+  const one = substCellDate(rec, weekTab, day);
+  if (one) return [one];
+  if (!rec || !rec.startDate || !rec.endDate) return [];
+  return schoolDatesInRange(rec.startDate, rec.endDate).filter(dt => weekdayOf(dt) === Number(day));
+}
 // 某(day,period) 可代課的教師：不上課、非被代課者、未在本記錄同節被指派為別格代課、無跨紀錄互斥。
 // v12.33：「該節設不排課時段」改為不排除，仍可選、由 UI 標⚠提醒（isUnavailableAt 判定）。
+// v12.40：忙碌與否改以「該日調課後的實際課表」判定（有調課的日子更精準）；無日期資訊(舊資料)→退回基礎課表。
 function freeTeachersAt(day, period, rec, weekIdx = null) {
-  const busy = busyTeachersAt(day, period);
+  const dates = substCellDates(rec, weekIdx, day);
+  const busy = dates.length
+    ? dates.reduce((s, d) => { busyTeachersOnDate(d, day, period, reschedMasterRec().swaps).forEach(id => s.add(id)); return s; }, new Set())
+    : busyTeachersAt(day, period);
   const usedThisDP = new Set();
   // v10.16 同記錄同(星期,節)已指派別格者，依「目前檢視的週」的有效指派判定
   if (rec) { const eff = effAssign(rec, weekIdx); for (const k in eff) { const [, d, p] = k.split('|'); if (d === String(day) && p === String(period) && eff[k]) usedThisDP.add(eff[k]); } }
