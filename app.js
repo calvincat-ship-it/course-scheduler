@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v12.37';
+const APP_VERSION = 'v12.38';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -927,8 +927,9 @@ function viewHome() {
     <h3 style="margin:0 0 10px">⚡ 快速入口</h3>
     <div class="home-quick">
       <button class="btn" data-action="goto" data-goto="output">🖨 課表輸出</button>
-      <button class="btn ghost" data-action="goto" data-goto="subst">🔁 代課 / 線上填報</button>
+      <button class="btn ghost" data-action="goto" data-goto="subst">🔁 代課</button>
       <button class="btn ghost" data-action="goto" data-goto="reschedule">🔀 調課</button>
+      <button class="btn ghost" data-action="subst-share-manage">☁️ 線上填報${state.substShare ? '（已開放）' : ''}</button>
       <button class="btn ghost" data-action="goto" data-goto="settings">⚙️ 設定</button>
       <button class="btn ghost" data-action="help">❓ 使用說明</button>
     </div>
@@ -3993,7 +3994,7 @@ function viewSubst() {
 }
 
 function substList() {
-  const shareBtn = substKiosk ? '' : `<button class="ghost" data-action="subst-share-manage">☁️ 線上代課填報${state.substShare ? '（已開放）' : ''}</button>`;
+  const shareBtn = '';   // v12.38 線上填報開放視窗改由首頁「☁️ 線上填報」快速入口進入（代課／調課共用一份檔）
   const masterBtn = substKiosk ? '' : `<button class="ghost" data-action="subst-submaster">🧑‍🏫 代課老師合併總表</button>`;
   const addLabel = substKiosk ? '＋ 新增我的代課' : '＋ 新增代課';
   const head = subHead(`🔄 ${substKiosk ? '我的代課' : '代課'}`, `${masterBtn}${shareBtn}<button class="btn" data-action="subst-add">${addLabel}</button>`) +
