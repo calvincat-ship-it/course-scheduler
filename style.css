@@ -79,6 +79,19 @@ details.settings-fold > summary { cursor: pointer; font-weight: 700; font-size: 
 details.settings-fold > summary::-webkit-details-marker { display: none; }
 details.settings-fold > summary::before { content: '▸'; color: var(--muted); font-size: 13px; transition: transform .15s; }
 details.settings-fold[open] > summary::before { transform: rotate(90deg); }
+/* v12.42 設定頁各區塊：可折疊的卡片式面板（標題＝摺疊標頭） */
+details.set-card { border: 1px solid var(--line); border-radius: 16px; background: var(--surface); box-shadow: var(--shadow); margin-bottom: 14px; overflow: hidden; }
+details.set-card > summary { cursor: pointer; font-weight: 700; font-size: 15px; padding: 14px 16px; user-select: none; list-style: none; display: flex; align-items: center; gap: 10px; }
+details.set-card > summary::-webkit-details-marker { display: none; }
+details.set-card > summary::before { content: '▸'; color: var(--muted); font-size: 13px; transition: transform .15s; }
+details.set-card[open] > summary::before { transform: rotate(90deg); }
+details.set-card[open] > summary { border-bottom: 1px solid var(--line); }
+details.set-card > summary:hover { background: #f8fafc; }
+.set-card-body { padding: 16px; }
+.set-card-body > h5:first-child, .set-card-body > *:first-child { margin-top: 0; }
+.set-card-body .set-sub { padding: 12px 0; border-top: 1px solid var(--line); }
+.set-card-body .set-sub:first-child { padding-top: 0; border-top: none; }
+.set-card-body .set-sub h5 { margin: 0 0 6px; font-size: 14px; }
 /* 領域節數 body 比照科目卡片：下陷凹槽，內部兩張卡片懸浮 */
 .domain-fold-body { padding: 20px 20px 22px; background: #e7edf6; box-shadow: inset 0 8px 18px rgba(15, 23, 42, .15), inset 0 2px 0 rgba(148, 163, 184, .25); }
 .domain-fold-body > .card, .domain-fold-body .card {
