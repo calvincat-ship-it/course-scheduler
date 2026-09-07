@@ -1,4 +1,4 @@
-const CACHE_NAME = 'course-scheduler-v12.49';
+const CACHE_NAME = 'course-scheduler-v12.50';
 const ASSETS = [
   './',
   './index.html',
@@ -7,6 +7,9 @@ const ASSETS = [
   './app.js',
   './manifest.json',
   './icons/icon.svg',
+  './icons/apple-touch-icon.png',
+  './icons/icon-192.png',
+  './icons/icon-512.png',
 ];
 
 self.addEventListener('install', (event) => {
