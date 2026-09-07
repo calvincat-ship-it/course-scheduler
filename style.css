@@ -298,8 +298,8 @@ button.ghost.xs { padding: 2px 8px; font-size: 12px; min-height: 0; }
 .cell-lesson.conflict { outline: 2px solid var(--danger); box-shadow: inset 0 0 0 2px var(--danger); }
 /* 已填回收的導師自編格：平面（維持底色與白虛線圖樣，不下挖） */
 .cell-lesson.self-designed { outline: 2px dashed rgba(255, 255, 255, .85); outline-offset: -4px; }
-.lock-banner { display: flex; align-items: center; gap: 12px; background: #fef3c7; color: #92400e; border: 1px solid #fcd34d; border-radius: 8px; padding: 10px 14px; font-weight: 600; margin-bottom: 12px; }
-.lock-banner span { flex: 1; }
+.lock-banner { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; background: #fef3c7; color: #92400e; border: 1px solid #fcd34d; border-radius: 8px; padding: 10px 14px; font-weight: 600; margin-bottom: 12px; }
+.lock-banner span { flex: 1 1 240px; }   /* 窄螢幕時保留文字寬度、按鈕自動換行，避免中文被壓成一字一行直排 */
 .schedule-layout.locked { grid-template-columns: 1fr; }
 td.cell { position: relative; }
 .lock-mark { position: absolute; top: 2px; right: 3px; font-size: 11px; z-index: 2; pointer-events: none; }
