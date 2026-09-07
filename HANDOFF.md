@@ -3,10 +3,20 @@
 > 收工時 Claude 更新這裡；開工時 Claude 先讀這裡。跟程式碼一起 git 同步。
 
 ## 最後更新
-- 時間：2026-09-07
+- 時間：2026-09-07（收工）
 - 機器：Desktop\claude code
-- 版本：**main = v12.44（已 push；GH Pages 依常規部署）**。schema 仍為 2、向下相容。
-- 狀態：本機 node --check + 預覽實測通過、無 console error、全部已 push main。**代課/調課線上填報（登入/選檔/填報/送出/收回合併）本次已真機驗證通過。**
+- 版本：**main = v12.51（已 push；GH Pages 依常規部署）**。schema 仍為 2、向下相容、新欄位皆 optional。
+- 狀態：本機 node --check + 桌機/手機(375) 預覽實測通過、無 console error、全部已 push main。**iOS 手機（Safari）線上填報（代課/調課 kiosk 登入→選檔→填報→送出）本次亦實機驗證通過。**
+
+## 本次區間做了什麼（v12.45–v12.51）＝使用說明補齊＋⭐首頁橫幅上傳＋iOS 相容
+> 完整索引見記憶 [[project_course_scheduler_architecture]] 的「v12.45–v12.51」段。
+- **v12.45 使用說明「① 科目」段補齊**：補 🧩快速範本(SUBJ_TEMPLATES)、預設教室(subject.roomId)、同學段相同節次(bandSync)、母語日淨空(dayExclusive)、末節傾向下拉；其餘段落比對後已涵蓋最新設計。
+- **⭐v12.47 首頁橫幅可上傳自訂圖片**（新功能，使用者確認 4:1＋裁切）：`state.settings.bannerImage`（data URL、選用欄、不動 schema、隨備份/雲端走）。裁切器 `openBannerCrop/initBannerCrop/applyBannerCrop`（4:1 框、pointer 拖曳、滑桿+滾輪縮放、cover 基準、邊界 clamp、輸出 1200×300 JPEG q0.85 ~20KB）。顯示 `.home-hero.has-banner`（圖 cover、校名疊左下+`.hh-scrim` 遮罩、備份鈕右上）。
+- **v12.48 橫幅鈕移「設定」子頁＋kiosk 橫幅**：首頁 hero 只留 💾備份；設定頁新增可折疊卡 `grp('banner',…)`（預覽+上傳/更換+移除+隱藏 `#bannerFile`）。線上填報代課(?subst)/調課(?swap) kiosk 頂端加 `kioskBanner()`（有圖用圖否則漸層、校名+學年度+「線上填報」、無鈕），登入/找不到教師/主畫面皆顯示。**⚠關鍵：`substContextState()` 補帶 `reportSchool`+`bannerImage`，否則 kiosk 拿不到橫幅。**
+- **v12.46 / v12.49 RWD 修**：(46) `.lock-banner` 手機文字被壓成一字直排→`flex-wrap:wrap`+span `flex:1 1 240px`。(49) `.home-hero.has-banner` 用 `aspect-ratio:4/1`+`min-height:150px` 在手機**橫向爆版**（min-height 反推寬度 150×4=600>螢幕）→改 `height:clamp(150px,24vw,300px)` 定高。
+- **v12.50 iOS 相容**：apple-touch-icon 原指 SVG（iOS 不支援→空白圖）→改 PNG；新增 apple PWA meta(capable/status-bar-style/title/mobile-web-app-capable)、manifest 補 PNG icons(192/512+maskable、留 svg)、sw ASSETS 補三張 PNG；`.subjh-card` border 補純色 fallback（color-mix 需 iOS16.2+）。**PNG 產生法＝PowerShell System.Drawing 依 icon.svg 已知矩形座標重繪 180/192/512（零 base64 轉貼、可靠可重用）**，檔在 `icons/apple-touch-icon.png`、`icon-192.png`、`icon-512.png`。
+- **v12.51 manifest orientation landscape→any**（手機直式不再鎖橫向）。
+- **踩雷**：預覽 pane 隱藏時 `window.innerWidth=0`、量任何寬度會全坍縮＝**量測假象非真 bug**（需 tabs_select+screenshot 讓 pane 顯示再量）；`initBannerCrop` 已加 `requestAnimationFrame` 防護（框寬為 0 時下一幀再試、避免裁出空白）。
 
 ## 本次區間做了什麼（v12.41–44）＝**線上填報多校區隔 ＋ Picker 踩雷修正**（皆已真機驗證）
 > 實機回饋：①教師開代課/調課連結時 Picker 列出所有 json（含導師填課 class- 檔）；②多校共用同一部署時 A 校教師不該看到他校填報檔。
