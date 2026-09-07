@@ -492,8 +492,10 @@ table.timetable td.cell.subst-cell-off { background: repeating-linear-gradient(4
 .home-hero .hh-backup:hover { background: rgba(255,255,255,.28); }
 
 /* 首頁自訂橫幅圖片模式 (v12.47)：圖片鋪滿 4:1、校名疊在底部並加深色遮罩確保可讀 */
-.home-hero.has-banner { position: relative; overflow: hidden; padding: 0; background-color: var(--brand-dark);
-  background-size: cover; background-position: center; background-repeat: no-repeat; aspect-ratio: 4 / 1; min-height: 150px; }
+/* 高度用 clamp 直接定（不用 aspect-ratio，避免 min-height 反推寬度超過手機螢幕→橫向爆版）；寬度鎖 100%、cover 填滿 */
+.home-hero.has-banner { position: relative; overflow: hidden; padding: 0; width: 100%; max-width: 100%; box-sizing: border-box;
+  background-color: var(--brand-dark); background-size: cover; background-position: center; background-repeat: no-repeat;
+  height: clamp(150px, 24vw, 300px); }
 .home-hero.has-banner .hh-scrim { position: absolute; inset: 0; pointer-events: none;
   background: linear-gradient(180deg, rgba(0,0,0,.30) 0%, rgba(0,0,0,0) 32%, rgba(0,0,0,0) 52%, rgba(0,0,0,.64) 100%); }
 .home-hero.has-banner .card-body { position: absolute; inset: 0; z-index: 1; padding: 14px 18px;
