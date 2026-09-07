@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v12.43';
+const APP_VERSION = 'v12.44';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -537,31 +537,31 @@ function loadPicker() {
     document.head.appendChild(s);
   });
 }
-// v12.41 query＝Picker 檔名搜尋字串（濾掉不相干的檔：導師填課只顯示 class-… 檔、代課調課只顯示「代課調課填報…」檔，
-// 且帶學校代號時只顯示本校檔，避免老師看到他校/他類的一堆檔）。title＝Picker 標題提示。
-async function pickFillFile(token, query, title) {
+// title＝Picker 標題（明確告知要選哪一份檔，取代不可靠的搜尋過濾）。
+// v12.44：不再用 view.setQuery 過濾——填報檔是「排課者建立、分享給老師」的檔（屬老師的『與我共用』而非
+// 『我的雲端硬碟』），Picker 搜尋只掃自己的雲端硬碟，會搜不到而顯示「No items matched your search」。
+// 改回顯示可存取的檔清單，並以標題引導＋選檔後驗證（fmt 檔格式＋學校代號，見 substFileSchoolOk）擋掉選錯。
+// 提供「與我共用」分頁，讓分享來的檔更好找。第二參數保留相容舊呼叫、目前不使用。
+async function pickFillFile(token, _reserved, title) {
   await loadPicker();
   return new Promise((resolve) => {
-    const view = new google.picker.DocsView(google.picker.ViewId.DOCS)
-      .setMimeTypes('application/json').setMode(google.picker.DocsViewMode.LIST);
-    // v12.43 只在 DocsView 上設搜尋字串（PickerBuilder 沒有 setQuery，之前誤呼叫導致「setQuery is not a function」）。
-    if (query && typeof view.setQuery === 'function') view.setQuery(query);   // 依檔名前綴/學校代號過濾
-    const picker = new google.picker.PickerBuilder()
+    const mk = viewId => new google.picker.DocsView(viewId).setMimeTypes('application/json').setMode(google.picker.DocsViewMode.LIST);
+    const builder = new google.picker.PickerBuilder()
       .setAppId(GOOGLE_PROJECT_NUMBER).setOAuthToken(token).setDeveloperKey(GOOGLE_API_KEY)
-      .addView(view).setTitle(title || '選擇你的班級填課檔（class-…）')
+      .setTitle(title || '選擇你的班級填課檔（class-…）')
       .setCallback((data) => {
         if (data.action === google.picker.Action.PICKED) resolve(data.docs[0].id);
         else if (data.action === google.picker.Action.CANCEL) resolve(null);
-      }).build();
-    picker.setVisible(true);
+      });
+    try { builder.addView(mk(google.picker.ViewId.SHARED_WITH_ME)); } catch (e) { }   // 分享來的檔在「與我共用」
+    builder.addView(mk(google.picker.ViewId.DOCS));   // 也保留一般瀏覽/搜尋（自己建的檔）
+    builder.build().setVisible(true);
   });
 }
 // 分享連結帶的學校辨識碼（＝代課檔名尾碼／填課檔名中段），供 kiosk Picker 過濾到本校檔。
 function schoolLinkToken() { const s = state.settings || {}; return `${s.schoolCode || 'msd9'}${s.reportYear || ''}`; }
-// 代課／調課填報檔的 Picker 搜尋字串：帶學校碼→只本校；否則退回泛用（仍濾掉 class- 填課檔）。
-function substPickQuery(token) { const t = (token || '').trim(); return (t && t !== '1') ? `代課調課填報-${t}` : '代課調課填報'; }
-// 導師填課檔的 Picker 搜尋字串：帶學校碼→只本校 class- 檔；否則泛用 class-。
-function fillPickQuery(token) { const t = (token || '').trim(); return (t && t !== '1') ? `class-${t}` : 'class-'; }
+// Picker 標題：明確告知教師要選哪一份檔（帶學校碼時直接寫出完整檔名，最好辨識）。
+function substPickTitle(token) { const t = (token || '').trim(); return (t && t !== '1') ? `請在「與我共用」選擇「代課調課填報-${t}.json」這份檔` : '請在「與我共用」選擇「代課調課填報…」開頭的檔'; }
 // 第二道保險：連結帶學校碼時，驗證教師實際選到的檔屬本校（Picker 搜尋比對不精準時仍擋掉他校檔）。舊連結(空/'1')→不限。
 function substFileSchoolOk(obj, token) {
   const t = (token || '').trim(); if (!t || t === '1') return true;
@@ -712,7 +712,7 @@ async function teacherFillStart() {
     if (!kioskFill) setKiosk(true);
     toast('登入 Google…'); const token = await getFillToken('');
     const myEmail = (await fillUserEmail()).trim().toLowerCase();
-    const fileId = await pickFillFile(token, fillPickQuery(fillLinkToken), '選擇你的班級填課檔（class-…）');
+    const fileId = await pickFillFile(token, null, '請在「與我共用」選擇你班級的填課檔（檔名 class-… 開頭）');
     if (!fileId) return;
     const obj = JSON.parse(await fillDownloadText(fileId));
     if (obj.fmt !== FILL_FMT) { toast('這不是填課檔（course-fill）'); return; }
@@ -4706,7 +4706,7 @@ async function substKioskStart() {
   try {
     toast('登入 Google…'); const token = await getFillToken('');
     const info = await fillUserInfo(); substMyEmail = (info.email || '').trim(); substMyName = info.name || '';
-    const fileId = await pickFillFile(token, substPickQuery(substLinkToken), '選擇「代課／調課填報」檔');
+    const fileId = await pickFillFile(token, null, substPickTitle(substLinkToken));
     if (!fileId) return;
     const obj = JSON.parse(await fillDownloadText(fileId));
     if (obj.fmt !== SUBST_FMT || !obj.state) { toast('這不是代課填報檔'); return; }
@@ -4775,7 +4775,7 @@ async function swapKioskStart() {
   try {
     toast('登入 Google…'); const token = await getFillToken('');
     const info = await fillUserInfo(); swapMyEmail = (info.email || '').trim(); swapMyName = info.name || '';
-    const fileId = await pickFillFile(token, substPickQuery(swapLinkToken), '選擇「代課／調課填報」檔');
+    const fileId = await pickFillFile(token, null, substPickTitle(swapLinkToken));
     if (!fileId) return;
     const obj = JSON.parse(await fillDownloadText(fileId));
     if (obj.fmt !== SUBST_FMT || !obj.state) { toast('這不是代課／調課填報檔'); return; }
