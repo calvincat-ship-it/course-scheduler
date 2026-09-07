@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v12.40';
+const APP_VERSION = 'v12.41';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -249,6 +249,7 @@ let substEditableIds = new Set();   // 本 session kiosk 新建、可編輯/送�
 let swapKiosk = false, swapLinkMode = false, swapEnded = false, swapFileId = null, swapMyEmail = '', swapMyName = '';
 let swapMyTeacherId = '', swapNoMatch = false, swapEditableIds = new Set();
 let fillEnded = false;    // v09.07 填課結束畫面旗標
+let fillLinkToken = '', substLinkToken = '', swapLinkToken = '';   // v12.41 連結帶的學校辨識碼（供 kiosk Picker 只顯示本校對應檔）
 let showLoadMatrix = false; // v09.12 ③教師「班×科配課矩陣」展開狀態（runtime）
 let fillProgress = null;    // v09.12 F③ 線上填課進度快取 {classId:{total,filled,submitted,submittedAt}}（runtime，按需重讀）
 let substOpenId = null;     // v09.45 代課頁：目前開啟編輯中的代課記錄 id（null＝顯示清單）
@@ -535,20 +536,37 @@ function loadPicker() {
     document.head.appendChild(s);
   });
 }
-async function pickFillFile(token) {
+// v12.41 query＝Picker 檔名搜尋字串（濾掉不相干的檔：導師填課只顯示 class-… 檔、代課調課只顯示「代課調課填報…」檔，
+// 且帶學校代號時只顯示本校檔，避免老師看到他校/他類的一堆檔）。title＝Picker 標題提示。
+async function pickFillFile(token, query, title) {
   await loadPicker();
   return new Promise((resolve) => {
     const view = new google.picker.DocsView(google.picker.ViewId.DOCS)
       .setMimeTypes('application/json').setMode(google.picker.DocsViewMode.LIST);
-    const picker = new google.picker.PickerBuilder()
+    if (query) view.setQuery(query);   // 依檔名前綴/學校代號過濾
+    const builder = new google.picker.PickerBuilder()
       .setAppId(GOOGLE_PROJECT_NUMBER).setOAuthToken(token).setDeveloperKey(GOOGLE_API_KEY)
-      .addView(view).setTitle('選擇你的班級填課檔（class-…）')
+      .addView(view).setTitle(title || '選擇你的班級填課檔（class-…）')
       .setCallback((data) => {
         if (data.action === google.picker.Action.PICKED) resolve(data.docs[0].id);
         else if (data.action === google.picker.Action.CANCEL) resolve(null);
-      }).build();
-    picker.setVisible(true);
+      });
+    if (query) builder.setQuery(query);   // 一併預填搜尋框，雙保險
+    builder.build().setVisible(true);
   });
+}
+// 分享連結帶的學校辨識碼（＝代課檔名尾碼／填課檔名中段），供 kiosk Picker 過濾到本校檔。
+function schoolLinkToken() { const s = state.settings || {}; return `${s.schoolCode || 'msd9'}${s.reportYear || ''}`; }
+// 代課／調課填報檔的 Picker 搜尋字串：帶學校碼→只本校；否則退回泛用（仍濾掉 class- 填課檔）。
+function substPickQuery(token) { const t = (token || '').trim(); return (t && t !== '1') ? `代課調課填報-${t}` : '代課調課填報'; }
+// 導師填課檔的 Picker 搜尋字串：帶學校碼→只本校 class- 檔；否則泛用 class-。
+function fillPickQuery(token) { const t = (token || '').trim(); return (t && t !== '1') ? `class-${t}` : 'class-'; }
+// 第二道保險：連結帶學校碼時，驗證教師實際選到的檔屬本校（Picker 搜尋比對不精準時仍擋掉他校檔）。舊連結(空/'1')→不限。
+function substFileSchoolOk(obj, token) {
+  const t = (token || '').trim(); if (!t || t === '1') return true;
+  const s = (obj && obj.state && obj.state.settings) || {};
+  const fileTok = `${s.schoolCode || 'msd9'}${s.reportYear || ''}`;
+  return !fileTok || fileTok === t;
 }
 
 /* ---------- F③ 排課者：開放 / 收回 ---------- */
@@ -657,7 +675,7 @@ function copyUnsubmittedList() {
 function fillManageModal() {
   const fs = state.fillShare;
   const targets = state.classes.filter(c => classSelfCells(c.id).length > 0);
-  const fillUrl = location.origin + location.pathname + '?fill=1';
+  const fillUrl = location.origin + location.pathname + '?fill=' + encodeURIComponent(schoolLinkToken());   // v12.41 帶學校代號→導師 Picker 只顯示本校 class- 檔
   const rowsOpen = fs && fs.files ? Object.keys(fs.files).map(cid => {
     const f = fs.files[cid]; const nm = (classById(cid) || {}).name || cid;
     return `<tr><td>${esc(nm)}</td><td>${esc(f.email)}</td><td><code>${esc(f.name || '')}</code></td></tr>`;
@@ -693,7 +711,7 @@ async function teacherFillStart() {
     if (!kioskFill) setKiosk(true);
     toast('登入 Google…'); const token = await getFillToken('');
     const myEmail = (await fillUserEmail()).trim().toLowerCase();
-    const fileId = await pickFillFile(token);
+    const fileId = await pickFillFile(token, fillPickQuery(fillLinkToken), '選擇你的班級填課檔（class-…）');
     if (!fileId) return;
     const obj = JSON.parse(await fillDownloadText(fileId));
     if (obj.fmt !== FILL_FMT) { toast('這不是填課檔（course-fill）'); return; }
@@ -4664,7 +4682,8 @@ async function collectSubst() {
 function substShareModal() {
   const ss = state.substShare;
   const base = location.origin + location.pathname;
-  const substUrl = base + '?subst=1', swapUrl = base + '?swap=1';
+  const tok = schoolLinkToken();   // v12.41 帶學校代號→教師 Picker 只顯示本校檔（他校/導師填課檔不再出現）
+  const substUrl = base + '?subst=' + encodeURIComponent(tok), swapUrl = base + '?swap=' + encodeURIComponent(tok);
   const withEmail = state.teachers.filter(t => t.email && /@/.test(t.email));
   const shareCount = ss && ss.sharedEmails ? ss.sharedEmails.length : 0;
   const body = ss
@@ -4686,10 +4705,11 @@ async function substKioskStart() {
   try {
     toast('登入 Google…'); const token = await getFillToken('');
     const info = await fillUserInfo(); substMyEmail = (info.email || '').trim(); substMyName = info.name || '';
-    const fileId = await pickFillFile(token);
+    const fileId = await pickFillFile(token, substPickQuery(substLinkToken), '選擇「代課／調課填報」檔');
     if (!fileId) return;
     const obj = JSON.parse(await fillDownloadText(fileId));
     if (obj.fmt !== SUBST_FMT || !obj.state) { toast('這不是代課填報檔'); return; }
+    if (!substFileSchoolOk(obj, substLinkToken)) { toast('你選到的檔案不是這個連結對應的學校，請重新選擇正確的「代課／調課填報」檔。'); return; }
     substFileId = fileId; state = obj.state;
     if (!Array.isArray(state.substitutions)) state.substitutions = [];
     if (!Array.isArray(state.reschedules)) state.reschedules = [];   // 相容舊快照；讓 kiosk 也能參照調課
@@ -4754,10 +4774,11 @@ async function swapKioskStart() {
   try {
     toast('登入 Google…'); const token = await getFillToken('');
     const info = await fillUserInfo(); swapMyEmail = (info.email || '').trim(); swapMyName = info.name || '';
-    const fileId = await pickFillFile(token);
+    const fileId = await pickFillFile(token, substPickQuery(swapLinkToken), '選擇「代課／調課填報」檔');
     if (!fileId) return;
     const obj = JSON.parse(await fillDownloadText(fileId));
     if (obj.fmt !== SUBST_FMT || !obj.state) { toast('這不是代課／調課填報檔'); return; }
+    if (!substFileSchoolOk(obj, swapLinkToken)) { toast('你選到的檔案不是這個連結對應的學校，請重新選擇正確的「代課／調課填報」檔。'); return; }
     swapFileId = fileId; state = obj.state;
     if (!Array.isArray(state.substitutions)) state.substitutions = [];
     if (!Array.isArray(state.reschedules)) state.reschedules = [];
@@ -6282,6 +6303,9 @@ async function init() {
   const params = new URLSearchParams(location.search);
   const fillMode = params.has('fill');                                     // v09.03 導師填課入口（排課老師發的連結）
   const substMode = params.has('subst');                                   // v10.01 代課填報入口（排課老師發的連結）
+  fillLinkToken = (params.get('fill') || '').trim();                        // v12.41 連結帶的學校辨識碼（Picker 過濾用）
+  substLinkToken = (params.get('subst') || '').trim();
+  swapLinkToken = (params.get('swap') || '').trim();
   if (fillMode) { fillLinkMode = true; setKiosk(true); }                    // v09.05/07 導師 kiosk：只顯示填課介面；連結進入者離開＝結束、不進系統
   else if (substMode) { substLinkMode = true; setSubstKiosk(true); }        // v10.01 代課 kiosk：只顯示代課填報；離開＝結束、不進系統
   else if (params.has('swap')) { swapLinkMode = true; setSwapKiosk(true); } // v12.37 調課 kiosk：只顯示調課填報；共用同一份線上檔
