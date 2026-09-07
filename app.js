@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v12.47';
+const APP_VERSION = 'v12.48';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -888,7 +888,6 @@ function viewHome() {
         <div class="hh-sub">${esc(s.reportYear || '- - -')} 學年度　·　課務編排 ${APP_VERSION}</div>
       </div>
       <div class="hh-actions">
-        <button class="hh-backup" data-action="banner-edit" title="設定 / 更換首頁橫幅圖片">🖼️ 橫幅</button>
         <button class="hh-backup" data-action="backup" title="匯出 / 匯入備份">💾 備份</button>
       </div>
     </div></div>`;
@@ -4577,7 +4576,7 @@ const SUBST_FMT = 'course-subst-1';
 function substContextState() {
   return {
     schema: SCHEMA,
-    settings: { periods: state.settings.periods, days: state.settings.days, reportYear: state.settings.reportYear || '', schoolCode: state.settings.schoolCode || '', subjectMap: state.settings.subjectMap || {}, maxLessonsPerDay: state.settings.maxLessonsPerDay || 0 },
+    settings: { periods: state.settings.periods, days: state.settings.days, reportSchool: state.settings.reportSchool || '', reportYear: state.settings.reportYear || '', schoolCode: state.settings.schoolCode || '', subjectMap: state.settings.subjectMap || {}, maxLessonsPerDay: state.settings.maxLessonsPerDay || 0, bannerImage: state.settings.bannerImage || '' },
     subjects: state.subjects, grades: state.grades, classes: state.classes, teachers: state.teachers, rooms: state.rooms || [],
     domains: state.domains || [], slots: state.slots, slotTeachers: state.slotTeachers, slotContent: state.slotContent || {},
     substitutions: state.substitutions || [],
@@ -4755,19 +4754,33 @@ async function substSubmit(rec) {
     toast('已送出到雲端，排課老師收回後即生效（可再調整後重送）');
   } catch (e) { toast('送出失敗：' + e.message); }
 }
+// 線上填報 kiosk 頂端的學校橫幅（有上傳圖片就用圖片、否則漸層底色；含校名/學年度，不含操作鈕）
+function kioskBanner() {
+  const s = state.settings || {};
+  const hasBanner = !!s.bannerImage;
+  const school = esc(s.reportSchool || '');
+  if (!school && !hasBanner) return '';
+  return `<div class="home-hero card kiosk-hero${hasBanner ? ' has-banner' : ''}"${hasBanner ? ` style="background-image:url('${s.bannerImage}')"` : ''}>
+    ${hasBanner ? '<div class="hh-scrim"></div>' : ''}
+    <div class="card-body"><div class="hh-info">
+      <div class="hh-school">${school || '課務編排'}</div>
+      <div class="hh-sub">${esc(s.reportYear || '')} 學年度　·　線上填報</div>
+    </div></div></div>`;
+}
+
 function viewSubstKiosk() {
   if (substEnded) return `<div class="card"><div class="card-body" style="text-align:center;padding:48px 20px">
       <h2 style="margin-top:0">✅ 代課填報已結束</h2><p style="color:var(--muted)">你可以直接關閉此分頁。</p></div></div>`;
-  if (!substFileId) return `<div class="page-head"><h2>🔄 線上代課填報</h2></div>
+  if (!substFileId) return kioskBanner() + `<div class="page-head"><h2>🔄 線上代課填報</h2></div>
     <div class="card"><div class="card-body">
       <p>用<b>你自己的 Google 帳號</b>（學校或 Gmail 皆可）登入，開啟排課老師分享的代課填報檔。系統會以你的帳號 Email 對應你本人，直接調出<b>你自己的課表</b>，讓你為請假期間的課安排代課。</p>
       <button class="btn" data-action="subst-login">用 Google 登入並開啟</button></div></div>`;
   const banner = `<div class="lock-banner no-print"><span>🔄 我的代課填報｜${esc(substMyName || substMyEmail || '')}</span>
       <button class="ghost" data-action="subst-kiosk-exit">完成／關閉</button></div>`;
-  if (substNoMatch) return banner + `<div class="card"><div class="card-body" style="text-align:center;padding:40px 20px">
+  if (substNoMatch) return kioskBanner() + banner + `<div class="card"><div class="card-body" style="text-align:center;padding:40px 20px">
       <h3 style="margin-top:0">找不到你的教師資料</h3>
       <p style="color:var(--muted)">你登入的帳號 <b>${esc(substMyEmail || '')}</b> 不在教師名單中，無法對應到你的課表。<br>請聯絡排課老師，到「③ 教師」把<b>這個 Email</b> 填到你的教師資料後，再重新開啟此連結。</p></div></div>`;
-  return banner + viewSubst();
+  return kioskBanner() + banner + viewSubst();
 }
 
 /* ==========================================================================
@@ -4820,16 +4833,16 @@ async function swapSubmit(rec) {
 function viewSwapKiosk() {
   if (swapEnded) return `<div class="card"><div class="card-body" style="text-align:center;padding:48px 20px">
       <h2 style="margin-top:0">✅ 調課填報已結束</h2><p style="color:var(--muted)">你可以直接關閉此分頁。</p></div></div>`;
-  if (!swapFileId) return `<div class="page-head"><h2>🔀 線上調課填報</h2></div>
+  if (!swapFileId) return kioskBanner() + `<div class="page-head"><h2>🔀 線上調課填報</h2></div>
     <div class="card"><div class="card-body">
       <p>用<b>你自己的 Google 帳號</b>（學校或 Gmail 皆可）登入，開啟排課老師分享的<b>代課／調課填報檔</b>（與代課同一份）。系統會以你的帳號 Email 對應你本人，調出<b>你自己的課表</b>，讓你把請假期間的課<b>對調</b>到其他時段。</p>
       <button class="btn" data-action="swap-login">用 Google 登入並開啟</button></div></div>`;
   const banner = `<div class="lock-banner no-print"><span>🔀 我的調課填報｜${esc(swapMyName || swapMyEmail || '')}</span>
       <button class="ghost" data-action="swap-kiosk-exit">完成／關閉</button></div>`;
-  if (swapNoMatch) return banner + `<div class="card"><div class="card-body" style="text-align:center;padding:40px 20px">
+  if (swapNoMatch) return kioskBanner() + banner + `<div class="card"><div class="card-body" style="text-align:center;padding:40px 20px">
       <h3 style="margin-top:0">找不到你的教師資料</h3>
       <p style="color:var(--muted)">你登入的帳號 <b>${esc(swapMyEmail || '')}</b> 不在教師名單中，無法對應到你的課表。<br>請聯絡排課老師，到「③ 教師」把<b>這個 Email</b> 填到你的教師資料後，再重新開啟此連結。</p></div></div>`;
-  return banner + viewReschedule();
+  return kioskBanner() + banner + viewReschedule();
 }
 
 // v09.18 班級簡稱：去掉「年級／年／班」，如 六年忠班→六忠、一年甲班→一甲（教師總表格內用）
@@ -5055,6 +5068,17 @@ function viewSettings() {
       <button class="ghost" data-action="reset-app" style="color:var(--danger)">🧹 清除本 App 資料並重設</button></section>
     <section class="set-sub"><h5>關於</h5>
       <p style="color:var(--muted);margin:4px 0 0">課務編排 ${APP_VERSION} · 資料存本機瀏覽器。備份請用右上「備份」或上方雲端同步。</p></section>`;
+  const bannerImg = state.settings.bannerImage;
+  const bannerBody = `
+    <p class="hint" style="color:var(--muted);margin:0 0 10px">首頁抬頭可用你上傳的圖片當橫幅（否則用漸層底色）。建議比例 <b>4:1</b>（例如 1200×300）；上傳後可<b>拖曳移動、縮放</b>調整裁切範圍，套用後存成 1200×300。校名與學年度會疊在圖片上（自動加深色遮罩確保可讀）。此橫幅也會顯示在<b>代課／調課線上填報</b>的老師填報頁。</p>
+    ${bannerImg
+      ? `<div style="margin:0 0 12px"><div style="font-size:13px;color:var(--muted);margin-bottom:6px">目前橫幅：</div><img src="${bannerImg}" alt="目前橫幅" style="width:100%;max-width:520px;border-radius:10px;display:block;border:1px solid var(--line)"></div>`
+      : `<div class="hint" style="color:var(--muted);margin:0 0 12px">目前使用漸層底色（尚未設定橫幅圖片）。</div>`}
+    <input type="file" id="bannerFile" accept="image/png,image/jpeg,image/webp,image/gif" hidden data-change="banner-file">
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn" data-action="banner-pick">📤 ${bannerImg ? '更換圖片' : '上傳圖片'}</button>
+      ${bannerImg ? `<button class="ghost" data-action="banner-remove">🗑️ 移除橫幅（改回漸層底色）</button>` : ''}
+    </div>`;
   return `
     ${subHead('設定')}
     <p class="hint" style="color:var(--muted);margin:0 0 12px">點各區塊標題可展開／收合。</p>
@@ -5069,6 +5093,7 @@ function viewSettings() {
         <input type="number" min="0" max="20" data-change="set-maxperday" value="${state.settings.maxLessonsPerDay || 0}"></label>
       <p class="hint" style="color:var(--muted);margin:6px 0 0">自動排課會避免任一教師單日超過此上限。個別教師可在「③ 教師」設不同上限；勾「不列入上限」的科目（如母語）不計。</p>`)}
     ${grp('output', '📄 課表輸出格式（Word .docx）', outputBody)}
+    ${grp('banner', '🖼️ 首頁橫幅圖片', bannerBody)}
     ${grp('cloud', '☁️ 雲端同步備份（Google 雲端硬碟）', cloudSettingsCard())}
     ${grp('advanced', '🛠️ 進階與疑難排解', advancedBody)}`;
 }
@@ -5114,21 +5139,6 @@ const BANNER_RATIO = 4;          // 寬:高 = 4:1
 const BANNER_OUT_W = 1200, BANNER_OUT_H = 300;
 let bannerCropState = null;      // { img, vw, vh, base, zoom, ox, oy }
 
-function bannerModal() {
-  const s = state.settings || {};
-  openModal({
-    title: '首頁橫幅圖片',
-    body: `
-      <p class="hint" style="color:var(--muted);margin:0 0 12px">建議橫幅比例 <b>4:1</b>（例如 1200×300）。上傳後可<b>拖曳移動、縮放</b>調整裁切範圍，套用後會存成 1200×300。校名與學年度會疊在圖片上（自動加深色遮罩確保可讀）。</p>
-      ${s.bannerImage ? `<div style="margin:0 0 14px"><div style="font-size:13px;color:var(--muted);margin-bottom:6px">目前橫幅：</div><img src="${s.bannerImage}" alt="目前橫幅" style="width:100%;border-radius:10px;display:block;border:1px solid var(--line)"></div>` : ''}
-      <input type="file" id="bannerFile" accept="image/png,image/jpeg,image/webp,image/gif" hidden data-change="banner-file">
-      <div style="display:flex;gap:8px;flex-wrap:wrap">
-        <button class="btn" data-action="banner-pick">📤 ${s.bannerImage ? '更換圖片' : '上傳圖片'}</button>
-        ${s.bannerImage ? `<button class="ghost" data-action="banner-remove">🗑️ 移除橫幅（改回漸層底色）</button>` : ''}
-      </div>`,
-  });
-}
-
 function openBannerCrop(src) {
   const img = new Image();
   img.onload = () => {
@@ -5152,6 +5162,7 @@ function openBannerCrop(src) {
 function initBannerCrop(img) {
   const view = $('#cropView'), el = $('#cropImg'), zoomEl = $('#cropZoom');
   if (!view || !el) return;
+  if (!view.clientWidth) { requestAnimationFrame(() => initBannerCrop(img)); return; }   // 版面尚未就緒(寬度為0)→下一幀再試，避免裁出空白
   const iw = img.naturalWidth, ih = img.naturalHeight;
   const vw = view.clientWidth, vh = view.clientHeight || (vw / BANNER_RATIO);
   const base = Math.max(vw / iw, vh / ih);   // 「cover」的基準縮放：zoom=1 時剛好蓋滿裁切框
@@ -5206,7 +5217,8 @@ function applyBannerCrop() {
   catch (e) { toast('圖片處理失敗'); return; }
   state.settings.bannerImage = dataUrl;
   bannerCropState = null;
-  save(); currentTab = 'home'; render(); toast('已更新首頁橫幅');
+  settingsOpen['banner'] = true;   // 套用後回到設定頁、保持橫幅區塊展開以顯示新預覽
+  save(); render(); toast('已更新首頁橫幅');
 }
 
 function backupMenu() {
@@ -5991,9 +6003,8 @@ const clickHandlers = {
   },
   'help': () => helpModal(),
   'backup': () => backupMenu(),
-  'banner-edit': () => bannerModal(),
   'banner-pick': () => { const f = $('#bannerFile'); if (f) f.click(); },
-  'banner-remove': () => { delete state.settings.bannerImage; save(); closeModal(); render(); toast('已移除橫幅，改回漸層底色'); },
+  'banner-remove': () => { delete state.settings.bannerImage; settingsOpen['banner'] = true; save(); render(); toast('已移除橫幅，改回漸層底色'); },
   'toggle-avail': el => { el.classList.toggle('off'); el.textContent = el.classList.contains('off') ? '✕' : ''; },
   'add-load-row': () => { syncLoadFromDOM(); const cid = state.classes[0] ? state.classes[0].id : ''; const idx = modalLoad.length; modalLoad.push({ classId: cid, subjectId: firstAvailableSubject(cid, idx), hours: 0 }); refreshLoadEditor(); updateLoadSum(); },
   'del-load-row': el => { syncLoadFromDOM(); modalLoad.splice(parseInt(el.dataset.idx, 10), 1); refreshLoadEditor(); updateLoadSum(); },

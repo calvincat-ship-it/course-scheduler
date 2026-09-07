@@ -502,6 +502,8 @@ table.timetable td.cell.subst-cell-off { background: repeating-linear-gradient(4
 .home-hero.has-banner .hh-actions { align-self: flex-end; }
 .home-hero.has-banner .hh-school { font-size: clamp(18px, 3.2vw, 28px); text-shadow: 0 1px 5px rgba(0,0,0,.55); }
 .home-hero.has-banner .hh-sub { color: rgba(255,255,255,.92); text-shadow: 0 1px 4px rgba(0,0,0,.55); }
+/* 線上填報 kiosk 頂端橫幅：無操作鈕、校名放左下（避免 column-reverse 的方向混淆，明確用 column+flex-end） */
+.kiosk-hero.has-banner .card-body { flex-direction: column; justify-content: flex-end; align-items: flex-start; }
 
 /* 橫幅裁切器：框內所見即所得（固定 4:1） */
 .crop-view { position: relative; width: 100%; aspect-ratio: 4 / 1; overflow: hidden; border-radius: 10px;
