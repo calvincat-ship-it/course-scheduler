@@ -3,10 +3,25 @@
 > 收工時 Claude 更新這裡；開工時 Claude 先讀這裡。跟程式碼一起 git 同步。
 
 ## 最後更新
-- 時間：2026-09-04
+- 時間：2026-09-07
 - 機器：Desktop\claude code
-- 版本：**main = v12.40（已 push；GH Pages 依常規部署）**。schema 仍為 2、向下相容。
-- 狀態：本機 node --check + 預覽實測通過、無 console error、全部已 push main。**Google Drive 往返（登入/送出/收回）僅能真機驗證**。
+- 版本：**main = v12.44（已 push；GH Pages 依常規部署）**。schema 仍為 2、向下相容。
+- 狀態：本機 node --check + 預覽實測通過、無 console error、全部已 push main。**代課/調課線上填報（登入/選檔/填報/送出/收回合併）本次已真機驗證通過。**
+
+## 本次區間做了什麼（v12.41–44）＝**線上填報多校區隔 ＋ Picker 踩雷修正**（皆已真機驗證）
+> 實機回饋：①教師開代課/調課連結時 Picker 列出所有 json（含導師填課 class- 檔）；②多校共用同一部署時 A 校教師不該看到他校填報檔。
+- **v12.41**：分享連結帶學校辨識碼 `?subst/?swap/?fill=<schoolCode><year>`（`schoolLinkToken()`＝schoolCode+reportYear，＝代課檔名尾碼）；`pickFillFile` 想用 `DocsView.setQuery` 依檔名過濾。
+- **v12.43 修**：`PickerBuilder` **沒有** `setQuery`（只 `DocsView` 有）→ 誤呼叫拋 `TypeError: builder.setQuery is not a function`、kiosk「開啟失敗」。移除誤呼叫。
+- **v12.44 修（關鍵）**：`DocsView.setQuery` **只搜「我的雲端硬碟」**，但填報檔是排課者建立、分享給老師的檔（在老師的**「與我共用」**）→ 搜尋掃不到、顯示 **「No items matched your search」**。**移除 setQuery 過濾**；改：Picker 加 `SHARED_WITH_ME` 分頁＋保留 DOCS；標題 `substPickTitle(token)` 直接寫出完整檔名引導；選檔後 `fmt`＋`substFileSchoolOk(obj,token)`（比對學校代號，舊連結空/'1'→不限）雙驗證擋掉選錯/他校。
+- **結果**：問題②（多校區隔）靠 `substFileSchoolOk` 正確成立；問題①（清單乾淨）折衷為「與我共用分頁＋標題引導＋選錯即擋」（共用檔無法被 Picker 依檔名過濾）。移除不再使用的 `substPickQuery/fillPickQuery`。commit 4b7b7f5。
+
+## 本次區間做了什麼（v12.42）＝**設定頁各區塊可折疊 ＋ 使用說明更新**
+- **設定頁**：上課日/節次/專科教室/排課選項/課表輸出/雲端同步/進階 七區塊改為可折疊卡片 `details.set-card`；展開狀態記在 `settingsOpen`（key＝`data-sg`）、經既有 toggle 捕獲處理器保存，**編輯欄位重繪後不收合**（已驗證）；預設全收合。`cloudSettingsCard` 改回傳純內容（外層由摺疊區塊包）。新增 `.set-card` CSS。
+- **使用說明**：補先前完全缺漏的「🔀 調課」段；改寫「☁️ 代課／調課線上填報」段（入口在首頁「☁️ 線上填報」、代課+調課共用一份檔兩連結、多校依學校代號區隔、收回一次同步）；代課段補「空堂名單依當日調課後實際課表」；首頁加「定稿後/公布後」流程提示。
+
+## 本次區間做了什麼（v12.40）＝**代課「可代課空堂老師」名單改依該日調課後實際課表判忙碌**
+> 先前待辦的已知限制：空堂名單原用 `busyTeachersAt` 只掃基礎課表，有調課的日子不準（移走者誤判忙、移入者誤判閒）。
+- 新增 `busyTeachersOnDate(date,day,period,swaps)`（逐班 composeResolve 解析該日調課後實際內容）＋`substCellDates(rec,weekTab,day)`（多週彙總取忙碌聯集）；`freeTeachersAt` 有日期→套 `reschedMasterRec().swaps`，**無日期(舊資料)→退回 busyTeachersAt**。commit 939bc41。
 
 ## 本次區間做了什麼（v12.40）＝**代課「可代課空堂老師」名單改依該日調課後實際課表判忙碌**
 > 先前記在待辦的已知限制：指派代課時的空堂名單原本用 `busyTeachersAt(day,period)` 只掃基礎 `state.slots`（依星期幾），在有調課的日子不精準——被調課**移走**的老師誤判忙、被調課**移入**的老師誤判閒。
