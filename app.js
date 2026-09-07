@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v12.46';
+const APP_VERSION = 'v12.47';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -878,14 +878,19 @@ function viewHome() {
   const s = state.settings || {};
   const brandNew = state.subjects.length === 0 && state.classes.length === 0;
 
-  // 抬頭識別條
-  const header = `<div class="home-hero card">
+  // 抬頭識別條（可上傳自訂橫幅圖片，否則用漸層底色）
+  const hasBanner = !!s.bannerImage;
+  const header = `<div class="home-hero card${hasBanner ? ' has-banner' : ''}"${hasBanner ? ` style="background-image:url('${s.bannerImage}')"` : ''}>
+    ${hasBanner ? '<div class="hh-scrim"></div>' : ''}
     <div class="card-body">
       <div class="hh-info">
         <div class="hh-school">${esc(s.reportSchool || '- - - - - - - - - - - -')}</div>
         <div class="hh-sub">${esc(s.reportYear || '- - -')} 學年度　·　課務編排 ${APP_VERSION}</div>
       </div>
-      <button class="hh-backup" data-action="backup" title="匯出 / 匯入備份">💾 備份</button>
+      <div class="hh-actions">
+        <button class="hh-backup" data-action="banner-edit" title="設定 / 更換首頁橫幅圖片">🖼️ 橫幅</button>
+        <button class="hh-backup" data-action="backup" title="匯出 / 匯入備份">💾 備份</button>
+      </div>
     </div></div>`;
 
   // 全新使用者：引導從①開始
@@ -5101,6 +5106,109 @@ function downloadBlob(content, filename, type) {
   const a = document.createElement('a'); a.href = url; a.download = filename; a.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
+/* ==========================================================================
+   首頁橫幅圖片：上傳 → 固定 4:1 裁切（拖曳移動＋縮放）→ 存成 1200×300 JPEG dataURL
+   存放於 state.settings.bannerImage（選用欄位、不動 schema；隨備份/雲端一起走）
+   ========================================================================== */
+const BANNER_RATIO = 4;          // 寬:高 = 4:1
+const BANNER_OUT_W = 1200, BANNER_OUT_H = 300;
+let bannerCropState = null;      // { img, vw, vh, base, zoom, ox, oy }
+
+function bannerModal() {
+  const s = state.settings || {};
+  openModal({
+    title: '首頁橫幅圖片',
+    body: `
+      <p class="hint" style="color:var(--muted);margin:0 0 12px">建議橫幅比例 <b>4:1</b>（例如 1200×300）。上傳後可<b>拖曳移動、縮放</b>調整裁切範圍，套用後會存成 1200×300。校名與學年度會疊在圖片上（自動加深色遮罩確保可讀）。</p>
+      ${s.bannerImage ? `<div style="margin:0 0 14px"><div style="font-size:13px;color:var(--muted);margin-bottom:6px">目前橫幅：</div><img src="${s.bannerImage}" alt="目前橫幅" style="width:100%;border-radius:10px;display:block;border:1px solid var(--line)"></div>` : ''}
+      <input type="file" id="bannerFile" accept="image/png,image/jpeg,image/webp,image/gif" hidden data-change="banner-file">
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn" data-action="banner-pick">📤 ${s.bannerImage ? '更換圖片' : '上傳圖片'}</button>
+        ${s.bannerImage ? `<button class="ghost" data-action="banner-remove">🗑️ 移除橫幅（改回漸層底色）</button>` : ''}
+      </div>`,
+  });
+}
+
+function openBannerCrop(src) {
+  const img = new Image();
+  img.onload = () => {
+    if (!img.naturalWidth || !img.naturalHeight) { toast('圖片讀取失敗'); return; }
+    openModal({
+      title: '調整橫幅（拖曳移動、縮放）',
+      body: `
+        <div class="crop-view" id="cropView"><img id="cropImg" src="${src}" draggable="false" alt=""></div>
+        <label class="field" style="margin-top:14px"><span>縮放</span>
+          <input type="range" id="cropZoom" min="1" max="4" step="0.01" value="1"></label>
+        <p class="hint" style="color:var(--muted);margin:6px 0 0;font-size:12px">拖曳圖片調整位置、拉滑桿或用滾輪縮放。裁切框固定 <b>4:1</b>，框內看到的就是最後結果。</p>`,
+      saveLabel: '✅ 套用為橫幅',
+      onSave: () => { applyBannerCrop(); return true; },
+    });
+    initBannerCrop(img);
+  };
+  img.onerror = () => toast('圖片讀取失敗');
+  img.src = src;
+}
+
+function initBannerCrop(img) {
+  const view = $('#cropView'), el = $('#cropImg'), zoomEl = $('#cropZoom');
+  if (!view || !el) return;
+  const iw = img.naturalWidth, ih = img.naturalHeight;
+  const vw = view.clientWidth, vh = view.clientHeight || (vw / BANNER_RATIO);
+  const base = Math.max(vw / iw, vh / ih);   // 「cover」的基準縮放：zoom=1 時剛好蓋滿裁切框
+  const st = bannerCropState = { img, vw, vh, base, zoom: 1, ox: 0, oy: 0 };
+  st.ox = (vw - iw * base) / 2;
+  st.oy = (vh - ih * base) / 2;
+  const clamp = () => {
+    const dw = iw * base * st.zoom, dh = ih * base * st.zoom;
+    st.ox = Math.min(0, Math.max(vw - dw, st.ox));
+    st.oy = Math.min(0, Math.max(vh - dh, st.oy));
+  };
+  const apply = () => {
+    const dw = iw * base * st.zoom, dh = ih * base * st.zoom;
+    el.style.width = dw + 'px'; el.style.height = dh + 'px';
+    el.style.left = st.ox + 'px'; el.style.top = st.oy + 'px';
+  };
+  clamp(); apply();
+  // 拖曳（滑鼠＋觸控，用 pointer events）
+  let dragging = false, px = 0, py = 0;
+  el.addEventListener('pointerdown', e => { dragging = true; px = e.clientX; py = e.clientY; el.setPointerCapture(e.pointerId); e.preventDefault(); });
+  el.addEventListener('pointermove', e => { if (!dragging) return; st.ox += e.clientX - px; st.oy += e.clientY - py; px = e.clientX; py = e.clientY; clamp(); apply(); });
+  const endDrag = () => { dragging = false; };
+  el.addEventListener('pointerup', endDrag); el.addEventListener('pointercancel', endDrag);
+  // 縮放（滑桿）：以裁切框中心為錨點
+  const setZoom = (z) => {
+    const nz = Math.min(4, Math.max(1, z));
+    const cx = (vw / 2 - st.ox) / (iw * base * st.zoom);   // 目前框中心對應到圖片的比例位置
+    const cy = (vh / 2 - st.oy) / (ih * base * st.zoom);
+    st.zoom = nz;
+    st.ox = vw / 2 - cx * (iw * base * st.zoom);
+    st.oy = vh / 2 - cy * (ih * base * st.zoom);
+    clamp(); apply();
+  };
+  zoomEl && zoomEl.addEventListener('input', () => setZoom(parseFloat(zoomEl.value)));
+  // 滾輪縮放
+  view.addEventListener('wheel', e => { e.preventDefault(); const nz = st.zoom * (e.deltaY < 0 ? 1.08 : 0.926); setZoom(nz); if (zoomEl) zoomEl.value = st.zoom; }, { passive: false });
+}
+
+function applyBannerCrop() {
+  const st = bannerCropState; if (!st) return;
+  const { img, vw, vh, base, zoom, ox, oy } = st;
+  const disp = base * zoom;                 // 原圖像素 → 顯示像素 的比例
+  const sx = -ox / disp, sy = -oy / disp;   // 裁切框左上角在原圖的座標
+  const sw = vw / disp, sh = vh / disp;      // 裁切框對應原圖的寬高
+  const canvas = document.createElement('canvas');
+  canvas.width = BANNER_OUT_W; canvas.height = BANNER_OUT_H;
+  const ctx = canvas.getContext('2d');
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(img, sx, sy, sw, sh, 0, 0, BANNER_OUT_W, BANNER_OUT_H);
+  let dataUrl;
+  try { dataUrl = canvas.toDataURL('image/jpeg', 0.85); }
+  catch (e) { toast('圖片處理失敗'); return; }
+  state.settings.bannerImage = dataUrl;
+  bannerCropState = null;
+  save(); currentTab = 'home'; render(); toast('已更新首頁橫幅');
+}
+
 function backupMenu() {
   openModal({
     title: '備份 / 還原',
@@ -5883,6 +5991,9 @@ const clickHandlers = {
   },
   'help': () => helpModal(),
   'backup': () => backupMenu(),
+  'banner-edit': () => bannerModal(),
+  'banner-pick': () => { const f = $('#bannerFile'); if (f) f.click(); },
+  'banner-remove': () => { delete state.settings.bannerImage; save(); closeModal(); render(); toast('已移除橫幅，改回漸層底色'); },
   'toggle-avail': el => { el.classList.toggle('off'); el.textContent = el.classList.contains('off') ? '✕' : ''; },
   'add-load-row': () => { syncLoadFromDOM(); const cid = state.classes[0] ? state.classes[0].id : ''; const idx = modalLoad.length; modalLoad.push({ classId: cid, subjectId: firstAvailableSubject(cid, idx), hours: 0 }); refreshLoadEditor(); updateLoadSum(); },
   'del-load-row': el => { syncLoadFromDOM(); modalLoad.splice(parseInt(el.dataset.idx, 10), 1); refreshLoadEditor(); updateLoadSum(); },
@@ -6128,6 +6239,16 @@ const clickHandlers = {
 };
 
 const changeHandlers = {
+  'banner-file': el => {
+    const file = el.files && el.files[0]; if (!file) return;
+    if (!/^image\//.test(file.type)) { toast('請選擇圖片檔'); return; }
+    if (file.size > 20 * 1024 * 1024) { toast('圖片過大（請小於 20MB）'); el.value = ''; return; }
+    const reader = new FileReader();
+    reader.onload = () => { openBannerCrop(reader.result); };
+    reader.onerror = () => toast('讀取檔案失敗');
+    reader.readAsDataURL(file);
+    el.value = '';   // 清空，讓同一檔可再次選取觸發 change
+  },
   'resched-teacher': el => { reschedSyncForm(); if (reschedDraft) { reschedDraft.teacherId = el.value; reschedDraft.swaps = []; reschedDraft.picking = null; reschedDraft.pickWeek = 0; } render(); },
   'resched-date': el => {
     reschedSyncForm(); const d = reschedDraft; if (!d) { render(); return; }

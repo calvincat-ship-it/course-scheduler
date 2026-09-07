@@ -486,9 +486,28 @@ table.timetable td.cell.subst-cell-off { background: repeating-linear-gradient(4
 .home-hero .card-body { padding: 20px 22px; display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; }
 .home-hero .hh-school { color: #fff; font-size: 20px; font-weight: 800; letter-spacing: .5px; }
 .home-hero .hh-sub { color: rgba(255,255,255,.82); font-size: 13px; margin-top: 4px; }
+.home-hero .hh-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .home-hero .hh-backup { border: 1px solid rgba(255,255,255,.55); background: rgba(255,255,255,.14); color: #fff;
   padding: 9px 16px; border-radius: 999px; font-size: 14px; font-weight: 700; cursor: pointer; white-space: nowrap; transition: background .12s; }
 .home-hero .hh-backup:hover { background: rgba(255,255,255,.28); }
+
+/* 首頁自訂橫幅圖片模式 (v12.47)：圖片鋪滿 4:1、校名疊在底部並加深色遮罩確保可讀 */
+.home-hero.has-banner { position: relative; overflow: hidden; padding: 0; background-color: var(--brand-dark);
+  background-size: cover; background-position: center; background-repeat: no-repeat; aspect-ratio: 4 / 1; min-height: 150px; }
+.home-hero.has-banner .hh-scrim { position: absolute; inset: 0; pointer-events: none;
+  background: linear-gradient(180deg, rgba(0,0,0,.30) 0%, rgba(0,0,0,0) 32%, rgba(0,0,0,0) 52%, rgba(0,0,0,.64) 100%); }
+.home-hero.has-banner .card-body { position: absolute; inset: 0; z-index: 1; padding: 14px 18px;
+  flex-direction: column-reverse; align-items: stretch; justify-content: space-between; }
+.home-hero.has-banner .hh-info { align-self: flex-start; }
+.home-hero.has-banner .hh-actions { align-self: flex-end; }
+.home-hero.has-banner .hh-school { font-size: clamp(18px, 3.2vw, 28px); text-shadow: 0 1px 5px rgba(0,0,0,.55); }
+.home-hero.has-banner .hh-sub { color: rgba(255,255,255,.92); text-shadow: 0 1px 4px rgba(0,0,0,.55); }
+
+/* 橫幅裁切器：框內所見即所得（固定 4:1） */
+.crop-view { position: relative; width: 100%; aspect-ratio: 4 / 1; overflow: hidden; border-radius: 10px;
+  background: #0f172a; touch-action: none; cursor: grab; user-select: none; }
+.crop-view:active { cursor: grabbing; }
+.crop-view img { position: absolute; top: 0; left: 0; max-width: none; user-select: none; -webkit-user-drag: none; }
 
 .home-steps { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px; }
 .home-step { display: flex; align-items: center; gap: 12px; text-align: left; padding: 14px; border-radius: var(--radius);
