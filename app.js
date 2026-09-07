@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v12.42';
+const APP_VERSION = 'v12.43';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -544,16 +544,16 @@ async function pickFillFile(token, query, title) {
   return new Promise((resolve) => {
     const view = new google.picker.DocsView(google.picker.ViewId.DOCS)
       .setMimeTypes('application/json').setMode(google.picker.DocsViewMode.LIST);
-    if (query) view.setQuery(query);   // 依檔名前綴/學校代號過濾
-    const builder = new google.picker.PickerBuilder()
+    // v12.43 只在 DocsView 上設搜尋字串（PickerBuilder 沒有 setQuery，之前誤呼叫導致「setQuery is not a function」）。
+    if (query && typeof view.setQuery === 'function') view.setQuery(query);   // 依檔名前綴/學校代號過濾
+    const picker = new google.picker.PickerBuilder()
       .setAppId(GOOGLE_PROJECT_NUMBER).setOAuthToken(token).setDeveloperKey(GOOGLE_API_KEY)
       .addView(view).setTitle(title || '選擇你的班級填課檔（class-…）')
       .setCallback((data) => {
         if (data.action === google.picker.Action.PICKED) resolve(data.docs[0].id);
         else if (data.action === google.picker.Action.CANCEL) resolve(null);
-      });
-    if (query) builder.setQuery(query);   // 一併預填搜尋框，雙保險
-    builder.build().setVisible(true);
+      }).build();
+    picker.setVisible(true);
   });
 }
 // 分享連結帶的學校辨識碼（＝代課檔名尾碼／填課檔名中段），供 kiosk Picker 過濾到本校檔。
