@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v12.51';
+const APP_VERSION = 'v12.52';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -4317,8 +4317,13 @@ function substDelete(id) {
   if (substOpenId === id) substOpenId = null;
   save(); render();
   // 已開放線上填報→線上檔可能還有這筆，提供立即更新線上的選擇
+  // v12.52 改用 App 內按鈕（不用原生 confirm）：Google 授權彈窗必須由「直接點擊」觸發，
+  //   原本 刪除→confirm→confirm→開彈窗，點擊手勢已失效，會出現 popup_closed / popup_failed_to_open。
   if (state.substShare) {
-    if (confirm('已刪除。線上代課檔可能還留有這筆資料。\n\n要現在就「更新線上代課檔」把刪除推送上去嗎？（同時會收回教師新填的代課）\n\n選「取消」也沒關係：之後按「收回代課」時，系統已會自動略過已刪除的紀錄，不會再合併回來。')) { collectSubst(); return; }
+    openModal({ title: '已刪除代課記錄', saveLabel: '☁️ 更新線上代課檔',
+      body: `<p style="margin-top:0">線上代課檔可能還留有這筆資料。</p><p>要現在就「更新線上代課檔」把刪除推送上去嗎？（同時會收回教師新填的代課）</p><p style="color:var(--muted);font-size:13px">按「取消」也沒關係：之後按「收回代課」時，系統會自動略過已刪除的紀錄，不會再合併回來。</p>`,
+      onSave: () => { closeModal(); collectSubst(); return false; } });
+    return;
   }
   toast('已刪除代課記錄');
 }
@@ -4608,6 +4613,7 @@ async function openSubstShare() {
     if (failed.length) openModal({ title: '已開放（部分分享失敗）', body: `<p style="margin-top:0">已分享給 <b>${shared.length}</b> 位；<b>${failed.length}</b> 位失敗：</p><pre style="white-space:pre-wrap;word-break:break-all;background:#f4f4f5;padding:10px;border-radius:8px;font-size:12px">${esc(failed.join('\n'))}</pre>` });
     else toast('已開放代課填報，已分享給 ' + shared.length + ' 位教師');
   } catch (e) {
+    if (step === '連線 Google' && substAuthRetryModal(e, openSubstShare)) return;
     openModal({ title: '開放失敗', body: `<p style="margin-top:0">在步驟「<b>${esc(step)}</b>」發生錯誤：</p><pre style="white-space:pre-wrap;word-break:break-all;background:#f4f4f5;padding:10px;border-radius:8px;font-size:12px">${esc((e && e.message) || String(e))}</pre><p style="color:var(--muted);font-size:12px">請把這段訊息回報，以便對症。</p>` });
   }
 }
@@ -4681,8 +4687,21 @@ async function collectSubst() {
     if (failed.length) openModal({ title: '已收回並重新開放（部分分享失敗）', body: `<p style="margin-top:0">${esc(msg)}。以下分享失敗：</p><pre style="white-space:pre-wrap;word-break:break-all;background:#f4f4f5;padding:10px;border-radius:8px;font-size:12px">${esc(failed.join('\n'))}</pre>` });
     else toast(msg);
   } catch (e) {
+    if (step === '連線 Google' && substAuthRetryModal(e, collectSubst)) return;
     openModal({ title: '收回／重新開放失敗', body: `<p style="margin-top:0">在步驟「<b>${esc(step)}</b>」發生錯誤：</p><pre style="white-space:pre-wrap;word-break:break-all;background:#f4f4f5;padding:10px;border-radius:8px;font-size:12px">${esc((e && e.message) || String(e))}</pre>` });
   }
+}
+// v12.52 Google 登入視窗被關閉／被擋／逾時 → 白話說明＋「重新連線」鈕（按鈕點擊＝新的直接手勢，彈窗才開得出來）
+function substAuthRetryModal(e, retryFn) {
+  const m = (e && e.message) || String(e);
+  if (!/popup_closed|popup_failed|access_denied|interaction_required|auth_failed|timeout/i.test(m)) return false;
+  const blocked = /popup_failed/i.test(m);
+  openModal({ title: 'Google 登入未完成', saveLabel: '🔑 重新連線 Google',
+    body: `<p style="margin-top:0">${blocked ? 'Google 登入視窗被瀏覽器擋下了。' : 'Google 登入視窗被關閉，或沒有在時間內完成。'}</p>
+      <p>請按下方「重新連線 Google」，在跳出的視窗中選擇<b>排課用的 Google 帳號</b>並完成授權。</p>
+      <p style="color:var(--muted);font-size:13px">若仍跳不出視窗：請允許本網站的「彈出式視窗」，或改用一般 Chrome 分頁（非無痕）開啟。　錯誤代碼：${esc(m)}</p>`,
+    onSave: () => { closeModal(); retryFn(); return false; } });
+  return true;
 }
 function substShareModal() {
   const ss = state.substShare;
