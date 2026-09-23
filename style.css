@@ -241,6 +241,7 @@ table.timetable tr.break-row td { background: #f8fafc; color: var(--muted); font
 .resched-cell.legal:hover { filter: brightness(1.06); }
 .resched-cell.illegal { opacity: .4; filter: grayscale(.6); cursor: not-allowed; }
 .resched-cell.warn { outline-style: dashed; }
+.resched-cell.needsub { outline-color: #d97706; }   /* v12.53 換入仍是本人課：可對調但需再代課 */
 .resched-warnmark { position: absolute; top: 1px; right: 3px; font-size: 11px; }
 .resched-summary { margin: 10px 0 2px; padding: 8px 12px; background: #f1f6fc; border: 1px solid var(--line); border-radius: 8px; font-size: 14px; }
 .resched-warn { margin-top: 6px; color: #b45309; font-size: 13px; }

@@ -6,7 +6,7 @@
    資料層：IndexedDB 單一 state 文件（schema:2）
    ========================================================================== */
 
-const APP_VERSION = 'v12.52';
+const APP_VERSION = 'v12.53';
 const DB_NAME = 'course_scheduler';
 const STATE_KEY = 'state';
 const SCHEMA = 2;
@@ -3681,6 +3681,30 @@ function teacherLessonsOnDate(teacherId, date, swaps) {
   }
   return out;
 }
+// 找／建此教師在此請假期間的代課單（範圍＝請假日期，全天；同教師日期重疊者沿用）
+function reschedEnsureSubstRec(teacherId, leaveStart, leaveEnd) {
+  const probe = { id: '', absentTeacherId: teacherId, startDate: leaveStart, endDate: leaveEnd, periods: [] };
+  let rec = substLeaveConflict(probe);
+  if (!rec) { rec = { id: uid(), absentTeacherId: teacherId, startDate: leaveStart, endDate: leaveEnd, periods: [], createdAt: new Date().toISOString(), assignments: {}, weekOverrides: {} }; (state.substitutions = state.substitutions || []).push(rec); }
+  save();
+  return rec;
+}
+// 跳到代課分頁，鎖定含 date 的那一週；給 key 則直接開該格指派（完成後返回調課畫面）
+function reschedGotoSubst(teacherId, leaveStart, leaveEnd, date, key, day, period) {
+  const rec = reschedEnsureSubstRec(teacherId, leaveStart, leaveEnd);
+  const weeks = substWeeks(rec); const wIdx = weeks.length > 1 ? (weeks.find(w => date >= w.start && date <= w.end) || {}).idx : null;
+  substOpenId = rec.id; substWeekTab = (wIdx == null ? null : wIdx); currentTab = 'subst'; render();
+  if (!key) { toast('請在課表上點「⏳ 需代課」的節次指派代課老師'); return; }
+  toast('請為此節指派代課老師；完成後會自動返回調課畫面。');
+  substCellPicker(rec.id, key, day, period, substWeekTab, 'reschedule');
+}
+// v12.53 調課儲存後，請假期間仍由本人上、尚無代課的節次（movedIn＝由調課換入）
+function reschedNeedsSubst(teacherId, leaveStart, leaveEnd) {
+  const all = orderedPriorSwaps(null, []), out = [];
+  for (const date of schoolDatesInRange(leaveStart, leaveEnd))
+    teacherLessonsOnDate(teacherId, date, all).forEach(L => { if (!substSubForDate(L.key, date)) out.push({ ...L, date }); });
+  return out;
+}
 // 請假教師在請假區間內、逐「日期」的課（回 [{date,wd,lessons:[{key,classId,day,period,sid,isCover,coverRecId,coverFor,movedIn}]}]）
 // 含兩類：①該師本身任課的課（isCover=false，**已套用既有調課**＝此日實際在教的課）②該師「當日受指派代別人的課」（isCover=true）。
 // priorSwaps＝要套用的既有調課（預設全部調課；編輯某筆時由呼叫端排除該筆），讓「已被前面調課移動過的課」出現在新位置、原位置不再誤列。
@@ -3730,8 +3754,11 @@ function legalTargetsOnDate(seedClassId, src, aDate, absentTeacherId, bDate, pri
     const b = { day: wdB, period: p.id };
     const scope = swapScopeComposed(seedClassId, aDate, src, bDate, b, priorSwaps);
     const r = swapLegalComposed(scope, aDate, src, bDate, b, priorSwaps, beforeByDate);
+    // v12.53 本人任課由「擋」改「可選＋提醒」：允許為了課程安排（如協同主/副教）先在自己的課之間對調，請假再以代課處理。
     const stillAbsent = !!(absentTeacherId && slotAssignments(retKey).some(x => x.teacherId === absentTeacherId));
-    out.push({ period: p.id, occupied: true, legal: r.ok && !stillAbsent, reason: stillAbsent ? '此為本人任課，對調後仍在請假日（無法解決請假）' : (r.reason || ''), warnings: r.warnings || [], scope, subjectAt: subjectName(retSid), stillAbsent });
+    const warnings = (r.warnings || []).slice();
+    if (stillAbsent) warnings.unshift('調課後此節仍是本人任課（請假日），儲存後需再安排代課');
+    out.push({ period: p.id, occupied: true, legal: r.ok, reason: r.reason || '', warnings, scope, subjectAt: subjectName(retSid), stillAbsent });
   }
   return out;
 }
@@ -3795,6 +3822,9 @@ function reschedLessonsPanel(d) {
   const groups = reschedSourceLessons(d.teacherId, d.leaveStart, d.leaveEnd, priorSwaps);
   if (!groups.length) return `<div class="resched-summary" style="color:var(--muted)"><b>${esc(teacherName(d.teacherId))}</b> 在 ${esc(d.leaveStart)}~${esc(d.leaveEnd)} 的上課日內沒有課。</div>`;
   const swapBySrc = {}; d.swaps.forEach((sw, i) => { swapBySrc[sw.seedClassId + '|' + sw.aDate + '|' + sw.a.period] = { i, sw }; });
+  // v12.53 草稿對調後，此位置換入的課是否仍是本人的（→儲存後需再代課）；依日期快取
+  const withDraft = orderedPriorSwaps(editId, d.swaps), afterByDate = {};
+  const stillMineAfter = (L) => (afterByDate[L.date] = afterByDate[L.date] || teacherLessonsOnDate(d.teacherId, L.date, withDraft)).find(x => x.classId === L.classId && x.period === L.period);
   const sections = groups.map(g => {
     const rows = g.lessons.map(L => {
       const cls = (classById(L.classId) || {}).name || '';
@@ -3809,9 +3839,21 @@ function reschedLessonsPanel(d) {
       const mine = swapBySrc[L.classId + '|' + L.date + '|' + L.period];
       let badge = subId ? `<span class="pill blue" title="此日已有代課">已代課：${esc(teacherName(subId))}</span> ` : '';
       if (L.movedIn) badge += `<span class="pill" style="background:#e0e7ff;color:#3730a3" title="此課由既有調課移入此時段">🔀 調課移入</span> `;
-      const subBtn = swapKiosk ? '' : `<button class="ghost xs" data-action="resched-to-subst" data-class="${L.classId}" data-date="${esc(L.date)}" data-day="${L.day}" data-period="${esc(L.period)}" title="${subId ? '調整這一節的代課老師' : '改用代課處理：找人代這一節（若此格已排調課會自動移除）'}">🔄 ${subId ? '調整代課' : '改代課'}</button>`;
+      // v12.53 調課移入且仍是本人的課：代課「保留調課」（只替調課後的課找人代，不移除調課）
+      // 編輯既有記錄時，本筆的對調不在 priorSwaps（以草稿列呈現）→若該對調已儲存且未改動，也可「保留調課」代課
+      const back = mine ? stillMineAfter(L) : null;
+      const savedRec = editId ? (state.reschedules || []).find(r => r.id === editId) : null;
+      const mineSaved = !!(mine && savedRec && (savedRec.swaps || []).some(sw => sw.seedClassId === mine.sw.seedClassId && sw.aDate === mine.sw.aDate && sw.bDate === mine.sw.bDate && sw.a.day === mine.sw.a.day && String(sw.a.period) === String(mine.sw.a.period) && sw.b.day === mine.sw.b.day && String(sw.b.period) === String(mine.sw.b.period)));
+      const keep = !!L.movedIn || !!(back && mineSaved);
+      if (L.movedIn && keep && !subId) badge += `<span class="pill" style="background:#ffedd5;color:#9a3412" title="此節由調課換入、仍是本人任課，請假日需安排代課">⏳ 需代課</span> `;
+      const subBtn = swapKiosk ? '' : (keep
+        ? `<button class="ghost xs" data-action="resched-to-subst" data-keep="1" data-class="${L.classId}" data-date="${esc(L.date)}" data-day="${L.day}" data-period="${esc(L.period)}" title="為調課後的這一節找人代課（保留調課）">${subId ? '🔄 調整代課' : '👤 安排代課（保留調課）'}</button>`
+        : `<button class="ghost xs" data-action="resched-to-subst" data-class="${L.classId}" data-date="${esc(L.date)}" data-day="${L.day}" data-period="${esc(L.period)}" title="${subId ? '調整這一節的代課老師' : '改用代課處理：找人代這一節（若此格已排調課會自動移除）'}">🔄 ${subId ? '調整代課' : '改代課'}</button>`);
       let right;
-      if (mine) right = `<span style="color:var(--ok);font-weight:700">→ ${esc(fmtMD(mine.sw.bDate))}(${esc(DAY_LABELS[mine.sw.b.day])}) ${esc(periodLabel(mine.sw.b.period))}</span> <button class="icon-btn" data-action="resched-remove-swap" data-i="${mine.i}" title="取消此對調">🗑️</button>`;
+      if (mine) {
+        right = `<span style="color:var(--ok);font-weight:700">→ ${esc(fmtMD(mine.sw.bDate))}(${esc(DAY_LABELS[mine.sw.b.day])}) ${esc(periodLabel(mine.sw.b.period))}</span> <button class="icon-btn" data-action="resched-remove-swap" data-i="${mine.i}" title="取消此對調">🗑️</button>`;
+        if (back && !(mineSaved && substSubForDate(L.key, L.date))) badge += `<span class="pill" style="background:#ffedd5;color:#9a3412" title="對調後此節換入的課仍是本人任課">⏳ 換入「${esc(subjectName(back.sid))}」仍需代課${mineSaved ? '' : `（${swapKiosk ? '請另用代課填報' : '儲存後安排'}）`}</span> `;
+      }
       else if (existing) { badge += `<span class="pill" style="background:#fde68a;color:#78350f" title="已在另一筆調課記錄">已調課→${esc(fmtMD(existing.otherDate))} ${esc(periodLabel(existing.other.period))}</span>`; right = `<span style="color:var(--muted);font-size:13px">已在其他調課記錄</span>`; }
       else right = `<button class="ghost xs" data-action="resched-pick-src" data-class="${L.classId}" data-date="${esc(L.date)}" data-day="${L.day}" data-period="${esc(L.period)}">＋ 安排調課</button>`;
       return `<div class="subst-item"><div style="flex:1"><b>${esc(cls)}</b> ${esc(subjectName(L.sid))} <span style="color:var(--muted)">${esc(periodLabel(L.period))}</span>　${badge}</div>${right}${subBtn ? ' ' + subBtn : ''}</div>`;
@@ -3821,7 +3863,7 @@ function reschedLessonsPanel(d) {
   }).join('');
   const hint = swapKiosk
     ? `下列是 <b>${esc(teacherName(d.teacherId))}</b> 請假期間逐日的課。每一節可「<b>安排調課</b>」對調到指定日期（前三週～後三週）；完成後按上方「💾 送出到雲端」。協同課會整組一起換。`
-    : `下列是 <b>${esc(teacherName(d.teacherId))}</b> 請假期間逐日的課。每一節可二擇一：「<b>安排調課</b>」對調到指定日期，或「<b>🔄 改代課</b>」直接找人代這一節（會帶你到代課功能、自動建立此請假期間的代課單並開啟指派；若此格已排調課會自動移除）。已代課的節次仍會列出，可按「🔄 調整代課」更換人員。<br>若此師當日<b>另有代別人上的課</b>（代課職務），也會一併列出並標「代 ○○ 的課」，本人請假時可按「🔄 改派代課」改指定其他代課老師。`;
+    : `下列是 <b>${esc(teacherName(d.teacherId))}</b> 請假期間逐日的課。每一節可二擇一：「<b>安排調課</b>」對調到指定日期，或「<b>🔄 改代課</b>」直接找人代這一節（會帶你到代課功能、自動建立此請假期間的代課單並開啟指派；若此格已排調課會自動移除）。已代課的節次仍會列出，可按「🔄 調整代課」更換人員。<br>也可以<b>先在自己的課之間對調、再代課</b>（例如協同課分主/副教，想讓請假日換成副教的課）：對調目標選橘框 ⏳ 格，儲存後換入的課會標「⏳ 需代課」，按「👤 安排代課（保留調課）」找人代即可。<br>若此師當日<b>另有代別人上的課</b>（代課職務），也會一併列出並標「代 ○○ 的課」，本人請假時可按「🔄 改派代課」改指定其他代課老師。`;
   return `<div class="hint" style="margin:6px 0;color:var(--muted)">${hint}</div>${sections}`;
 }
 // 挑對調目標：先選「週」（請假當週前三週～後三週，共7週），再在該週課表格上點一節與來源對調
@@ -3836,10 +3878,10 @@ function reschedPickPanel(d) {
   const wdays = weekSchoolDays(targetMonday);
   const weekBtns = RESCHED_WEEK_OFFSETS.map(off => `<button class="ghost xs resched-wk${off === wk ? ' active' : ''}" data-action="resched-week" data-w="${off}">${RESCHED_WEEK_LABEL[off]}</button>`).join(' ');
   const grid = reschedWeekPickGridHTML(seedClassId, src, aDate, d.teacherId, targetMonday, d.swaps);
-  return `<div class="resched-summary">為 <b>${esc(cls)} ${esc(subjectName(srcSid))}</b>（${esc(fmtMD(aDate))} ${esc(DAY_LABELS[src.day])} ${esc(periodLabel(src.period))}）挑一個要<b>對調</b>的時段：點<span style="color:var(--ok)">綠色</span>格。<span style="color:var(--muted)">（課表已套用所有已建立的調課後內容）</span> <button class="ghost xs" data-action="resched-cancel-pick">取消選擇</button></div>
+  return `<div class="resched-summary">為 <b>${esc(cls)} ${esc(subjectName(srcSid))}</b>（${esc(fmtMD(aDate))} ${esc(DAY_LABELS[src.day])} ${esc(periodLabel(src.period))}）挑一個要<b>對調</b>的時段：點<span style="color:var(--ok)">綠框</span>格（<span style="color:#b45309">橘框 ⏳</span>＝換入仍是自己的課，對調後需再代課）。<span style="color:var(--muted)">（課表已套用所有已建立的調課後內容）</span> <button class="ghost xs" data-action="resched-cancel-pick">取消選擇</button></div>
     <div style="margin:10px 0 6px;display:flex;align-items:center;gap:8px;flex-wrap:wrap"><b>對調到：</b>${weekBtns}<span style="color:var(--muted)">${esc(fmtMD(targetMonday))}~${esc(fmtMD(wdays[4].date))}</span></div>
     <div class="grid-wrap">${grid}</div>
-    <div class="mx-legend" style="margin-top:8px">🟦 來源　🟩 可對調（依調課後最新內容判定）　⬜ 不可對調　·　⚠放寬項　·　⏳本人任課·鎖定　·　🔀 已被前面調課換過內容（仍可再對調）</div>`;
+    <div class="mx-legend" style="margin-top:8px">🟦 來源　🟩 可對調（依調課後最新內容判定）　⬜ 不可對調　·　⚠放寬項　·　<span style="color:#b45309">⏳ 橘框＝換入的仍是本人的課（可對調，但請假日仍需再安排代課）</span>　·　🔀 已被前面調課換過內容（仍可再對調）</div>`;
 }
 // 視覺式：某週課表格（欄＝該週日期）。疊加「所有已建立調課(依建立順序，排除編輯中者)＋本次草稿」→格子顯示所有調課後的實際內容；
 // 已被前面調課移動過的格仍可再對調，交由 legalTargetsOnDate 用「調課後最新內容」依調課規則判定。
@@ -3862,8 +3904,7 @@ function reschedWeekPickGridHTML(seedClassId, src, aDate, teacherId, monday, dra
       const tinfo = legalByDate[w.date][p.id];
       let clsN = 'resched-cell', act = '', title = '', warnMark = '';
       if (isSrc) { clsN += ' src'; }
-      else if (tinfo && tinfo.legal) { clsN += ' legal'; act = `data-action="resched-pick-target" data-date="${esc(w.date)}" data-day="${w.wd}" data-period="${esc(p.id)}"`; const ws = tinfo.warnings || []; if (ws.length) { clsN += ' warn'; warnMark = '<span class="resched-warnmark">⚠</span>'; title = ws.join('；'); } }
-      else if (tinfo && tinfo.stillAbsent) { clsN += ' illegal'; warnMark = '<span class="resched-warnmark">⏳</span>'; title = tinfo.reason; }
+      else if (tinfo && tinfo.legal) { clsN += ' legal'; act = `data-action="resched-pick-target" data-date="${esc(w.date)}" data-day="${w.wd}" data-period="${esc(p.id)}"`; const ws = tinfo.warnings || []; if (ws.length) { clsN += ' warn'; warnMark = `<span class="resched-warnmark">${tinfo.stillAbsent ? '⏳' : '⚠'}</span>`; title = ws.join('；'); } if (tinfo.stillAbsent) clsN += ' needsub'; }
       else { clsN += ' illegal'; title = (tinfo && tinfo.reason) || '不可對調'; }
       if (rp.swapped && !isSrc && !warnMark) { warnMark = '<span class="resched-swapmark">🔀</span>'; if (!title) title = '此格已被前面調課換過內容，仍可依規則再對調'; }   // 已被前面調課換過
       html += `<td class="cell"><div class="${clsN}" ${act} style="background:${color};color:${subjTextColor(s, color)}" title="${esc(title)}"><b>${esc(subjectName(sid))}</b>${warnMark}</div></td>`;
@@ -5940,6 +5981,7 @@ const clickHandlers = {
     reschedSyncForm(); const d = reschedDraft;
     if (!d || !d.teacherId || !d.leaveStart || !d.leaveEnd) { toast('請先選好調課教師與請假日期'); return; }
     const classId = el.dataset.class, date = el.dataset.date, day = +el.dataset.day, period = el.dataset.period;
+    if (el.dataset.keep) { reschedGotoSubst(d.teacherId, d.leaveStart, d.leaveEnd, date, slotKey(classId, day, period), day, period); return; }   // v12.53 保留調課
     const matchEnd = sw => (sw.aDate === date && sw.a.day === day && String(sw.a.period) === String(period)) || (sw.bDate === date && sw.b.day === day && String(sw.b.period) === String(period));
     // 1) 互斥：移除此格既有調課——草稿（新建或編輯中的記錄）
     if (d.swaps && d.swaps.length) d.swaps = d.swaps.filter(sw => !((sw.classIds || []).includes(classId) && matchEnd(sw)));
@@ -5952,16 +5994,8 @@ const clickHandlers = {
       if (r.swaps.length !== before) removedSaved = true;
     });
     if (removedSaved) state.reschedules = (state.reschedules || []).filter(r => (r.swaps || []).length || r.id === reschedOpenId);
-    // 3) 找／建此教師在此請假期間的代課單（範圍＝請假日期，全天；讓請假期間的節次都可指派代課）
-    const probe = { id: '', absentTeacherId: d.teacherId, startDate: d.leaveStart, endDate: d.leaveEnd, periods: [] };
-    let rec = substLeaveConflict(probe);   // 同教師、日期重疊的既有代課單→沿用
-    if (!rec) { rec = { id: uid(), absentTeacherId: d.teacherId, startDate: d.leaveStart, endDate: d.leaveEnd, periods: [], createdAt: new Date().toISOString(), assignments: {}, weekOverrides: {} }; (state.substitutions = state.substitutions || []).push(rec); }
-    save();
-    // 4) 跳到代課分頁，鎖定到含此日期的那一週，開啟該格指派
-    const weeks = substWeeks(rec); const wIdx = weeks.length > 1 ? (weeks.find(w => date >= w.start && date <= w.end) || {}).idx : null;
-    substOpenId = rec.id; substWeekTab = (wIdx == null ? null : wIdx); currentTab = 'subst'; render();
-    toast('請為此節指派代課老師；完成後會自動返回調課畫面。');
-    substCellPicker(rec.id, slotKey(classId, day, period), day, period, substWeekTab, 'reschedule');
+    // 3)+4) 找／建代課單 → 跳代課分頁開該格指派
+    reschedGotoSubst(d.teacherId, d.leaveStart, d.leaveEnd, date, slotKey(classId, day, period), day, period);
   },
   // 「🔄 改派代課」：此師當日代別人上的課、本人也請假→開原代課單該格改派其他代課老師
   'resched-cover-resubst': el => {
@@ -5985,7 +6019,7 @@ const clickHandlers = {
     reschedSyncForm();
     d.swaps = d.swaps.filter(sw => !(sw.seedClassId === seedClassId && sw.aDate === aDate && sw.a.period === src.period));   // 同來源只留一筆
     d.swaps.push({ aDate, a: { day: src.day, period: src.period }, bDate, b: { day, period }, seedClassId, classIds: t.scope });
-    d.picking = null; d.pickWeek = 0; render(); toast('已加入一筆對調');
+    d.picking = null; d.pickWeek = 0; render(); toast(t.stillAbsent ? '已加入對調；換入的課仍是本人的，請假日需再安排代課' : '已加入一筆對調');
   },
   'resched-save': () => {
     reschedSyncForm(); const d = reschedDraft; if (!d) return;
@@ -5998,6 +6032,14 @@ const clickHandlers = {
       if (swapKiosk) { swapSubmit(rec); return; }   // v12.37 教師端：append-only 送到共享檔（不寫本機）
       if (editing) { Object.assign(editing, rec); } else { (state.reschedules = state.reschedules || []).push(rec); }
       save(); reschedOpenId = null; reschedDraft = null; render(); toast(editing ? '已更新調課' : '已建立調課');
+      // v12.53 調課後請假日仍是本人的課 → 提示接著安排代課（保留調課）
+      const need = reschedNeedsSubst(rec.teacherId, rec.leaveStart, rec.leaveEnd);
+      if (need.some(L => L.movedIn)) {   // 只在「有換入本人課」時提示（純為空出請假日的一般調課不打擾）
+        const rows = need.map(L => `<li>${esc(fmtMD(L.date))}（${esc(DAY_LABELS[L.day])}）${esc(periodLabel(L.period))}　${esc((classById(L.classId) || {}).name || '')} <b>${esc(subjectName(L.sid))}</b>${L.movedIn ? '　<span class="pill" style="background:#e0e7ff;color:#3730a3">🔀 調課換入</span>' : ''}</li>`).join('');
+        openModal({ title: '⏳ 調課後仍需代課', saveLabel: '👤 前往安排代課',
+          body: `<p style="margin-top:0">調課已儲存。請假期間下列節次調課後<b>仍是 ${esc(teacherName(rec.teacherId))} 的課</b>、尚未安排代課：</p><ul style="margin:8px 0 0;padding-left:20px;line-height:1.7">${rows}</ul><p style="margin-top:10px;color:var(--muted);font-size:13px">代課會依「調課後」的課表指派，調課保留不動。也可以稍後在調課記錄按「✏️ 調整」→「👤 安排代課（保留調課）」。</p>`,
+          onSave: () => { closeModal(); const f = need[0]; reschedGotoSubst(rec.teacherId, rec.leaveStart, rec.leaveEnd, f.date); return false; } });
+      }
     };
     const conf = [];
     rec.swaps.forEach(sw => [{ date: sw.aDate, pos: sw.a }, { date: sw.bDate, pos: sw.b }].forEach(({ date, pos }) => sw.classIds.forEach(cid => {
