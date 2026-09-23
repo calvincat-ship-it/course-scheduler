@@ -3,12 +3,21 @@
 > 收工時 Claude 更新這裡；開工時 Claude 先讀這裡。跟程式碼一起 git 同步。
 
 ## 最後更新
-- 時間：2026-09-07（收工）
-- 機器：Desktop\claude code
-- 版本：**main = v12.51（已 push；GH Pages 依常規部署）**。schema 仍為 2、向下相容、新欄位皆 optional。
+- 時間：2026-09-23（收工）
+- 機器：桌機（Desktop\claude code）
+- 版本：**main = v12.53（已 push；GH Pages live 已確認 v12.53）**。schema 仍為 2、向下相容、新欄位皆 optional。
 - 狀態：本機 node --check + 桌機/手機(375) 預覽實測通過、無 console error、全部已 push main。**iOS 手機（Safari）線上填報（代課/調課 kiosk 登入→選檔→填報→送出）本次亦實機驗證通過。**
 
-## 本次區間做了什麼（v12.45–v12.51）＝使用說明補齊＋⭐首頁橫幅上傳＋iOS 相容
+## 本次區間做了什麼（v12.52–v12.53，2026-09-23）
+- **v12.52 修「刪除代課→更新線上檔」出現 `popup_closed`**：原流程 刪除→原生 confirm→再 confirm→開 GIS 授權彈窗，點擊手勢已失效→彈窗被擋/關。改：刪除後用 App 內 modal 按鈕「☁️ 更新線上代課檔」觸發（onSave 內直接呼叫＝直接手勢）；`openSubstShare`/`collectSubst` 在「連線 Google」步驟遇 popup_closed/popup_failed/timeout 等 → `substAuthRetryModal(e, retryFn)` 白話說明＋「🔑 重新連線 Google」鈕。**⚠ 原則：任何會開 GIS 彈窗的動作前不可有原生 confirm/alert，一律用 modal 按鈕。** live 真機未測（使用者待實測）。
+- **v12.53 調課可「先在本人課之間對調、再代課」**（使用者確認的方案；情境＝協同課分主/副教，請假日想換成副教的課再請人代）：
+  - `legalTargetsOnDate`：換入仍是本人任課(stillAbsent) 由**不可對調→可選＋警告**（warnings 首項「儲存後需再安排代課」）；挑選格 `.resched-cell.needsub` 橘框 ⏳、圖例/提示文字更新。
+  - 調課清單 `reschedLessonsPanel`：調課換入(movedIn)或「本筆已儲存且未改動的對調」換入本人課 → 標「⏳ 需代課」、按鈕 **「👤 安排代課（保留調課）」**（`data-keep=1`，`resched-to-subst` 跳過移除調課）；一般格「🔄 改代課」行為不變（仍互斥移除調課）。草稿對調顯示「⏳ 換入「X」仍需代課（儲存後安排）」。
+  - 儲存後若有換入本人課 → modal「⏳ 調課後仍需代課」列出請假期間本人尚未代課節次＋「👤 前往安排代課」。
+  - 抽出 `reschedEnsureSubstRec` / `reschedGotoSubst` / `reschedNeedsSubst`。代課端本就依調課後課表(`teacherLessonsOnDate` composeResolve)運作，代課 key＝位置，免改。
+  - 以 `_test-fixture-real.json`（一年孝 陳薇宇／忠 馬美玲 協同）預覽實測：9/24 第3節↔9/29 第1節可對調（協同 2調2）→代課頁顯示 🔀 國語可指派→指派後調課保留；一般對調不跳提示（回歸 OK）。live 真機未測。
+
+## 前次區間做了什麼（v12.45–v12.51）＝使用說明補齊＋⭐首頁橫幅上傳＋iOS 相容
 > 完整索引見記憶 [[project_course_scheduler_architecture]] 的「v12.45–v12.51」段。
 - **v12.45 使用說明「① 科目」段補齊**：補 🧩快速範本(SUBJ_TEMPLATES)、預設教室(subject.roomId)、同學段相同節次(bandSync)、母語日淨空(dayExclusive)、末節傾向下拉；其餘段落比對後已涵蓋最新設計。
 - **⭐v12.47 首頁橫幅可上傳自訂圖片**（新功能，使用者確認 4:1＋裁切）：`state.settings.bannerImage`（data URL、選用欄、不動 schema、隨備份/雲端走）。裁切器 `openBannerCrop/initBannerCrop/applyBannerCrop`（4:1 框、pointer 拖曳、滑桿+滾輪縮放、cover 基準、邊界 clamp、輸出 1200×300 JPEG q0.85 ~20KB）。顯示 `.home-hero.has-banner`（圖 cover、校名疊左下+`.hh-scrim` 遮罩、備份鈕右上）。
@@ -220,23 +229,20 @@
 - **v09.04** 使用說明全面重整（後續版本持續同步）。
 </details>
 
-## 下一步（可挑）＝2026-09-03 更新（v12.18 後）
+## 下一步（可挑）＝2026-09-23 更新（v12.53 後）
 **✅ 本區間已完成**：排課規則 R12/P3/R1 補完(v12.09-11)、設計簡化 A-E(v12.12-16)、**調課功能 Phase 1 建立流程**(v12.17-18：引擎+規則放寬+視覺 UI)。
 
-**🔲 調課（進行中，優先）＝下次接續重點**
-- **1d 輸出/檢視套用 overlay**：課表輸出/檢視時，日期落在 reschedule 區間內就顯示對調後版本（**目前記錄能建立但還沒反映到輸出**）。比照代課 overlay 做法。
-- **1e 代課↔調課互相參照**（使用者**明確要求**）：同時段調課不可與代課衝突；建立調課時交叉檢查同期代課、輸出時 substitutions + reschedules 兩 overlay 正確合成。
-- **Phase 2 線上 ?swap kiosk**：老師自助調課，比照代課線上(v10.01+)。
+**✅ 調課已全部完成**（1d 輸出 overlay／1e 代課互參／Phase2 ?swap kiosk 皆於 v12.34–44 完成並真機驗證；v12.53 再加「本人課對調＋保留調課代課」）。
 
 **🔲 其他待開發（較低優先）**
 - **R11 強化(選配)**：滿排零餘裕結構性殘留；若要更少需「跨科對調」局部搜尋。
 - **B 輸出強化**：PWA 圖示補 PNG、docx 班級表「領域合併」legend。
 - **C 體驗**：範例資料一鍵載入、平板適配。
-- **使用說明落後**：helpModal 尚未提到 v12.12-18 的科目範本/末節傾向合併/科目預設教室/設定頁分組/調課功能。
+- **使用說明**：helpModal 調課段可補 v12.53「本人課對調＋保留調課代課」說明（調課頁內提示已寫）。
 - **資料校對**：108 課綱領域節數。
 
 ## 待決 / 卡住的問題
-- **調課 1d/1e 未做**：調課記錄目前只能建立、還沒套用到課表輸出；且代課↔調課互參(使用者要求)尚未實作——**下次接續重點**（見上方下一步）。
+- **v12.52/v12.53 待使用者 live 實測**：刪除代課後更新線上檔是否正常開出授權窗；一年孝班 9/24 實際「本人課對調＋代課」流程與列印。
 - **v12.09–18 皆未真機 live 驗證**：僅本機預覽實測(deterministic，含使用者真實檔 `_test-fixture-real.json`)通過；實際 live 待使用者確認。
 - **v12.01–08 皆未真機 live 驗證**：僅本機預覽用示範檔實測(deterministic)通過；使用者實際資料的排課品質/列印待其自行確認。
 - **示範檔零餘裕**：需求=容量(168=168)，導師 maxPerDay 多為 0→回退全域上限 4，滿排＋R11/R13 時會剩 1-2 節排不下（結構性）。**建議把導師單日上限調 5-6** 即 168 全滿；已在對話中告知使用者。
@@ -248,7 +254,7 @@
 
 ## 注意事項（給另一台的 Claude）
 - 開工先 sync-start、收工必 sync-end；不要兩台同時改同一個檔。
-- 版本 vNN.MM：`APP_VERSION`(app.js)＋sw `CACHE_NAME` 必須同步。小改直接 bump minor、大改先確認。現 **v12.00**。
+- 版本 vNN.MM：`APP_VERSION`(app.js)＋sw `CACHE_NAME` 必須同步。小改直接 bump minor、大改先確認。現 **v12.53**。
 - ⚠️ **Picker 金鑰在 Cloud Console「應用程式限制」須維持「無」**（勿改回 HTTP referrer——會被隱私瀏覽器/擴充/WebView/PWA 清 Referer 而擋掉老師）；靠「只限 Google Picker API」保安全。app.js 常數區有註解。
 - ⚠️ **同 origin 三 App 共用儲存**：血壓/筆記本/課務同 `github.io`，別叫使用者「清除網站資料」（三個一起清）；用各 App 的「只重設本 App」/`?reset=1`。
 - **手機更新版本**：先用一般 Chrome 開 live 網址（network-first 抓新版更新 SW），別點卡住的 PWA 圖示（跑舊快取）。
