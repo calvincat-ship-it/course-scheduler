@@ -2,6 +2,7 @@
   "name": "課務編排",
   "short_name": "課務編排",
   "description": "國小教學組長排課工具：配課、手動排課、即時衝堂與節數檢核、課表輸出",
+  "id": "./?app=course-scheduler",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",
