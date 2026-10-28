@@ -3,9 +3,11 @@
 > 收工時 Claude 更新這裡；開工時 Claude 先讀這裡。跟程式碼一起 git 同步。
 
 ## 最後更新
-- 時間：2026-09-23（收工）
+- 時間：2026-10-28（收工）
 - 機器：桌機（Desktop\claude code）
-- 版本：**main = v12.53（已 push；GH Pages live 已確認 v12.53）**。schema 仍為 2、向下相容、新欄位皆 optional。
+- 版本：**main = v12.55（已 push）**。2026-09-30：v12.54 在 manifest 加 `id`（想修換手機後 Chrome 殘留「已安裝」致無法安裝）→無效；v12.55 撤回，避免已安裝裝置失去更新。**勿再對已上線 PWA 加／改 manifest id。** schema 仍為 2、向下相容、新欄位皆 optional。
+- **2026-10-28（桌機）只有討論、未動程式碼**：評估改成「Apps Script 網站＋Google 試算表當後端」（含只供本校使用的情境）→ 老師端填報（導師自編／代課／調課）適合、排課者端不適合。**使用者決定全部不採用、不執行**；結論詳見記憶 [[feedback-apps-script-architecture-declined]]，除非使用者再提起，勿主動建議。
+- 以下為 2026-09-23 收工時的紀錄：
 - 狀態：本機 node --check + 桌機/手機(375) 預覽實測通過、無 console error、全部已 push main。**iOS 手機（Safari）線上填報（代課/調課 kiosk 登入→選檔→填報→送出）本次亦實機驗證通過。**
 
 ## 本次區間做了什麼（v12.52–v12.53，2026-09-23）
